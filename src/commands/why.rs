@@ -15,7 +15,7 @@
 //! that failed, only the reason it failed, so any argument gets the same
 //! rejection explanation.
 
-use veripb_formula::prelude::*;
+// use veripb_formula::prelude::*;
 
 use crate::output::{Output, outln};
 use crate::session::{RupHint, Session};

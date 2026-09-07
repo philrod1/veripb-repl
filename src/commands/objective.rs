@@ -1,8 +1,6 @@
 //! `:objective` — show the current objective function and the best bounds
 //! proven/logged for it so far, if any.
 
-use veripb_formula::prelude::*;
-
 use crate::output::{Output, outln};
 use crate::session::Session;
 

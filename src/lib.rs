@@ -14,4 +14,5 @@ pub mod output;
 pub mod plain;
 pub mod session;
 pub mod tui;
+pub mod var_types;
 pub mod varnames;

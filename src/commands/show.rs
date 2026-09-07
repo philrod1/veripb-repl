@@ -2,10 +2,11 @@
 //! variable name (or glob, e.g. `i[vertex0]*`), ID/ID-range, label (`@name`,
 //! or an `@`-prefixed glob), and/or `core`/`derived` status (combinable).
 
-use veripb_formula::prelude::*;
+// use veripb_formula::prelude::*;
 
 use crate::output::{Output, outln};
 use crate::session::Session;
+use crate::var_types::*;
 
 /// A parsed `:show` filter. Filters combine with AND: a constraint must
 /// match every filter given on the line to be printed.
