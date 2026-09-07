@@ -1,27 +1,15 @@
-//! VeriPB REPL entry point: parse the arguments and hand off to a
-//! frontend — the crossterm multi-panel TUI by default (`tui/`), or the
-//! plain line-based loop (`plain.rs`) with `--plain` or whenever stdin or
-//! stdout isn't a real terminal, so piping and scripting keep working.
-//!
-//! The core mechanic lives in `session.rs`: the proof buffer is a live,
-//! only-partly-checked list of lines (see that module's own docs for the
-//! full model), and checking one more of them means re-running the whole
-//! checked prefix plus the candidate through a fresh checker, accepted
-//! iff the parser's error lands exactly at the end (meaning "checked
-//! fine, just wants more input") rather than partway through. The
-//! individual `:`-commands built on top of it live in `commands/`, all
-//! emitting through the `Output` sink in `output.rs` so frontends decide
-//! where text lands.
-
-mod commands;
-mod output;
-mod plain;
-mod session;
-mod tui;
+//! Entry point: parse the arguments and hand off to a frontend — the
+//! crossterm multi-panel TUI by default (`veripb_repl::tui`), or the
+//! plain line-based loop (`veripb_repl::plain`) with `--plain` or
+//! whenever stdin or stdout isn't a real terminal, so piping and
+//! scripting keep working. See `lib.rs` for the crate's own docs — this
+//! binary is a thin wrapper over it, split out so `tests/*.rs` has a
+//! library to link against.
 
 use std::{env, io::IsTerminal};
 
 use anyhow::bail;
+use veripb_repl::{plain, tui};
 
 fn main() -> anyhow::Result<()> {
     let mut plain = false;

@@ -43,7 +43,7 @@
 //! time; the plain frontend has no equivalent single-keypress shortcut,
 //! only the typed `:step`/`:back` commands themselves.
 
-use veripb_checker::error::ForwardsCheckerError;
+// use veripb_checker::error::ForwardsCheckerError;
 
 use crate::commands::edit::{self, READONLY_DURING_EDIT};
 use crate::commands::help::Topic;

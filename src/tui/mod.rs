@@ -32,7 +32,7 @@ use crossterm::{
     execute, terminal,
 };
 
-use veripb_formula::prelude::*;
+// use veripb_formula::prelude::*;
 
 use crate::commands::{self, Flow, debug, edit, formula, help};
 use crate::output::Output;

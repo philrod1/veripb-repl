@@ -63,7 +63,7 @@ use std::io::Write;
 use std::ops::Range;
 
 use crossterm::{cursor, queue, style::Color, style::Print, style::Stylize, terminal};
-use veripb_formula::prelude::*;
+// use veripb_formula::prelude::*;
 
 use crate::commands::edit;
 use crate::session::Session;

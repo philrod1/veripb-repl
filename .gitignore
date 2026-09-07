@@ -13,3 +13,5 @@ out.pbp
 out_v2.pbp
 out_v3.pbp
 *.trace
+
+.*

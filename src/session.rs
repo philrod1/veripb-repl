@@ -33,16 +33,15 @@ use std::{
 };
 
 use anyhow::Context as _;
-use logos::Logos as _;
-use veripb_checker::{error::ForwardsCheckerError, prelude::*};
-use veripb_formula::prelude::*;
-use veripb_parser::{
-    error::ParserError,
-    io::MaybeCompressed,
-    opb_parser::{parse_opb_from_file, parse_single_constraint},
-    opb_token::OPBToken,
-    pbp_parser::parser::{ParserArgs, parse_proof_with_labels},
-};
+// use veripb_checker::{error::ForwardsCheckerError, prelude::*};
+// use veripb_formula::prelude::*;
+// use veripb_parser::{
+//     error::ParserError,
+//     io::MaybeCompressed,
+//     opb_parser::{parse_opb_from_file, parse_single_constraint},
+//     opb_token::OPBToken,
+//     pbp_parser::parser::{ParserArgs, parse_proof_with_labels},
+// };
 
 /// A synthesized v3 proof file has this preamble, occupying exactly two
 /// physical lines, before any buffer/candidate lines follow.
