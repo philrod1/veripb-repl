@@ -1,0 +1,20 @@
+[package]
+name = "veripb-repl"
+version = "0.1.0"
+edition = "2026"
+license = "MIT OR Apache-2.0"
+rust-version = "1.92.0"
+repository = ""
+description = "An interactive REPL/TUI for exploring and building VeriPB proofs."
+
+[dependencies]
+ahash = "0.8.12"
+anyhow = "1.0.104"
+crossterm = "0.29"
+libc = "0.2"
+logos = "0.16.1"
+tempfile = "3"
+
+[[bin]]
+name = "veripb-repl"
+path = "src/main.rs"

@@ -1,0 +1,7 @@
+pseudo-Boolean proof version 3.0
+f 3;
+a 1 x2 >= 1 ;
+rup >= 1 ;
+output NONE;
+conclusion UNSAT;
+end pseudo-Boolean proof;
