@@ -16,6 +16,7 @@
 //!   final shape.
 
 pub mod invoke;
+pub mod parse;
 pub mod types;
 
 pub use types::{CheckOutcome, RupHint};
