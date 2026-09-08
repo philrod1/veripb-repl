@@ -1,6 +1,5 @@
-//! The actual subprocess plumbing: write a candidate proof to a temp
-//! file, spawn `veripb` against it and the (already on-disk) formula,
-//! and hand back whatever it produced.
+//! Subprocess plumbing: writes a candidate proof to a temp file, spawns
+//! `veripb`, and returns its raw output.
 
 use std::ffi::OsStr;
 use std::io::Write;
@@ -8,15 +7,13 @@ use std::path::Path;
 
 use anyhow::Context;
 
-/// The name (or path) of the `veripb` binary to invoke — an environment
-/// variable so a specific build can be pointed at during development or
-/// testing without touching `$PATH`; falls back to bare `"veripb"`,
-/// resolved via `$PATH` the normal way, when unset.
+/// Returns the `veripb` binary to invoke: `$VERIPB_REPL_VERIPB_BIN` if
+/// set, otherwise `"veripb"` resolved via `$PATH`.
 fn veripb_binary() -> std::ffi::OsString {
     std::env::var_os("VERIPB_REPL_VERIPB_BIN").unwrap_or_else(|| "veripb".into())
 }
 
-/// Everything one `veripb` invocation produced, as-is.
+/// The raw output of one `veripb` invocation.
 pub struct RawInvocation {
     pub stdout: String,
     pub stderr: String,
@@ -24,15 +21,13 @@ pub struct RawInvocation {
     pub code: Option<i32>,
 }
 
-/// Run `veripb <formula_path> <temp file containing proof_text> ...
-/// extra_args`, and capture everything it produced. The `proof_text` is
-/// written to a fresh temp file with a `.pbp` suffix.
+/// Runs `veripb <formula_path> <proof_text> ...extra_args` and returns
+/// its output. `proof_text` is written to a temp `.pbp` file first.
 ///
-/// Fails (via the outer `Result`) only for a genuine invocation problem
-/// — the binary couldn't be spawned at all, or the temp file couldn't be
-/// written — never because the proof itself was rejected; that's a
-/// normal, expected shape of `RawInvocation`'s own contents for
-/// `checker::parse` to recognise, not a REPL error as such.
+/// Returns `Err` only for an invocation failure — the binary couldn't be
+/// spawned, or the temp file couldn't be written — never because the
+/// proof was rejected; that's a normal outcome captured in
+/// `RawInvocation` for `checker::parse` to interpret.
 pub fn run<I, S>(formula_path: &Path, proof_text: &str, extra_args: I) -> anyhow::Result<RawInvocation>
 where
     I: IntoIterator<Item = S>,
@@ -67,12 +62,14 @@ where
     })
 }
 
-/// [`run`], plus reading back a `--elaborate` scratch file afterward.
+/// The result of [`run_with_elaboration`].
 pub struct ElaboratedInvocation {
     pub raw: RawInvocation,
     pub elaborated_proof: String,
 }
 
+/// Runs [`run`] with `--elaborate`, and returns the elaborated proof
+/// text it wrote.
 pub fn run_with_elaboration(formula_path: &Path, proof_text: &str) -> anyhow::Result<ElaboratedInvocation> {
     let scratch = tempfile::NamedTempFile::new()
         .context("failed to create a scratch file for elaboration output")?;
@@ -86,4 +83,24 @@ pub fn run_with_elaboration(formula_path: &Path, proof_text: &str) -> anyhow::Re
         raw,
         elaborated_proof,
     })
+}
+
+/// The result of [`run_with_database_dump`].
+pub struct DatabaseDumpInvocation {
+    pub raw: RawInvocation,
+    pub database_dump: String,
+}
+
+/// Runs [`run`] with `--dump-database`, and returns the database dump it
+/// wrote.
+pub fn run_with_database_dump(formula_path: &Path, proof_text: &str) -> anyhow::Result<DatabaseDumpInvocation> {
+    let scratch = tempfile::NamedTempFile::new()
+        .context("failed to create a scratch file for the database dump")?;
+    let args: Vec<std::ffi::OsString> = vec!["--dump-database".into(), scratch.path().into()];
+
+    let raw = run(formula_path, proof_text, args)?;
+    let database_dump = std::fs::read_to_string(scratch.path())
+        .context("failed to read back the database dump scratch file")?;
+
+    Ok(DatabaseDumpInvocation { raw, database_dump })
 }
