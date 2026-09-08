@@ -1,5 +1,7 @@
 # Compiled files
 /target
+veribp
+veripb-amd64
 
 # Profiling data
 *.data

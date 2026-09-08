@@ -61,8 +61,6 @@
 //! currently queued (or, once the queue's empty, a new line inserted
 //! after it).
 
-use veripb_formula::prelude::*;
-
 use crate::commands::{check, explain, list, objective, resolve_command, show, why};
 use crate::output::{Output, outln};
 use crate::session::Session;
@@ -788,4 +786,3 @@ pub fn handle(
         _ => submit(session, state, line, out),
     }
 }
-

@@ -39,8 +39,6 @@
 
 use std::collections::VecDeque;
 
-use veripb_formula::prelude::*;
-
 use crate::commands::edit;
 use crate::commands::help::Topic;
 use crate::output::{self, Output, outln};

@@ -1,5 +1,7 @@
 //! Parses `invoke`'s raw output into `types`'s shapes.
 
+use std::path::Path;
+
 use anyhow::Context;
 
 use super::invoke::RawInvocation;
@@ -42,13 +44,22 @@ fn is_rup_line(line: &str) -> bool {
     }
 }
 
+/// A proof ending before its closing `output`/`conclusion`/`end` lines
+/// fails with a parse error containing this phrase — every line actually
+/// supplied still checked out fine, so this means "wants more input,"
+/// not a real rejection. Confirmed against real `veripb` output.
+const RAN_OUT_OF_INPUT_MARKER: &str = "found end of file (EOF)";
+
 /// Returns whether checking succeeded, and if not, which line it
 /// stopped at.
 ///
-/// This heuristic — scanning combined stdout/stderr for a `line N`
-/// substring — has not been verified against a real `veripb` run. Fails
-/// loudly, with the full raw output, rather than guessing when no line
-/// number can be found.
+/// Reaching the end of the supplied proof text with nothing rejected is
+/// treated as success (see [`RAN_OUT_OF_INPUT_MARKER`]). Otherwise, the
+/// line number is read from a `Checking error at <path>:<line>` or
+/// `Verification error at <path>:<line>`-style message, falling back to
+/// a bare `at line <N>` for a syntax error that names a line without the
+/// path. Fails loudly, with the full raw output, if neither shape is
+/// found.
 pub fn check_outcome(raw: &RawInvocation) -> anyhow::Result<CheckOutcome> {
     let combined = format!("{}{}", raw.stdout, raw.stderr);
 
@@ -56,18 +67,22 @@ pub fn check_outcome(raw: &RawInvocation) -> anyhow::Result<CheckOutcome> {
         return Ok(CheckOutcome::Accepted { trace: combined });
     }
 
-    match find_line_number(&combined) {
+    if combined.contains(RAN_OUT_OF_INPUT_MARKER) {
+        return Ok(CheckOutcome::Accepted { trace: combined });
+    }
+
+    let line = find_path_anchored_line(&combined, &raw.proof_file_path).or_else(|| find_line_number(&combined));
+
+    match line {
         Some(line) => Ok(CheckOutcome::Rejected {
             line,
             message: combined.clone(),
             trace: combined,
         }),
         None => anyhow::bail!(
-            "veripb exited with a failure (code {:?}) but this parser couldn't find a `line \
-             N` it could point to — this is exactly the unverified case this module's own \
-             docs warn about (possibly \"ran out of input\", not a real rejection, or possibly \
-             a real error in a format this parser doesn't recognize yet). Raw output:\n\
-             --- stdout ---\n{}\n--- stderr ---\n{}",
+            "veripb exited with a failure (code {:?}) but no line number could be found in \
+             its output — the error format may not be recognized by this parser yet. Raw \
+             output:\n--- stdout ---\n{}\n--- stderr ---\n{}",
             raw.code,
             raw.stdout,
             raw.stderr,
@@ -75,8 +90,21 @@ pub fn check_outcome(raw: &RawInvocation) -> anyhow::Result<CheckOutcome> {
     }
 }
 
-/// Returns the first line number found in `text`, matched as `"line "`
-/// followed by digits.
+/// Returns the line number in a `"<proof_file_path>:<line>"` message —
+/// the shape a `Checking error at ...`/`Verification error at ...`
+/// carries. Anchored to the invocation's own proof file path so it can't
+/// false-match unrelated numeric content elsewhere in the message.
+fn find_path_anchored_line(text: &str, proof_file_path: &Path) -> Option<usize> {
+    let marker = format!("{}:", proof_file_path.display());
+    let after = text.find(marker.as_str()).map(|idx| &text[idx + marker.len()..])?;
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+/// Returns the line number in a message shaped like `"... at line N
+/// ..."` — the fallback for a syntax error that names a line without
+/// the file's own path (unlike [`find_path_anchored_line`]'s target
+/// messages).
 fn find_line_number(text: &str) -> Option<usize> {
     let after = text.find("line ").map(|idx| &text[idx + "line ".len()..])?;
     let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();

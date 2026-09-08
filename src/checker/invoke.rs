@@ -3,7 +3,7 @@
 
 use std::ffi::OsStr;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
@@ -19,6 +19,11 @@ pub struct RawInvocation {
     pub stderr: String,
     pub success: bool,
     pub code: Option<i32>,
+    /// The temp file `proof_text` was written to and passed to `veripb`
+    /// as its `<DERIVATION>` argument — a rejection's error text names
+    /// this path, so `checker::parse` anchors its line-number search to
+    /// it.
+    pub proof_file_path: PathBuf,
 }
 
 /// Runs `veripb <formula_path> <proof_text> ...extra_args` and returns
@@ -42,9 +47,11 @@ where
         .write_all(proof_text.as_bytes())
         .context("failed to write the candidate proof to a temp file")?;
 
+    let proof_file_path = proof_file.path().to_path_buf();
+
     let output = std::process::Command::new(veripb_binary())
         .arg(formula_path)
-        .arg(proof_file.path())
+        .arg(&proof_file_path)
         .args(extra_args)
         .output()
         .with_context(|| {
@@ -59,6 +66,7 @@ where
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         success: output.status.success(),
         code: output.status.code(),
+        proof_file_path,
     })
 }
 
