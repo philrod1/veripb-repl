@@ -46,7 +46,7 @@
 //! since its `:deassert`/`:edit` entry points need the identical line-
 //! finding/validation/hint logic: [`find_first_assertion`],
 //! [`is_assertion_line`], [`assertion_constraint_text`],
-//! [`suggest_related_constraints`], [`mentioned_vars`], [`parse_start_line`].
+//! [`suggest_related_constraints`], [`parse_start_line`].
 //!
 //! While a queue-based edit is active, `commands::dispatch` is bypassed
 //! entirely: [`handle`] is the sole entry point, recognizing `:skip`,
@@ -338,29 +338,6 @@ pub(crate) fn assertion_constraint_text(line: &str) -> String {
     rest.strip_suffix(';').unwrap_or(rest).trim().to_string()
 }
 
-/// Every variable `text` mentions, in first-seen order — picked out the
-/// same lookup-based way the TUI's syntax highlighter finds variable
-/// references in raw rule text: no fixed grammar to lean on, since a
-/// proof line's constraint syntax is free-form, so this can under-detect a
-/// variable glued directly to punctuation with no separating space, but
-/// never mislabel something else as one. Shared by
-/// `suggest_related_constraints` (the one-time hint list `:deassert`
-/// prints at the start) and the TUI's Database-pane highlighting (the
-/// same relevance signal, kept current for the whole edit instead of
-/// frozen at the start — see `tui::draw::database_lines`).
-pub(crate) fn mentioned_vars(text: &str, var_names: &VarNameManager) -> Vec<VarIdx> {
-    let mut vars = Vec::new();
-    for token in text.split_whitespace() {
-        let name = token.strip_prefix('~').unwrap_or(token);
-        if let Some(var) = var_names.get_idx(name)
-            && !vars.contains(&var)
-        {
-            vars.push(var);
-        }
-    }
-    vars
-}
-
 /// The display line number of the first `a`-rule in the buffer, if any —
 /// what bare `:deassert` (no line number) targets. Always the *earliest*
 /// one: assertions are meant to be temporary scaffolding (see
@@ -455,34 +432,30 @@ pub fn start_deassert(
 /// Purely a courtesy listing either way: nothing here is verified or
 /// required. `pub(crate)` so the TUI's own Vim-mode `:deassert` entry
 /// point can print the identical hint list.
-pub(crate) fn suggest_related_constraints(
-    session: &Session,
-    assertion_text: &str,
-    out: &mut dyn Output,
-) {
-    let checker = &session.current_checker;
-    let var_names = &checker.context.var_names;
-
-    let vars = mentioned_vars(assertion_text, var_names);
+pub(crate) fn suggest_related_constraints(session: &Session, assertion_text: &str, out: &mut dyn Output) {
+    let vars = session.variables.mentioned(assertion_text);
     if vars.is_empty() {
         return;
     }
 
+    let database = match session.database() {
+        Ok(database) => database,
+        Err(err) => {
+            outln!(out, "Error: {err:#}");
+            return;
+        }
+    };
+
     // (constraint ID, how many of `vars` it mentions) — most-relevant
     // first (most variables in common), then most-recent, since that's
     // usually what you were just working on and so most likely relevant.
-    let mut matches: Vec<(usize, usize)> = checker
-        .database
+    let mut matches: Vec<(usize, usize)> = database
         .entries
         .iter()
-        .enumerate()
-        .filter_map(|(id, entry)| {
-            let entry = entry.as_ref()?;
-            let shared = (0..entry.constraint.len())
-                .filter_map(|i| entry.constraint.get_lit(i))
-                .filter(|lit| vars.contains(&lit.get_var()))
-                .count();
-            (shared > 0).then_some((id, shared))
+        .filter_map(|entry| {
+            let mentioned = session.variables.mentioned(&entry.text);
+            let shared = mentioned.iter().filter(|v| vars.contains(v)).count();
+            (shared > 0).then_some((entry.id, shared))
         })
         .collect();
     if matches.is_empty() {
@@ -490,36 +463,25 @@ pub(crate) fn suggest_related_constraints(
     }
     matches.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
 
-    let var_list: Vec<&str> = vars.iter().map(|&v| var_names.get_name(v)).collect();
-    outln!(out, "Constraints mentioning {}:", var_list.join(", "));
+    outln!(out, "Constraints mentioning {}:", vars.join(", "));
 
     const SHOWN: usize = 8;
     let labels_by_id = session.labels_by_id();
     for &(id, _) in matches.iter().take(SHOWN) {
-        let entry = checker.database.entries[id]
-            .as_ref()
-            .expect("just matched above — still present");
-        let tag = if entry.is_core_constraint() {
-            "core"
-        } else {
-            "derived"
-        };
+        let entry = database.get(id).expect("just matched above — still present");
+        let tag = if entry.is_core { "core" } else { "derived" };
         let labels = labels_by_id
             .get(&(id as isize))
             .map(|names| format!("{} ", names.join(" ")))
             .unwrap_or_default();
-        outln!(
-            out,
-            "  ConstraintId {id}: {labels}{} [{tag}]",
-            entry.constraint.to_pretty_string(var_names)
-        );
+        outln!(out, "  ConstraintId {id}: {labels}{} [{tag}]", entry.text);
     }
     if matches.len() > SHOWN {
         outln!(
             out,
             "  ... (+{} more — :show {} for everything mentioning just that one)",
             matches.len() - SHOWN,
-            var_list[0]
+            vars[0]
         );
     }
 }

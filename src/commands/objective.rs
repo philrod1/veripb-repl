@@ -1,25 +1,20 @@
-//! `:objective` — show the current objective function and the best bounds
-//! proven/logged for it so far, if any.
+//! `:objective` — show the current objective function.
 
 use crate::output::{Output, outln};
 use crate::session::Session;
 
 pub fn run(session: &Session, out: &mut dyn Output) {
-    let context = &session.current_checker.context;
-    let var_names = &context.var_names;
-
-    let Some(objective) = &context.objective else {
+    let Some(objective) = &session.objective else {
         outln!(out, "No objective — this is a satisfaction problem.");
         return;
     };
-    outln!(out, "Objective: {}", objective.to_pretty_string(var_names));
-
-    match &context.best_objective_value {
-        Some(value) => outln!(out, "Best value found so far: {value}"),
-        None => outln!(out, "Best value found so far: none logged yet"),
-    }
-    match &context.best_valid_objective_value {
-        Some(value) => outln!(out, "Best value with checked-deletion guarantees: {value}"),
-        None => outln!(out, "Best value with checked-deletion guarantees: none yet"),
-    }
+    outln!(out, "Objective: {objective}");
+    // Best-value tracking needs live checker state (Context::
+    // best_objective_value/best_valid_objective_value) that
+    // --dump-database doesn't report. Not implemented.
+    outln!(
+        out,
+        "Best-value tracking isn't available yet — querying it needs a core-binary change \
+         this REPL doesn't have yet."
+    );
 }

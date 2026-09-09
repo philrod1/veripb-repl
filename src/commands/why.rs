@@ -15,10 +15,9 @@
 //! that failed, only the reason it failed, so any argument gets the same
 //! rejection explanation.
 
-// use veripb_formula::prelude::*;
-
+use crate::checker::RupHint;
 use crate::output::{Output, outln};
-use crate::session::{RupHint, Session};
+use crate::session::Session;
 
 /// Whether `line` is a `rup` rule — `rup <constraint> ...;`, optionally
 /// preceded by a `@label` (labels sit ahead of the rule keyword, not
@@ -118,7 +117,13 @@ pub(crate) fn print_needed(
 ) {
     outln!(out, "Line {display_line} needed:");
     let labels_by_id = session.labels_by_id();
-    let var_names = &session.current_checker.context.var_names;
+    let database = match session.database() {
+        Ok(database) => database,
+        Err(err) => {
+            outln!(out, "Error: {err:#}");
+            return;
+        }
+    };
     for hint in hints {
         match hint {
             RupHint::NegatedPremise => {
@@ -132,18 +137,8 @@ pub(crate) fn print_needed(
                     .get(&(*id as isize))
                     .map(|names| format!("{} ", names.join(" ")))
                     .unwrap_or_default();
-                match session
-                    .current_checker
-                    .database
-                    .entries
-                    .get(*id)
-                    .and_then(Option::as_ref)
-                {
-                    Some(entry) => outln!(
-                        out,
-                        "  ConstraintId {id}: {labels}{}",
-                        entry.constraint.to_pretty_string(var_names)
-                    ),
+                match database.get(*id) {
+                    Some(entry) => outln!(out, "  ConstraintId {id}: {labels}{}", entry.text),
                     None => outln!(out, "  ConstraintId {id} — no longer in the database"),
                 }
             }

@@ -2,36 +2,27 @@
 //! variable name (or glob, e.g. `i[vertex0]*`), ID/ID-range, label (`@name`,
 //! or an `@`-prefixed glob), and/or `core`/`derived` status (combinable).
 
-// use veripb_formula::prelude::*;
-
 use crate::output::{Output, outln};
 use crate::session::Session;
-use crate::var_types::*;
 
 /// A parsed `:show` filter. Filters combine with AND: a constraint must
 /// match every filter given on the line to be printed.
 enum ShowFilter {
-    Variable(VarIdx),
-    /// A bare token containing `*` (see [`glob_match`]) — matches if the
-    /// constraint mentions *any* variable whose name fits the pattern.
-    /// An exact name resolves to a single [`Variable`](ShowFilter::Variable)
-    /// instead, since it's cheaper and gives a clean "no such variable"
-    /// error a glob can't (no matches just means an empty result).
+    Variable(String),
+    /// A bare token containing `*` (see [`glob_match`]): matches a
+    /// constraint mentioning any variable whose name fits the pattern.
     VariableGlob(String),
     IdRange(usize, usize),
     Core(bool),
-    /// `@`-prefixed with at least one `*` in it — the label equivalent of
-    /// `VariableGlob`, and for the same reason an exact `@name` resolves
-    /// to an [`IdRange`](ShowFilter::IdRange) instead: labels are unique,
-    /// so there's nothing left to match once one's found by name.
+    /// An `@`-prefixed token containing `*`: matches a constraint carrying
+    /// any label fitting the pattern.
     LabelGlob(String),
 }
 
-/// Whether `text` matches `pattern`, where `*` matches any run of
-/// characters (including none) and everything else must match literally —
-/// the standard greedy `*`-only wildcard algorithm (no `?`, no character
-/// classes: `:show`'s labels don't need more than "loosen an exact name
-/// into a prefix/suffix/contains match").
+/// Returns whether `text` matches `pattern`, where `*` matches any run of
+/// characters (including none) and everything else matches literally — the
+/// standard greedy `*`-only wildcard algorithm (no `?`, no character
+/// classes).
 fn glob_match(pattern: &str, text: &str) -> bool {
     let pat: Vec<char> = pattern.chars().collect();
     let txt: Vec<char> = text.chars().collect();
@@ -56,20 +47,15 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 }
 
 fn parse_show_filters(args: &str, session: &Session) -> Result<Vec<ShowFilter>, String> {
-    let var_names = &session.current_checker.context.var_names;
     args.split_whitespace()
         .map(|tok| match tok {
             "core" => Ok(ShowFilter::Core(true)),
             "derived" => Ok(ShowFilter::Core(false)),
-            // A `*`-glob can match any number of labels, so unlike an
-            // exact one it can't resolve to a single ID up front — stays
-            // a pattern, matched per-entry once labels are known below.
             tok if tok.starts_with('@') && tok.contains('*') => {
                 Ok(ShowFilter::LabelGlob(tok.to_string()))
             }
-            // An exact label filters down to the one constraint it
-            // currently names — resolved here against the live label
-            // map, so it reuses the plain ID filter underneath.
+            // An exact label resolves to the one constraint ID it names,
+            // via the plain ID filter.
             tok if tok.starts_with('@') => {
                 let id = session
                     .label_map
@@ -93,47 +79,30 @@ fn parse_show_filters(args: &str, session: &Session) -> Result<Vec<ShowFilter>, 
                     Ok(ShowFilter::IdRange(id, id))
                 } else if tok.contains('*') {
                     Ok(ShowFilter::VariableGlob(tok.to_string()))
+                } else if session.variables.contains(tok) {
+                    Ok(ShowFilter::Variable(tok.to_string()))
                 } else {
-                    var_names
-                        .get_idx(tok)
-                        .map(ShowFilter::Variable)
-                        .ok_or_else(|| format!("no variable named '{tok}'"))
+                    Err(format!("no variable named '{tok}'"))
                 }
             }
         })
         .collect()
 }
 
-fn constraint_mentions_var(constraint: &PBConstraintEnum, var: VarIdx) -> bool {
-    (0..constraint.len())
-        .filter_map(|i| constraint.get_lit(i))
-        .any(|lit| lit.get_var() == var)
-}
-
-fn constraint_mentions_var_glob(
-    constraint: &PBConstraintEnum,
-    pattern: &str,
-    var_names: &VarNameManager,
-) -> bool {
-    (0..constraint.len())
-        .filter_map(|i| constraint.get_lit(i))
-        .any(|lit| glob_match(pattern, var_names.get_name(lit.get_var())))
-}
-
+/// Whether entry `id` (mentioning variables `mentioned`, core status
+/// `is_core`) matches every filter in `filters`.
 fn matches_filters(
     id: usize,
-    entry: &DBConstraint,
+    mentioned: &[String],
+    is_core: bool,
     filters: &[ShowFilter],
     labels_by_id: &ahash::AHashMap<isize, Vec<String>>,
-    var_names: &VarNameManager,
 ) -> bool {
     filters.iter().all(|filter| match filter {
-        ShowFilter::Variable(var) => constraint_mentions_var(&entry.constraint, *var),
-        ShowFilter::VariableGlob(pattern) => {
-            constraint_mentions_var_glob(&entry.constraint, pattern, var_names)
-        }
+        ShowFilter::Variable(name) => mentioned.iter().any(|v| v == name),
+        ShowFilter::VariableGlob(pattern) => mentioned.iter().any(|v| glob_match(pattern, v)),
         ShowFilter::IdRange(lo, hi) => id >= *lo && id <= *hi,
-        ShowFilter::Core(want_core) => entry.is_core_constraint() == *want_core,
+        ShowFilter::Core(want_core) => is_core == *want_core,
         ShowFilter::LabelGlob(pattern) => labels_by_id
             .get(&(id as isize))
             .is_some_and(|names| names.iter().any(|name| glob_match(pattern, name))),
@@ -141,8 +110,6 @@ fn matches_filters(
 }
 
 pub fn run(session: &Session, args: &str, out: &mut dyn Output) {
-    let checker = &session.current_checker;
-    let var_names = &checker.context.var_names;
     let filters = match parse_show_filters(args, session) {
         Ok(filters) => filters,
         Err(msg) => {
@@ -151,26 +118,31 @@ pub fn run(session: &Session, args: &str, out: &mut dyn Output) {
         }
     };
 
+    let database = match session.database() {
+        Ok(database) => database,
+        Err(err) => {
+            outln!(out, "Error: {err:#}");
+            return;
+        }
+    };
+
     let labels_by_id = session.labels_by_id();
     let mut shown = 0;
-    for (id, entry) in checker.database.entries.iter().enumerate() {
-        let Some(entry) = entry else { continue };
-        if !matches_filters(id, entry, &filters, &labels_by_id, var_names) {
+    for entry in &database.entries {
+        let mentioned = session.variables.mentioned(&entry.text);
+        if !matches_filters(entry.id, &mentioned, entry.is_core, &filters, &labels_by_id) {
             continue;
         }
-        let tag = if entry.is_core_constraint() {
-            "core"
-        } else {
-            "derived"
-        };
+        let tag = if entry.is_core { "core" } else { "derived" };
         let labels = labels_by_id
-            .get(&(id as isize))
+            .get(&(entry.id as isize))
             .map(|names| format!("{} ", names.join(" ")))
             .unwrap_or_default();
         outln!(
             out,
-            "  ConstraintId {id}: {labels}{} [{tag}]",
-            entry.constraint.to_pretty_string(var_names)
+            "  ConstraintId {}: {labels}{} [{tag}]",
+            entry.id,
+            entry.text
         );
         shown += 1;
     }

@@ -99,16 +99,44 @@ pub struct DatabaseDumpInvocation {
     pub database_dump: String,
 }
 
-/// Runs [`run`] with `--dump-database`, and returns the database dump it
-/// wrote.
-pub fn run_with_database_dump(formula_path: &Path, proof_text: &str) -> anyhow::Result<DatabaseDumpInvocation> {
+/// Runs [`run`] with `--dump-database` plus any `extra_args`, and returns
+/// the database dump it wrote.
+pub fn run_with_database_dump<I, S>(
+    formula_path: &Path,
+    proof_text: &str,
+    extra_args: I,
+) -> anyhow::Result<DatabaseDumpInvocation>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let scratch = tempfile::NamedTempFile::new()
         .context("failed to create a scratch file for the database dump")?;
-    let args: Vec<std::ffi::OsString> = vec!["--dump-database".into(), scratch.path().into()];
+    let mut args: Vec<std::ffi::OsString> = vec!["--dump-database".into(), scratch.path().into()];
+    args.extend(extra_args.into_iter().map(|s| s.as_ref().to_os_string()));
 
     let raw = run(formula_path, proof_text, args)?;
     let database_dump = std::fs::read_to_string(scratch.path())
         .context("failed to read back the database dump scratch file")?;
+
+    // A genuine `--dump-database` run always writes at least the version
+    // header, whether it accepted the proof, hit a rejection, or ran out
+    // of input — see `checker::parse`'s own docs. An empty dump here means
+    // the invocation itself didn't behave like that: most likely the
+    // resolved `veripb` binary doesn't support `--dump-database` at all
+    // (an old build, or the wrong one on $PATH/$VERIPB_REPL_VERIPB_BIN).
+    // Surface the raw invocation so that's diagnosable, instead of
+    // `checker::parse::parse_database_dump`'s much later, context-free
+    // "missing its version header line".
+    anyhow::ensure!(
+        !database_dump.is_empty(),
+        "veripb wrote no `--dump-database` output (exit code {:?}) — the resolved `veripb` \
+         binary may not support `--dump-database`, or may be an older build than this REPL \
+         expects. Raw output:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        raw.code,
+        raw.stdout,
+        raw.stderr,
+    );
 
     Ok(DatabaseDumpInvocation { raw, database_dump })
 }

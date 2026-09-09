@@ -19,17 +19,37 @@ use std::path::Path;
 
 pub use types::{CheckOutcome, Database, DatabaseEntry, RupHint};
 
-/// Checks `proof_text` against `formula_path`.
-pub fn check(formula_path: &Path, proof_text: &str) -> anyhow::Result<CheckOutcome> {
-    let raw = invoke::run(formula_path, proof_text, std::iter::empty::<&str>())?;
+/// Returns the `--trace-lines <lo>..=<hi>` argument for `trace_range`, or
+/// no arguments at all for a silent check.
+fn trace_args(trace_range: Option<(usize, usize)>) -> Vec<String> {
+    match trace_range {
+        Some((lo, hi)) => vec!["--trace-lines".to_string(), format!("{lo}..={hi}")],
+        None => Vec::new(),
+    }
+}
+
+/// Checks `proof_text` against `formula_path`. `trace_range`, if given,
+/// is a 1-based, inclusive line range to trace (the checker's own
+/// `ConstraintId N: ...` confirmations); `None` checks silently.
+pub fn check(
+    formula_path: &Path,
+    proof_text: &str,
+    trace_range: Option<(usize, usize)>,
+) -> anyhow::Result<CheckOutcome> {
+    let raw = invoke::run(formula_path, proof_text, trace_args(trace_range))?;
     parse::check_outcome(&raw)
 }
 
 /// Checks `proof_text` against `formula_path` and returns the resulting
 /// database state from the same subprocess call. The database reflects
 /// its final state whether or not the proof was fully accepted.
-pub fn check_with_database(formula_path: &Path, proof_text: &str) -> anyhow::Result<(CheckOutcome, Database)> {
-    let dump = invoke::run_with_database_dump(formula_path, proof_text)?;
+/// `trace_range` is as in [`check`].
+pub fn check_with_database(
+    formula_path: &Path,
+    proof_text: &str,
+    trace_range: Option<(usize, usize)>,
+) -> anyhow::Result<(CheckOutcome, Database)> {
+    let dump = invoke::run_with_database_dump(formula_path, proof_text, trace_args(trace_range))?;
     let outcome = parse::check_outcome(&dump.raw)?;
     let database = parse::parse_database_dump(&dump.database_dump)?;
     Ok((outcome, database))
@@ -66,6 +86,6 @@ pub fn why_rup(formula_path: &Path, proof_text: &str) -> anyhow::Result<Option<V
 
 /// Returns the live database after replaying `proof_text`.
 pub fn show_database(formula_path: &Path, proof_text: &str) -> anyhow::Result<Database> {
-    let dump = invoke::run_with_database_dump(formula_path, proof_text)?;
+    let dump = invoke::run_with_database_dump(formula_path, proof_text, std::iter::empty::<&str>())?;
     parse::parse_database_dump(&dump.database_dump)
 }

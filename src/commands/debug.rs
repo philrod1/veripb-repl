@@ -43,8 +43,6 @@
 //! time; the plain frontend has no equivalent single-keypress shortcut,
 //! only the typed `:step`/`:back` commands themselves.
 
-// use veripb_checker::error::ForwardsCheckerError;
-
 use crate::commands::edit::{self, READONLY_DURING_EDIT};
 use crate::commands::help::Topic;
 use crate::output::{self, Output, outln};
@@ -161,15 +159,10 @@ fn with_undo<T>(
 /// plain "now at line N" position report, or "fully checked" once
 /// nothing is left. Shared by every forward-moving command below so they
 /// all describe their outcome the same way.
-fn report_position(
-    session: &Session,
-    captured: &str,
-    rejection: Option<ForwardsCheckerError>,
-    out: &mut dyn Output,
-) {
+fn report_position(session: &Session, captured: &str, rejection: Option<String>, out: &mut dyn Output) {
     output::text(out, captured);
     if let Some(err) = rejection {
-        output::error_chain(out, &err);
+        output::error(out, &err);
         let display_line = session.display_line(session.checked_len);
         outln!(out, "Stopped at line {display_line} — it fails.");
         return;

@@ -19,30 +19,17 @@
 use crate::output::{self, Output, outln};
 use crate::session::Session;
 
-/// Conclusions safe to try without any extra input from the user: `UNSAT`
-/// and `SAT` always (no witness or bound numbers needed), plus, once the
-/// session has an objective and a best value with checked-deletion
-/// guarantees is already known (`Context::best_valid_objective_value` —
-/// the same field `:objective` reports as "checked-deletion guarantees",
-/// and the exact one `conclusion BOUNDS`'s upper-bound check compares
-/// against), `BOUNDS v v` for that value. The value is never guessed —
-/// it's read straight out of `Context` — and the *lower*-bound half of
-/// that conclusion still requires a genuinely derivable proof that the
-/// objective can't do better, which `dry_run_conclusion` checks for real,
-/// exactly like the other two candidates: this only ever adds a
-/// candidate worth trying, never assumes success.
+/// Returns the conclusions safe to try without extra input from the user:
+/// `UNSAT` and `SAT`. Doesn't include `BOUNDS v v`: the checked-deletion-safe
+/// best value it needs (`Context::best_valid_objective_value`) is live
+/// checker state with no current query mechanism — the same gap
+/// `:objective` reports. `BOUNDS lo hi` is still reachable by typing it
+/// explicitly to `:check`.
 ///
 /// Shared with `:save`'s own auto-detection when no explicit conclusion
 /// is given to save with.
-pub(crate) fn auto_detect_candidates(session: &Session) -> Vec<String> {
-    let mut candidates = vec!["UNSAT".to_string(), "SAT".to_string()];
-    let context = &session.current_checker.context;
-    if context.objective.is_some()
-        && let Some(value) = &context.best_valid_objective_value
-    {
-        candidates.push(format!("BOUNDS {value} {value}"));
-    }
-    candidates
+pub(crate) fn auto_detect_candidates(_session: &Session) -> Vec<String> {
+    vec!["UNSAT".to_string(), "SAT".to_string()]
 }
 
 pub fn run(session: &Session, args: &str, out: &mut dyn Output) -> anyhow::Result<()> {
@@ -55,7 +42,7 @@ pub fn run(session: &Session, args: &str, out: &mut dyn Output) -> anyhow::Resul
         // anything the checker did print belongs with the error.
         output::text(out, &captured);
         if let Err(err) = result {
-            output::error_chain(out, &err);
+            output::error(out, &err);
         }
         return Ok(());
     }

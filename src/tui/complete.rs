@@ -420,13 +420,12 @@ fn reference_candidates(
     let mut out = Vec::new();
     let kind = rule_ref_kind(rule);
 
-    if matches!(kind, RefKind::Constraint | RefKind::Both) {
+    if matches!(kind, RefKind::Constraint | RefKind::Both)
+        && let Ok(database) = session.database()
+    {
         let labels_by_id = session.labels_by_id();
-        for (id, entry) in session.current_checker.database.entries.iter().enumerate() {
-            if entry.is_none() {
-                continue;
-            }
-            let id_str = id.to_string();
+        for entry in &database.entries {
+            let id_str = entry.id.to_string();
             if id_str.starts_with(partial) {
                 out.push(Candidate {
                     line: format!("{kept}{id_str}"),
@@ -434,7 +433,7 @@ fn reference_candidates(
                     right: String::new(),
                 });
             }
-            for name in labels_by_id.get(&(id as isize)).into_iter().flatten() {
+            for name in labels_by_id.get(&(entry.id as isize)).into_iter().flatten() {
                 if name.starts_with(partial) {
                     out.push(Candidate {
                         line: format!("{kept}{name}"),
@@ -447,9 +446,7 @@ fn reference_candidates(
     }
 
     if matches!(kind, RefKind::Variable | RefKind::Both) {
-        let var_names = &session.current_checker.context.var_names;
-        for idx in 0..var_names.len() {
-            let name = var_names.get_name(idx);
+        for name in session.variables.names() {
             for candidate in [name.to_string(), format!("~{name}")] {
                 if candidate.starts_with(partial) {
                     out.push(Candidate {

@@ -335,7 +335,7 @@ fn dispatch_inner(
         AppendOutcome::Verified { captured } => output::text(out, &captured),
         AppendOutcome::Rejected { captured, error } => {
             output::text(out, &captured);
-            output::error_chain(out, &error);
+            output::error(out, &error);
             outln!(out, "(line rejected, state unchanged)");
         }
         AppendOutcome::Deferred => {

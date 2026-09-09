@@ -32,8 +32,6 @@ use crossterm::{
     execute, terminal,
 };
 
-// use veripb_formula::prelude::*;
-
 use crate::commands::{self, Flow, debug, edit, formula, help};
 use crate::output::Output;
 use crate::session::Session;
@@ -131,8 +129,8 @@ impl Scrollback {
         // lands at the wrong columns, most visible as leftover characters
         // that never get cleared when scrolling back to a tab-indented
         // line's start. Same class of bug as an embedded newline (see
-        // `output::error_chain`'s own docs) — sidestepped the same way,
-        // by never letting the raw control character reach the terminal.
+        // `output::error`'s own docs) — sidestepped the same way, by
+        // never letting the raw control character reach the terminal.
         // A fixed run of spaces reads as "indented" without the hazard.
         self.lines.push(text.replace('\t', "    "));
     }
@@ -1687,11 +1685,12 @@ impl App {
         let (Some(browse), Some(session)) = (&self.formula_browse, &self.session) else {
             return String::new();
         };
-        let var_names = &session.current_checker.context.var_names;
+        // `session.formula` entries carry a trailing `;`; stripped here —
+        // `replace_formula_constraint` re-adds one on commit regardless.
         session
             .formula_index(browse.cursor)
-            .and_then(|idx| session.formula.constraints.get(idx))
-            .map(|c| c.to_pretty_string(var_names))
+            .and_then(|idx| session.formula.get(idx))
+            .map(|c| c.trim_end().strip_suffix(';').unwrap_or(c).trim_end().to_string())
             .unwrap_or_default()
     }
 

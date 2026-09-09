@@ -63,12 +63,12 @@ use std::io::Write;
 use std::ops::Range;
 
 use crossterm::{cursor, queue, style::Color, style::Print, style::Stylize, terminal};
-// use veripb_formula::prelude::*;
 
 use crate::commands::edit;
 use crate::session::Session;
 use crate::tui::layout::{self, Layout};
 use crate::tui::{App, Pane, Zoom, theme::Theme};
+use crate::varnames::VarNames;
 
 const NORMAL_PROMPT: &str = "pbp> ";
 const FORMULA_PROMPT: &str = "opb> ";
@@ -492,9 +492,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     // pane — kept current every frame, unlike the one-time hint list
     // `:deassert` also prints (see `PanelLine::hint`'s own docs).
     let hint_vars = match (&app.session, deassert_target) {
-        (Some(session), Some(source)) => {
-            edit::mentioned_vars(source, &session.current_checker.context.var_names)
-        }
+        (Some(session), Some(source)) => session.variables.mentioned(source),
         _ => Vec::new(),
     };
     let database = app
@@ -1363,7 +1361,7 @@ fn tokenize_literal(lit: &str) -> Vec<Span> {
 /// passed through verbatim: that keeps the width identical either way,
 /// while stopping a stray tab from jumping to the terminal's next tab
 /// stop and tearing the pane's own border off the right-hand side.
-fn tokenize_proof_line(line: &str, var_names: &VarNameManager) -> Vec<Span> {
+fn tokenize_proof_line(line: &str, var_names: &VarNames) -> Vec<Span> {
     let mut spans = Vec::new();
     let mut rest = line;
     while !rest.is_empty() {
@@ -1390,7 +1388,7 @@ fn tokenize_proof_line(line: &str, var_names: &VarNameManager) -> Vec<Span> {
             Some(stripped) => ("~", stripped),
             None => ("", token),
         };
-        if !name.is_empty() && var_names.get_idx(name).is_some() {
+        if !name.is_empty() && var_names.contains(name) {
             if !marker.is_empty() {
                 spans.push(plain(marker.to_string()));
             }
@@ -1408,17 +1406,18 @@ fn tokenize_proof_line(line: &str, var_names: &VarNameManager) -> Vec<Span> {
 /// constraint's row — the Formula-pane equivalent of `proof_lines`'s own
 /// `cursor` parameter, for `:formula`'s browse mode.
 fn formula_lines(session: &Session, cursor: Option<usize>) -> Vec<PanelLine> {
-    let var_names = &session.current_checker.context.var_names;
     let labels_by_id = session.labels_by_id();
     let num_w = number_width(session.formula.len());
     let mut lines: Vec<PanelLine> = session
         .formula
-        .constraints
         .iter()
         .enumerate()
         .map(|(i, c)| {
             let mut spans = label_spans(&labels_by_id, (i + 1) as isize);
-            spans.extend(tokenize_constraint(&c.to_pretty_string(var_names)));
+            // `c` carries its trailing `;` (required when re-serialized to
+            // a temp .opb file); `tokenize_constraint` expects none.
+            let text = c.trim_end().strip_suffix(';').unwrap_or(c).trim_end();
+            spans.extend(tokenize_constraint(text));
             content(format!("{:>num_w$}: ", i + 1), spans, false)
         })
         .collect();
@@ -1430,37 +1429,33 @@ fn formula_lines(session: &Session, cursor: Option<usize>) -> Vec<PanelLine> {
     lines
 }
 
-/// The live constraint database, same iteration as `:show` with no
-/// filters: deleted entries skipped, core/derived tagged, labels shown
-/// ahead of the constraint they name. `hint_vars` — non-empty only while
-/// `:deassert` is active, derived by `draw` from `App::vim_deassert_source`
-/// via `edit::mentioned_vars` — marks every
-/// row sharing any of those variables, kept current every frame rather
-/// than frozen at whatever the database looked like when the edit began
-/// (see `PanelLine::hint`'s own docs for why that matters).
-fn database_lines(session: &Session, hint_vars: &[VarIdx]) -> Vec<PanelLine> {
-    let checker = &session.current_checker;
-    let var_names = &checker.context.var_names;
+/// Returns the live constraint database, same iteration as `:show` with no
+/// filters: core/derived tagged, labels shown ahead of the constraint they
+/// name. `hint_vars` — non-empty only while `:deassert` is active, from
+/// `App::vim_deassert_source` via `Session::variables::mentioned` — marks
+/// every row sharing any of those variables. Recomputed every frame; see
+/// `PanelLine::hint`'s own docs.
+fn database_lines(session: &Session, hint_vars: &[String]) -> Vec<PanelLine> {
+    let database = match session.database() {
+        Ok(database) => database,
+        Err(err) => return vec![pinned(format!("Error: {err:#}"))],
+    };
     let labels_by_id = session.labels_by_id();
-    let num_w = number_width(checker.database.entries.len().saturating_sub(1));
-    checker
-        .database
+    let max_id = database.entries.iter().map(|e| e.id).max().unwrap_or(0);
+    let num_w = number_width(max_id);
+    database
         .entries
         .iter()
-        .enumerate()
-        .filter_map(|(id, entry)| {
-            let entry = entry.as_ref()?;
-            let mut spans = label_spans(&labels_by_id, id as isize);
-            spans.extend(tokenize_constraint(
-                &entry.constraint.to_pretty_string(var_names),
-            ));
-            let mut panel_line = content(format!("{id:>num_w$}: "), spans, false);
-            panel_line.core = Some(entry.is_core_constraint());
-            panel_line.hint = !hint_vars.is_empty()
-                && (0..entry.constraint.len())
-                    .filter_map(|i| entry.constraint.get_lit(i))
-                    .any(|lit| hint_vars.contains(&lit.get_var()));
-            Some(panel_line)
+        .map(|entry| {
+            let mut spans = label_spans(&labels_by_id, entry.id as isize);
+            spans.extend(tokenize_constraint(&entry.text));
+            let mut panel_line = content(format!("{:>num_w$}: ", entry.id), spans, false);
+            panel_line.core = Some(entry.is_core);
+            panel_line.hint = !hint_vars.is_empty() && {
+                let mentioned = session.variables.mentioned(&entry.text);
+                mentioned.iter().any(|v| hint_vars.contains(v))
+            };
+            panel_line
         })
         .collect()
 }
@@ -1512,7 +1507,7 @@ fn proof_lines(
     debug_current: Option<usize>,
     theme: Theme,
 ) -> Vec<PanelLine> {
-    let var_names = &session.current_checker.context.var_names;
+    let var_names = &session.variables;
     let preamble = session.preamble_lines();
     let base = preamble.len();
     let num_w = number_width(base + session.buffer.len());

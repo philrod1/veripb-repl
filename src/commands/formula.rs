@@ -91,9 +91,7 @@ fn announce_next(state: &FormulaEditState, session: &Session, out: &mut dyn Outp
     let idx = session
         .formula_index(n)
         .expect("validated when the mode started");
-    let var_names = &session.current_checker.context.var_names;
-    let text = session.formula.constraints[idx].to_pretty_string(var_names);
-    outln!(out, "Constraint {n}: {text}");
+    outln!(out, "Constraint {n}: {}", session.formula[idx]);
 }
 
 /// `:formula [<n>]` / `:formula <n>-<m>` — parse and start formula-editing
@@ -186,10 +184,9 @@ pub(crate) fn commit(
     // `replace_formula_constraint` just succeeded, so all of this is
     // guaranteed to resolve.
     let idx = session.formula_index(n).expect("just succeeded");
-    let var_names = &session.current_checker.context.var_names;
     let snapshot = session.last_formula_edit.as_ref().expect("just set");
-    let old_text = snapshot.constraint.to_pretty_string(var_names);
-    let new_text_pretty = session.formula.constraints[idx].to_pretty_string(var_names);
+    let old_text = snapshot.constraint.clone();
+    let new_text_pretty = session.formula[idx].clone();
     let base_buffer = snapshot.buffer.clone();
 
     outln!(out, "Constraint {n} updated:");
@@ -216,7 +213,7 @@ pub(crate) fn commit(
             );
         }
         Some(err) => {
-            output::error_chain(out, &err);
+            output::error(out, &err);
             let checked = session.checked_len;
             let display_line = session.display_line(checked);
             let remaining = total - checked - 1;
@@ -257,7 +254,7 @@ pub(crate) fn cancel(session: &mut Session, out: &mut dyn Output) -> anyhow::Res
     let idx = session
         .formula_index(snapshot.n)
         .expect("constraint count is invariant under a formula edit");
-    session.formula.constraints[idx] = snapshot.constraint;
+    session.formula[idx] = snapshot.constraint;
     let (captured, rejection) = session.replace_buffer_and_verify(snapshot.buffer)?;
     output::text(out, &captured);
     if let Some(err) = rejection {
@@ -265,7 +262,7 @@ pub(crate) fn cancel(session: &mut Session, out: &mut dyn Output) -> anyhow::Res
         // that held immediately before the edit being cancelled — but
         // report rather than silently leaving `known_bad` set with no
         // explanation if it somehow does.
-        output::error_chain(out, &err);
+        output::error(out, &err);
     }
     // `buffer` and the base this edit had tried to reverify are now back
     // in sync by construction — nothing extra left to remember.

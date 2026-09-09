@@ -46,7 +46,7 @@ pub fn run(session: &Session, args: &str, out: &mut dyn Output) -> anyhow::Resul
         // On success this is the checker's own "s VERIFIED ..." line.
         output::text(out, &captured);
         if let Err(err) = result {
-            output::error_chain(out, &err);
+            output::error(out, &err);
             outln!(
                 out,
                 "Warning: conclusion `{conclusion_arg}` does not verify — saving anyway."

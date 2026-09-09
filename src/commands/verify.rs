@@ -20,7 +20,7 @@ pub fn run(session: &mut Session, out: &mut dyn Output) -> anyhow::Result<()> {
     match rejection {
         None => outln!(out, "Verified {pending} line(s)."),
         Some(err) => {
-            output::error_chain(out, &err);
+            output::error(out, &err);
             let display_line = session.display_line(session.checked_len);
             let remaining = session.buffer.len() - session.checked_len - 1;
             outln!(
