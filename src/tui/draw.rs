@@ -495,10 +495,11 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
         (Some(session), Some(source)) => session.variables.mentioned(source),
         _ => Vec::new(),
     };
+    let debug_ids = app.debug_current_constraint_ids();
     let database = app
         .session
         .as_ref()
-        .map_or_else(Vec::new, |s| database_lines(s, &hint_vars));
+        .map_or_else(Vec::new, |s| database_lines(s, &hint_vars, debug_ids));
     let database_title = match deassert_target {
         // Only some rows are highlighted below — say so right in the
         // heading, the same phrasing Output's own heading uses, so the
@@ -651,6 +652,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     app.last_layout = Some(layout);
     app.proof_content_h = proof.as_ref().map_or(0, |v| v.content_h);
     app.formula_content_h = formula.as_ref().map_or(0, |v| v.content_h);
+    app.database_content_h = database.as_ref().map_or(0, |v| v.content_h);
     app.scroll_up = app.scroll_up.min(sb_total.saturating_sub(sb_content_h));
     let sb_end = sb_total - app.scroll_up;
     let sb_start = sb_end.saturating_sub(sb_content_h);
@@ -728,29 +730,22 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
                         pane_row(proof_view, i, theme)
                     ));
                 }
-                // `Output`'s row label lives under the Formula column (no
-                // buttons there — `&[]`); its own buttons sit at the far
-                // right instead, under Proof, matching every other
-                // header's "buttons at the pane's own right edge" rule —
-                // see `Layout::header_button_at`'s doc for why.
+                // One title segment spanning the full row, not split at
+                // the column boundaries above it, so `output_title` gets
+                // the whole width to render in. Same shape
+                // `output_fullscreen`'s own border row above and the
+                // solo-zoomed-top-pane row below use. Its buttons land at
+                // the same absolute columns `Layout::header_button_at`'s
+                // three-column case expects: `title_segment` right-aligns
+                // them against whatever width it's given, and `inner`
+                // reaches the same right edge `cols[2]` does.
                 rows.push(format!(
-                    "{}{}{}{}{}{}{}",
+                    "{}{}{}",
                     chrome("├", theme),
                     title_segment(
                         Some(&output_title),
-                        w1,
+                        inner,
                         app.focus == Pane::Output,
-                        &[],
-                        None,
-                        theme
-                    ),
-                    chrome("┴", theme),
-                    chrome(&"─".repeat(w2), theme),
-                    chrome("┴", theme),
-                    title_segment(
-                        None,
-                        w3,
-                        false,
                         layout::zoom_levels(Pane::Output),
                         output_zoom,
                         theme
@@ -1434,8 +1429,12 @@ fn formula_lines(session: &Session, cursor: Option<usize>) -> Vec<PanelLine> {
 /// name. `hint_vars` — non-empty only while `:deassert` is active, from
 /// `App::vim_deassert_source` via `Session::variables::mentioned` — marks
 /// every row sharing any of those variables. Recomputed every frame; see
-/// `PanelLine::hint`'s own docs.
-fn database_lines(session: &Session, hint_vars: &[String]) -> Vec<PanelLine> {
+/// `PanelLine::hint`'s own docs. `debug_ids` — non-empty only while
+/// `:debug` mode is active, from `App::debug_current_constraint_ids` via
+/// `Session::last_step_constraint_ids` — marks every row the most
+/// recently checked line produced, the same `debug_current` highlight
+/// `proof_lines` gives the Proof pane's own current line.
+fn database_lines(session: &Session, hint_vars: &[String], debug_ids: &[usize]) -> Vec<PanelLine> {
     let database = match session.database() {
         Ok(database) => database,
         Err(err) => return vec![pinned(format!("Error: {err:#}"))],
@@ -1455,6 +1454,7 @@ fn database_lines(session: &Session, hint_vars: &[String]) -> Vec<PanelLine> {
                 let mentioned = session.variables.mentioned(&entry.text);
                 mentioned.iter().any(|v| hint_vars.contains(v))
             };
+            panel_line.debug_current = debug_ids.contains(&entry.id);
             panel_line
         })
         .collect()

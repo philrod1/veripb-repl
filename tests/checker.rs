@@ -171,3 +171,34 @@ rup 1 x2 >= 1 ;
         }
     }
 }
+
+/// `Session::verify_forward`'s batched path traces a whole range of lines
+/// in one subprocess call — `last_line_constraint_ids` must still single
+/// out just the final one's id(s), not everything the batch touched, for
+/// the Database pane's `:debug`-mode highlight to point at the right row.
+#[test]
+fn last_line_constraint_ids_isolates_the_final_line_of_a_batched_trace() {
+    if !veripb_available() {
+        eprintln!("skipping: VERIPB_REPL_VERIPB_BIN not set");
+        return;
+    }
+    let formula = formula_file();
+    let proof = "\
+pseudo-Boolean proof version 3.0
+f 3;
+rup 1 x2 >= 1 ;
+rup 1 x1 1 x2 >= 1 ;
+";
+    // Traces both new lines (4 and 5) in one call, mirroring
+    // `Session::verify_forward`'s own `--trace-lines` scoping.
+    let outcome = checker::check(formula.path(), proof, Some((3, 4))).expect("check should not fail to invoke");
+    let CheckOutcome::Accepted { trace } = outcome else {
+        panic!("expected an accepted outcome");
+    };
+    let ids = checker::parse::last_line_constraint_ids(&trace);
+    assert_eq!(
+        ids.len(),
+        1,
+        "expected exactly one id from the batch's final line, got {ids:?} from trace: {trace:?}"
+    );
+}

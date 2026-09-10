@@ -124,6 +124,44 @@ fn find_line_number(text: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
+/// Returns the constraint IDs a trace attributes to the *last* proof
+/// line it traced — every `ConstraintId N: ...` confirmation after the
+/// trace's final `line <N>: ...` marker (or, if it never printed one,
+/// every occurrence in the whole trace — already scoped to one line in
+/// that case, e.g. `explain_line`'s own single-line trace). Multiple ids
+/// come back if that one line's rule derived more than one constraint;
+/// none if it derived none (e.g. a `del` line). Only meaningful for an
+/// accepted trace — a rejection's trace names no useful "last line".
+pub fn last_line_constraint_ids(trace: &str) -> Vec<usize> {
+    let lines: Vec<&str> = trace.lines().collect();
+    let after_marker = lines
+        .iter()
+        .rposition(|line| is_line_marker(line))
+        .map_or(0, |idx| idx + 1);
+    lines[after_marker..]
+        .iter()
+        .filter_map(|line| constraint_id_in(line))
+        .collect()
+}
+
+/// Returns whether `line` is a checker `line <N>: ...` trace marker
+/// (unindented, unlike the `ConstraintId` confirmations printed under
+/// it).
+fn is_line_marker(line: &str) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix("line") else {
+        return false;
+    };
+    rest.trim_start().starts_with(|c: char| c.is_ascii_digit())
+}
+
+/// Returns the id in one `"  ConstraintId <N>: ..."` trace line, or
+/// `None` if `line` isn't one.
+fn constraint_id_in(line: &str) -> Option<usize> {
+    let after = line.trim_start().strip_prefix("ConstraintId ")?;
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
 /// The version header every `--dump-database` file must start with.
 const EXPECTED_DUMP_HEADER: &str = "pseudo-Boolean database dump version 1";
 

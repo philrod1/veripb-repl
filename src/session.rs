@@ -54,6 +54,7 @@ pub(crate) struct Snapshot {
     buffer: Vec<String>,
     checked_len: usize,
     known_bad: Option<String>,
+    last_step_constraint_ids: Vec<usize>,
 }
 
 /// Maximum entries kept in `Session::undo_stack` before the oldest is
@@ -112,6 +113,17 @@ pub struct Session {
     /// anything that changes `checked_len` or that line's text. Drives the
     /// Proof pane's error highlight and `:list`'s failure tag.
     pub known_bad: Option<String>,
+    /// The constraint ID(s) the checker attributed to the most recently
+    /// *accepted* line (see [`checker::parse::last_line_constraint_ids`]).
+    /// Empty until the first line is accepted. Cleared by anything that
+    /// moves `checked_len` backward or invalidates the buffer without a
+    /// fresh check taking its place (`set_line`/`insert_line`/
+    /// `delete_line`/`retract_checked_len`/`reset`/`restore_buffer_state`/
+    /// `replace_formula_constraint`) — `known_bad`'s lifecycle, inverted:
+    /// set on acceptance, cleared otherwise. Drives the Database pane's
+    /// `:debug`-mode "highlight (and scroll to) what the last step
+    /// produced" highlighting; unused outside it.
+    pub last_step_constraint_ids: Vec<usize>,
     /// Set by the most recent `:formula` edit, consumed by `:formula
     /// cancel` — see `FormulaEditSnapshot`.
     pub(crate) last_formula_edit: Option<FormulaEditSnapshot>,
@@ -180,6 +192,7 @@ impl Session {
             buffer: Vec::new(),
             checked_len: 0,
             known_bad: None,
+            last_step_constraint_ids: Vec::new(),
             last_formula_edit: None,
             recoverable_buffer: None,
             generation: 0,
@@ -303,6 +316,7 @@ impl Session {
             CheckOutcome::Accepted { trace } => {
                 self.checked_len += 1;
                 self.known_bad = None;
+                self.last_step_constraint_ids = checker::parse::last_line_constraint_ids(&trace);
                 self.generation += 1;
                 Ok((trace, None))
             }
@@ -336,6 +350,7 @@ impl Session {
         if let CheckOutcome::Accepted { trace } = outcome {
             self.checked_len = boundary;
             self.known_bad = None;
+            self.last_step_constraint_ids = checker::parse::last_line_constraint_ids(&trace);
             self.generation += 1;
             return Ok((trace, None));
         }
@@ -420,6 +435,7 @@ impl Session {
         self.buffer[idx] = new_text.to_string();
         self.checked_len = self.checked_len.min(idx);
         self.known_bad = None;
+        self.last_step_constraint_ids = Vec::new();
         self.generation += 1;
         Ok(())
     }
@@ -436,6 +452,7 @@ impl Session {
             .map(|&b| if b >= idx { b + 1 } else { b })
             .collect();
         self.known_bad = None;
+        self.last_step_constraint_ids = Vec::new();
         self.generation += 1;
         Ok(())
     }
@@ -455,6 +472,7 @@ impl Session {
             })
             .collect();
         self.known_bad = None;
+        self.last_step_constraint_ids = Vec::new();
         self.generation += 1;
         Ok(())
     }
@@ -475,11 +493,14 @@ impl Session {
         self.buffer = lines;
         self.checked_len = 0;
         self.known_bad = None;
+        self.last_step_constraint_ids = Vec::new();
         self.verify_forward(self.buffer.len())
     }
 
     /// Restores `buffer`/`checked_len`/`known_bad` directly (formula
-    /// untouched) — the edit-family commands' `:cancel` mechanism.
+    /// untouched) — the edit-family commands' `:cancel` mechanism. Also
+    /// clears `last_step_constraint_ids`: an arbitrary restored snapshot,
+    /// not a fresh check, has nothing real to attribute it to.
     pub(crate) fn restore_buffer_state(
         &mut self,
         buffer: Vec<String>,
@@ -489,6 +510,7 @@ impl Session {
         self.buffer = buffer;
         self.checked_len = checked_len;
         self.known_bad = known_bad;
+        self.last_step_constraint_ids = Vec::new();
         self.generation += 1;
         Ok(())
     }
@@ -499,6 +521,7 @@ impl Session {
         self.buffer.clear();
         self.checked_len = 0;
         self.known_bad = None;
+        self.last_step_constraint_ids = Vec::new();
         self.label_map = self.labels.clone();
         self.breakpoints.clear();
         self.generation += 1;
@@ -516,6 +539,7 @@ impl Session {
         debug_assert!(target <= self.checked_len);
         self.checked_len = target;
         self.known_bad = None;
+        self.last_step_constraint_ids = Vec::new();
         self.generation += 1;
         Ok(())
     }
@@ -585,6 +609,7 @@ impl Session {
             buffer: self.buffer.clone(),
             checked_len: self.checked_len,
             known_bad: self.known_bad.clone(),
+            last_step_constraint_ids: self.last_step_constraint_ids.clone(),
         }
     }
 
@@ -612,6 +637,7 @@ impl Session {
         self.buffer = snapshot.buffer;
         self.checked_len = snapshot.checked_len;
         self.known_bad = snapshot.known_bad;
+        self.last_step_constraint_ids = snapshot.last_step_constraint_ids;
         self.last_formula_edit = None;
         self.recoverable_buffer = None;
         self.generation += 1;
@@ -692,6 +718,7 @@ impl Session {
         self.buffer.clear();
         self.checked_len = 0;
         self.known_bad = None;
+        self.last_step_constraint_ids = Vec::new();
         self.variables = candidate_vars;
         self.label_map = self.labels.clone();
         self.recoverable_buffer = Some(base_buffer.clone());

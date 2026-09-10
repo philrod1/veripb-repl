@@ -295,12 +295,14 @@ impl Layout {
     /// solo-zoomed above it or `Output` is itself full-maximised (both
     /// full-width rows with nothing else sharing them); `cols[2]` wide,
     /// starting where the Proof column starts, in the ordinary
-    /// three-column case — `Output`'s row-spanning title label lives under
-    /// Formula there, but its buttons sit under Proof, matching every
-    /// other header's "buttons at the pane's own right edge" rule. A top
-    /// pane's own header (`row == 0`, whichever top pane(s) are actually
-    /// visible) is the other case, each only where the pane in question is
-    /// wide enough to show its buttons at all (see `button_offsets`). The
+    /// three-column case — `draw.rs` renders `Output`'s title spanning
+    /// that whole row, not split at the column boundaries above it, but
+    /// its buttons still right-align against the row's own right edge,
+    /// landing in this same `cols[2]`-wide zone; matches every other
+    /// header's "buttons at the pane's own right edge" rule. A top pane's
+    /// own header (`row == 0`, whichever top pane(s) are actually visible)
+    /// is the other case, each only where the pane in question is wide
+    /// enough to show its buttons at all (see `button_offsets`). The
     /// returned `Zoom` is which level that specific button toggles, not
     /// necessarily the pane's current one — `App` decides what a click
     /// actually does (see `App::toggle_zoom`).

@@ -255,6 +255,10 @@ pub struct App {
     /// same reasoning as `proof_content_h`, for mapping a click or the
     /// formula-browse cursor onto a screen row.
     pub formula_content_h: usize,
+    /// The Database pane's actual content rows in the last frame drawn —
+    /// same reasoning as `proof_content_h`, for `snap_database_to_row` to
+    /// map a row index onto a scroll offset.
+    pub database_content_h: usize,
     /// Position and time of the last left-click, for double-click
     /// detection — a second click on the same cell within
     /// `DOUBLE_CLICK_WINDOW` opens `:edit` on whatever Proof line is
@@ -339,6 +343,7 @@ impl App {
             last_layout: None,
             proof_content_h: 0,
             formula_content_h: 0,
+            database_content_h: 0,
             last_click: None,
             vim: None,
             formula_browse: None,
@@ -520,6 +525,69 @@ impl App {
             .expect("debug_current_line already confirmed a session")
             .display_line(idx);
         self.snap_proof_to_line(display_line);
+    }
+
+    /// The constraint ID(s) `:debug` mode's most recently checked line
+    /// produced, for `draw.rs` (`database_lines`) to highlight — see
+    /// `Session::last_step_constraint_ids`. Empty whenever `:debug` isn't
+    /// active, mirroring `debug_current_line`'s own gating: ordinary
+    /// `:verify`/typing at the plain prompt never highlights the Database
+    /// pane.
+    fn debug_current_constraint_ids(&self) -> &[usize] {
+        if !self.debug_active() {
+            return &[];
+        }
+        self.session
+            .as_ref()
+            .map_or(&[], |s| s.last_step_constraint_ids.as_slice())
+    }
+
+    /// The database-pane equivalent of `snap_proof_to_line`: recenters
+    /// `database_scroll` so the entry at 0-based row `row` (a position in
+    /// `session.database()`'s own ascending-id order, matching
+    /// `database_lines`'s iteration) lands about a third of the way down
+    /// the pane's content height. A no-op before the first draw (no known
+    /// height yet), same as `snap_proof_to_line`.
+    fn snap_database_to_row(&mut self, row: usize) {
+        let h = self.database_content_h;
+        let Some(session) = &self.session else {
+            return;
+        };
+        let Ok(total) = session.database().map(|d| d.entries.len()) else {
+            return;
+        };
+        if h == 0 || total <= h {
+            self.database_scroll = 0;
+            return;
+        }
+        let max_offset = total - h;
+        let row_idx = row.min(total - 1);
+        self.database_scroll = row_idx.saturating_sub(h / 3).min(max_offset);
+    }
+
+    /// Snap the Database pane to wherever `:debug` mode's most recently
+    /// checked line landed — see `debug_current_constraint_ids`. A no-op
+    /// if debug mode isn't active, the last step produced no new
+    /// constraint (e.g. a `del` line), or nothing checked yet at all.
+    /// Scrolls to the highest id when a line produced more than one — the
+    /// newest entry.
+    fn snap_database_to_debug_step(&mut self) {
+        let Some(&target) = self.debug_current_constraint_ids().iter().max() else {
+            return;
+        };
+        let Some(session) = &self.session else {
+            return;
+        };
+        let Ok(row) = session
+            .database()
+            .map(|d| d.entries.iter().position(|e| e.id == target))
+        else {
+            return;
+        };
+        let Some(row) = row else {
+            return;
+        };
+        self.snap_database_to_row(row);
     }
 
     /// Esc while `:debug` mode is active: leave it. Mirrors `:done` (see
@@ -1890,6 +1958,7 @@ impl App {
                 Err(err) => self.scrollback.push(&format!("Error: {err:#}")),
             }
             self.snap_proof_to_debug_line();
+            self.snap_database_to_debug_step();
             return true;
         }
 
@@ -2022,6 +2091,7 @@ impl App {
                 // function for what happens to every line typed after.
                 self.debug = Some(state);
                 self.snap_proof_to_debug_line();
+                self.snap_database_to_debug_step();
                 true
             }
             Err(err) => {
