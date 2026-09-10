@@ -130,3 +130,44 @@ rup 1 x2 >= 1 : 99;
     assert!(!outcome.is_accepted());
     assert_eq!(database.entries.len(), 3);
 }
+
+/// A per-line check always feeds `veripb` a proof with no closing
+/// output/conclusion/end tail, so it always hits the "ran out of input"
+/// EOF path even when accepted. veripb's own stderr for that path is
+/// entirely its generic "Error: Syntax error while parsing proof file!"
+/// wrapper text — real, but noise that must not leak into an accepted
+/// outcome's trace, or every accepted line during `:verify` shows a
+/// spurious "Error:" block.
+#[test]
+fn accepted_trace_never_contains_the_eof_wrapper_text() {
+    if !veripb_available() {
+        eprintln!("skipping: VERIPB_REPL_VERIPB_BIN not set");
+        return;
+    }
+    let formula = formula_file();
+    let proof = "\
+pseudo-Boolean proof version 3.0
+f 3;
+rup 1 x2 >= 1 ;
+";
+    let outcome = checker::check(formula.path(), proof, Some((3, 3))).expect("check should not fail to invoke");
+    match outcome {
+        CheckOutcome::Accepted { trace } => {
+            assert!(
+                !trace.contains("Error:"),
+                "accepted trace leaked stderr noise: {trace:?}"
+            );
+            assert!(
+                !trace.contains("end of file"),
+                "accepted trace leaked EOF wrapper text: {trace:?}"
+            );
+            assert!(
+                trace.contains("ConstraintId"),
+                "accepted trace lost genuinely useful stdout content: {trace:?}"
+            );
+        }
+        CheckOutcome::Rejected { message, .. } => {
+            panic!("expected an accepted outcome, got Rejected: {message}")
+        }
+    }
+}

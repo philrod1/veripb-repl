@@ -17,3 +17,5 @@ out_v3.pbp
 *.trace
 
 .*
+/veripb
+/veripb

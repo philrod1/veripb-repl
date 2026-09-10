@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::Context;
 
 use super::invoke::RawInvocation;
-use super::types::{CheckOutcome, Database, DatabaseEntry, RupHint};
+use super::types::{CheckOutcome, Database, DatabaseEntry, ObjectiveBounds, RupHint};
 
 /// Returns the minimized hint list from the last `rup` step in an
 /// elaborated proof, or `None` if the text contains no `rup` line.
@@ -53,22 +53,35 @@ const RAN_OUT_OF_INPUT_MARKER: &str = "found end of file (EOF)";
 /// Returns whether checking succeeded, and if not, which line it
 /// stopped at.
 ///
-/// Reaching the end of the supplied proof text with nothing rejected is
-/// treated as success (see [`RAN_OUT_OF_INPUT_MARKER`]). Otherwise, the
-/// line number is read from a `Checking error at <path>:<line>` or
-/// `Verification error at <path>:<line>`-style message, falling back to
-/// a bare `at line <N>` for a syntax error that names a line without the
-/// path. Fails loudly, with the full raw output, if neither shape is
-/// found.
+/// An accepted outcome's `trace` is `raw.stdout` alone. Verified against
+/// real `veripb` output: on any acceptance path — a clean exit, or the
+/// "ran out of input" EOF case (see [`RAN_OUT_OF_INPUT_MARKER`]) — stdout
+/// carries every genuinely useful trace line, and stderr is either empty
+/// or, for the EOF case, entirely the generic "Error: Syntax error while
+/// parsing proof file! ... found end of file (EOF) ..." wrapper: real
+/// text veripb prints, but noise here, since every per-line check feeds
+/// it a proof with no closing tail and so hits this every time. Dropping
+/// stderr on acceptance avoids that block reappearing on every accepted
+/// line during `:verify`.
+///
+/// On rejection, the line number is read from a `Checking error at
+/// <path>:<line>` or `Verification error at <path>:<line>`-style message,
+/// falling back to a bare `at line <N>` for a syntax error that names a
+/// line without the path. Fails loudly, with the full raw output, if
+/// neither shape is found.
 pub fn check_outcome(raw: &RawInvocation) -> anyhow::Result<CheckOutcome> {
-    let combined = format!("{}{}", raw.stdout, raw.stderr);
-
     if raw.success {
-        return Ok(CheckOutcome::Accepted { trace: combined });
+        return Ok(CheckOutcome::Accepted {
+            trace: raw.stdout.clone(),
+        });
     }
 
+    let combined = format!("{}{}", raw.stdout, raw.stderr);
+
     if combined.contains(RAN_OUT_OF_INPUT_MARKER) {
-        return Ok(CheckOutcome::Accepted { trace: combined });
+        return Ok(CheckOutcome::Accepted {
+            trace: raw.stdout.clone(),
+        });
     }
 
     let line = find_path_anchored_line(&combined, &raw.proof_file_path).or_else(|| find_line_number(&combined));
@@ -161,4 +174,54 @@ fn parse_database_dump_line(line: &str) -> anyhow::Result<DatabaseEntry> {
         is_core,
         text: text.to_string(),
     })
+}
+
+/// The version header every `--dump-objective` file must start with.
+const EXPECTED_OBJECTIVE_DUMP_HEADER: &str = "pseudo-Boolean objective dump version 1";
+
+/// Parses a `--dump-objective` file's contents into [`ObjectiveBounds`].
+/// Expected format:
+///
+/// ```text
+/// pseudo-Boolean objective dump version 1
+/// best_objective_value: <integer-or-none>
+/// best_valid_objective_value: <integer-or-none>
+/// ```
+pub fn parse_objective_dump(dump: &str) -> anyhow::Result<ObjectiveBounds> {
+    let mut lines = dump.lines();
+
+    let header = lines
+        .next()
+        .context("empty objective dump — missing its version header line")?;
+    anyhow::ensure!(
+        header == EXPECTED_OBJECTIVE_DUMP_HEADER,
+        "unrecognized objective dump header {header:?} (expected \
+         {EXPECTED_OBJECTIVE_DUMP_HEADER:?}) — the core binary's dump format may have changed \
+         since this parser was written",
+    );
+
+    let best = parse_objective_dump_field(&mut lines, "best_objective_value")?;
+    let best_valid = parse_objective_dump_field(&mut lines, "best_valid_objective_value")?;
+
+    Ok(ObjectiveBounds { best, best_valid })
+}
+
+/// Parses one `<field>: <integer-or-none>` objective-dump line, checking
+/// its field name matches `expected_field`.
+fn parse_objective_dump_field(
+    lines: &mut std::str::Lines<'_>,
+    expected_field: &str,
+) -> anyhow::Result<Option<String>> {
+    let line = lines
+        .next()
+        .with_context(|| format!("objective dump is missing its {expected_field:?} line"))?;
+    let (field, value) = line
+        .split_once(": ")
+        .with_context(|| format!("malformed objective dump line (no ': ' separator): {line:?}"))?;
+    anyhow::ensure!(
+        field == expected_field,
+        "malformed objective dump line (expected field {expected_field:?}, found {field:?}): \
+         {line:?}",
+    );
+    Ok((value != "none").then(|| value.to_string()))
 }

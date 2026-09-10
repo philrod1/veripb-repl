@@ -17,7 +17,7 @@ pub mod types;
 
 use std::path::Path;
 
-pub use types::{CheckOutcome, Database, DatabaseEntry, RupHint};
+pub use types::{CheckOutcome, Database, DatabaseEntry, ObjectiveBounds, RupHint};
 
 /// Returns the `--trace-lines <lo>..=<hi>` argument for `trace_range`, or
 /// no arguments at all for a silent check.
@@ -88,4 +88,10 @@ pub fn why_rup(formula_path: &Path, proof_text: &str) -> anyhow::Result<Option<V
 pub fn show_database(formula_path: &Path, proof_text: &str) -> anyhow::Result<Database> {
     let dump = invoke::run_with_database_dump(formula_path, proof_text, std::iter::empty::<&str>())?;
     parse::parse_database_dump(&dump.database_dump)
+}
+
+/// Returns the best-known objective bounds after replaying `proof_text`.
+pub fn show_objective_bounds(formula_path: &Path, proof_text: &str) -> anyhow::Result<ObjectiveBounds> {
+    let dump = invoke::run_with_objective_dump(formula_path, proof_text, std::iter::empty::<&str>())?;
+    parse::parse_objective_dump(&dump.objective_dump)
 }

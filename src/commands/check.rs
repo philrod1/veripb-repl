@@ -20,16 +20,25 @@ use crate::output::{self, Output, outln};
 use crate::session::Session;
 
 /// Returns the conclusions safe to try without extra input from the user:
-/// `UNSAT` and `SAT`. Doesn't include `BOUNDS v v`: the checked-deletion-safe
-/// best value it needs (`Context::best_valid_objective_value`) is live
-/// checker state with no current query mechanism — the same gap
-/// `:objective` reports. `BOUNDS lo hi` is still reachable by typing it
-/// explicitly to `:check`.
+/// `UNSAT` and `SAT` always, plus `BOUNDS v v` once the session has an
+/// objective and a checked-deletion-safe best value is already known
+/// (`ObjectiveBounds::best_valid` — the same value `:objective` reports).
+/// The value is read straight from the checker, never guessed. A failed
+/// `objective_bounds` query (e.g. the resolved `veripb` doesn't support
+/// `--dump-objective`) just means no `BOUNDS v v` candidate — `BOUNDS lo
+/// hi` is still reachable by typing it explicitly to `:check`.
 ///
 /// Shared with `:save`'s own auto-detection when no explicit conclusion
 /// is given to save with.
-pub(crate) fn auto_detect_candidates(_session: &Session) -> Vec<String> {
-    vec!["UNSAT".to_string(), "SAT".to_string()]
+pub(crate) fn auto_detect_candidates(session: &Session) -> Vec<String> {
+    let mut candidates = vec!["UNSAT".to_string(), "SAT".to_string()];
+    if session.objective.is_some()
+        && let Ok(bounds) = session.objective_bounds()
+        && let Some(value) = bounds.best_valid
+    {
+        candidates.push(format!("BOUNDS {value} {value}"));
+    }
+    candidates
 }
 
 pub fn run(session: &Session, args: &str, out: &mut dyn Output) -> anyhow::Result<()> {

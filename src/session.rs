@@ -272,6 +272,16 @@ impl Session {
         }))
     }
 
+    /// Returns the best-known objective bounds reflecting
+    /// `buffer[..checked_len]`. One subprocess call per call, uncached —
+    /// unlike [`Self::database`], this is only ever called once per
+    /// `:check`/`:objective` invocation, not once per frame.
+    pub fn objective_bounds(&self) -> anyhow::Result<checker::ObjectiveBounds> {
+        let text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
+        let formula_file = self.formula_temp_file()?;
+        checker::show_objective_bounds(formula_file.path(), &text)
+    }
+
     /// Attempts `buffer[checked_len]` — the first unchecked line. On
     /// acceptance, advances `checked_len` by one. On rejection, `buffer`/
     /// `checked_len` are unchanged and `known_bad` is set. Panics if nothing

@@ -47,3 +47,17 @@ impl Database {
         self.entries.iter().find(|entry| entry.id == id)
     }
 }
+
+/// The checker's best-known objective bounds at some point in a replay.
+/// Values are the checker's own arbitrary-precision integer text,
+/// unparsed — this REPL only ever splices them into further proof text
+/// (`BOUNDS v v`), never does arithmetic on them.
+pub struct ObjectiveBounds {
+    /// The best objective value logged so far, with or without
+    /// checked-deletion guarantees.
+    pub best: Option<String>,
+    /// The best objective value logged while checked-deletion guarantees
+    /// held — the value `conclusion BOUNDS`'s upper-bound check actually
+    /// compares against.
+    pub best_valid: Option<String>,
+}

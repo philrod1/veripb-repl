@@ -140,3 +140,44 @@ where
 
     Ok(DatabaseDumpInvocation { raw, database_dump })
 }
+
+/// The result of [`run_with_objective_dump`].
+pub struct ObjectiveDumpInvocation {
+    pub raw: RawInvocation,
+    pub objective_dump: String,
+}
+
+/// Runs [`run`] with `--dump-objective` plus any `extra_args`, and returns
+/// the objective-bounds dump it wrote.
+pub fn run_with_objective_dump<I, S>(
+    formula_path: &Path,
+    proof_text: &str,
+    extra_args: I,
+) -> anyhow::Result<ObjectiveDumpInvocation>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let scratch = tempfile::NamedTempFile::new()
+        .context("failed to create a scratch file for the objective dump")?;
+    let mut args: Vec<std::ffi::OsString> = vec!["--dump-objective".into(), scratch.path().into()];
+    args.extend(extra_args.into_iter().map(|s| s.as_ref().to_os_string()));
+
+    let raw = run(formula_path, proof_text, args)?;
+    let objective_dump = std::fs::read_to_string(scratch.path())
+        .context("failed to read back the objective dump scratch file")?;
+
+    // Same reasoning as `run_with_database_dump`'s own check: a genuine
+    // `--dump-objective` run always writes at least the version header.
+    anyhow::ensure!(
+        !objective_dump.is_empty(),
+        "veripb wrote no `--dump-objective` output (exit code {:?}) — the resolved `veripb` \
+         binary may not support `--dump-objective`, or may be an older build than this REPL \
+         expects. Raw output:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        raw.code,
+        raw.stdout,
+        raw.stderr,
+    );
+
+    Ok(ObjectiveDumpInvocation { raw, objective_dump })
+}
