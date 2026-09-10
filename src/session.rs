@@ -286,8 +286,8 @@ impl Session {
     /// acceptance, advances `checked_len` by one. On rejection, `buffer`/
     /// `checked_len` are unchanged and `known_bad` is set. Panics if nothing
     /// is pending (`checked_len == buffer.len()`) — callers
-    /// ([`Self::drive_forward`], [`Self::append_line`]) only call this after
-    /// confirming there is.
+    /// ([`Self::verify_forward`], [`Self::append_line`]) only call this
+    /// after confirming there is.
     fn verify_next(&mut self) -> anyhow::Result<(String, Option<String>)> {
         let candidate_line = self.buffer[self.checked_len].clone();
         let mut text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
@@ -313,16 +313,35 @@ impl Session {
         }
     }
 
-    /// Drives `checked_len` forward through `buffer` as far as it will go:
-    /// [`Self::verify_next`] in a loop, committing each accepted line and
-    /// stopping — without discarding anything — at the first rejection.
-    /// `:verify`'s entire implementation, and what `:formula`'s post-edit
-    /// reverify reduces to once its candidate buffer is in place (see
-    /// [`Self::replace_buffer_and_verify`]). Concatenates every attempted
-    /// line's captured trace in order.
-    pub fn drive_forward(&mut self) -> anyhow::Result<(String, Option<String>)> {
+    /// Advances `checked_len` from wherever it stands up to `boundary`
+    /// (`<= buffer.len()`), in one subprocess call replaying the whole
+    /// buffer through `boundary` at once — one `veripb` invocation no
+    /// matter how many lines are involved, rather than one per line (each
+    /// paying to re-replay everything before it). On acceptance, commits
+    /// `checked_len = boundary` directly. On rejection, the batched
+    /// attempt's own output is dropped (it can't say which line actually
+    /// failed) and falls back to [`Self::verify_next`] in a loop, bounded
+    /// by `boundary`, to pinpoint exactly where — without discarding
+    /// anything past it. A no-op, returning an empty capture, if
+    /// `boundary <= checked_len`.
+    fn verify_forward(&mut self, boundary: usize) -> anyhow::Result<(String, Option<String>)> {
+        if boundary <= self.checked_len {
+            return Ok((String::new(), None));
+        }
+
+        let candidate_start = PREAMBLE_LINES + self.checked_len + 1;
+        let candidate_end = PREAMBLE_LINES + boundary;
+        let text = self.preamble_and_lines(&self.buffer[..boundary]);
+        let outcome = self.check(&text, Some((candidate_start, candidate_end)))?;
+        if let CheckOutcome::Accepted { trace } = outcome {
+            self.checked_len = boundary;
+            self.known_bad = None;
+            self.generation += 1;
+            return Ok((trace, None));
+        }
+
         let mut captured_all = String::new();
-        while self.checked_len < self.buffer.len() {
+        while self.checked_len < boundary {
             let (captured, rejection) = self.verify_next()?;
             captured_all.push_str(&captured);
             if let Some(err) = rejection {
@@ -330,6 +349,15 @@ impl Session {
             }
         }
         Ok((captured_all, None))
+    }
+
+    /// Drives `checked_len` forward through the whole buffer —
+    /// [`Self::verify_forward`] up to `buffer.len()`. `:verify`'s entire
+    /// implementation, and what `:formula`'s post-edit reverify reduces to
+    /// once its candidate buffer is in place (see
+    /// [`Self::replace_buffer_and_verify`]).
+    pub fn drive_forward(&mut self) -> anyhow::Result<(String, Option<String>)> {
+        self.verify_forward(self.buffer.len())
     }
 
     /// `:debug`'s `:step` primitive: attempts exactly the next unchecked
@@ -344,34 +372,22 @@ impl Session {
         self.verify_next().map(Some)
     }
 
-    /// `:debug`'s `:continue`/`:until <n>` engine: runs forward one line at
-    /// a time via [`Self::verify_next`], stopping at the first of: a
-    /// rejection, `target` (a one-off destination for `:until`), or a
-    /// registered [`Self::breakpoints`] entry. The breakpoint check is
-    /// skipped on the first iteration (`first`, below) so resuming from a
-    /// line that's itself marked doesn't immediately re-stop there. Not
-    /// used by `drive_forward`: `:verify` stays breakpoint-oblivious.
+    /// `:debug`'s `:continue`/`:until <n>` engine: batch-checks forward via
+    /// [`Self::verify_forward`] up to the first of `buffer.len()`,
+    /// `target` (a one-off destination for `:until`), or the next
+    /// registered [`Self::breakpoints`] entry strictly after the current
+    /// `checked_len` — excluding `checked_len` itself, so resuming from a
+    /// line that's itself marked doesn't immediately re-stop there without
+    /// advancing at all. Not used by `drive_forward`: `:verify` stays
+    /// breakpoint-oblivious.
     pub fn continue_run(&mut self, target: Option<usize>) -> anyhow::Result<(String, Option<String>)> {
-        let mut captured_all = String::new();
-        let mut first = true;
-        loop {
-            if self.checked_len >= self.buffer.len() {
-                break;
-            }
-            if target.is_some_and(|t| self.checked_len >= t) {
-                break;
-            }
-            if !first && self.breakpoints.contains(&self.checked_len) {
-                break;
-            }
-            first = false;
-            let (captured, rejection) = self.verify_next()?;
-            captured_all.push_str(&captured);
-            if let Some(err) = rejection {
-                return Ok((captured_all, Some(err)));
-            }
-        }
-        Ok((captured_all, None))
+        let next_breakpoint = self.breakpoints.range((self.checked_len + 1)..).next().copied();
+        let boundary = [Some(self.buffer.len()), target, next_breakpoint]
+            .into_iter()
+            .flatten()
+            .min()
+            .expect("buffer.len() is always Some");
+        self.verify_forward(boundary)
     }
 
     /// The ordinary `pbp>`-prompt path for a freshly-typed line. If nothing
@@ -453,31 +469,13 @@ impl Session {
     }
 
     /// Replaces the buffer wholesale with `lines` and checks as much of it
-    /// as still holds: one O(n) batched replay first; only if that fails
-    /// does it fall back to [`Self::drive_forward`]'s one-line-at-a-time
-    /// loop, to pinpoint exactly where, leaving everything after it in the
-    /// buffer, unchecked.
+    /// as still holds — [`Self::verify_forward`] up to `buffer.len()`,
+    /// starting from `checked_len = 0`.
     pub(crate) fn replace_buffer_and_verify(&mut self, lines: Vec<String>) -> anyhow::Result<(String, Option<String>)> {
         self.buffer = lines;
         self.checked_len = 0;
         self.known_bad = None;
-        if self.buffer.is_empty() {
-            return Ok((String::new(), None));
-        }
-
-        let text = self.preamble_and_lines(&self.buffer);
-        let candidate_start = PREAMBLE_LINES + 1;
-        let candidate_end = candidate_start + self.buffer.len() - 1;
-        let outcome = self.check(&text, Some((candidate_start, candidate_end)))?;
-        if let CheckOutcome::Accepted { trace } = outcome {
-            self.checked_len = self.buffer.len();
-            self.generation += 1;
-            return Ok((trace, None));
-        }
-        // The batched attempt's output is dropped: `drive_forward` below
-        // re-derives the successful prefix, and printing both would
-        // duplicate the trace.
-        self.drive_forward()
+        self.verify_forward(self.buffer.len())
     }
 
     /// Restores `buffer`/`checked_len`/`known_bad` directly (formula
