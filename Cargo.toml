@@ -11,8 +11,6 @@ description = "An interactive REPL/TUI for exploring and building VeriPB proofs.
 ahash = "0.8.12"
 anyhow = "1.0.104"
 crossterm = "0.29"
-libc = "0.2"
-logos = "0.16.1"
 tempfile = "3"
 
 [lib]

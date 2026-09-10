@@ -6,12 +6,11 @@ proof step. For the full command reference and feature status, see
 
 ## Prerequisites
 
-- Rust **1.92** or newer (this workspace's `rust-version`) — `rustc
+- Rust **1.92** or newer (this crate's `rust-version`) — `rustc
   --version` to check, [rustup.rs](https://rustup.rs) to install/update.
-- A full checkout of this repo. `veripb-repl` is one crate in the larger
-  `VeriPB` cargo workspace and depends on its sibling crates
-  (`veripb-checker`, `veripb-parser`, `veripb-formula`) by relative path —
-  a standalone copy of just the `veripb-repl/` directory won't build.
+- A compatible `veripb` binary, built and pointed at as described in
+  [README.md](README.md) — required before anything here will actually
+  check a proof.
 - For the default full-screen interface: a terminal emulator with
   truecolor (24-bit RGB) support. Effectively every terminal in current
   use qualifies; `--plain` (below) doesn't need it, since it prints no
@@ -22,7 +21,7 @@ proof step. For the full command reference and feature status, see
 From the repository root:
 
 ```bash
-cargo run -p veripb-repl -- <formula.opb>
+cargo run -- <formula.opb>
 ```
 
 The formula path is optional — run with none to start empty and
@@ -36,7 +35,7 @@ automatically when input/output isn't a real terminal — piping a script
 in just works, no flag needed):
 
 ```bash
-cargo run -p veripb-repl -- --plain <formula.opb>
+cargo run -- --plain <formula.opb>
 ```
 
 Type `:quit` (or Ctrl-D) to exit either one.
@@ -48,8 +47,8 @@ Type `:quit` (or Ctrl-D) to exit either one.
 from any single constraint — enough to actually derive something:
 
 ```
-$ cargo run -p veripb-repl -- veripb-repl/examples/tiny_unsat.opb
-Loaded 3 constraints from veripb-repl/examples/tiny_unsat.opb
+$ cargo run -- examples/tiny_unsat.opb
+Loaded 3 constraints from examples/tiny_unsat.opb
 pbp> :check
 NOT YET CONCLUDED
 pbp> rup 1 x2 >= 1 ;
@@ -82,6 +81,7 @@ above is accepted — worth watching as you type.
   what's implemented vs. planned, the TUI's panes/completion/mouse
   support/themes, and a couple of longer worked walkthroughs (including
   finishing the one above with a real `conclusion UNSAT;`).
-- [`proof_format_overview.md`](../proof_format_overview.md) at the repo
-  root — the full v3 proof-format grammar (`pol`, `red`, `e`, `del`,
-  subproofs, ...) for when you're ready to go beyond `rup`.
+- The core VeriPB repository's own documentation covers the full v3
+  proof-format grammar (`pol`, `red`, `e`, `del`, subproofs, ...) for
+  when you're ready to go beyond `rup` — see [README.md](README.md) for
+  where to get it.
