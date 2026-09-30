@@ -162,8 +162,18 @@ fn constraint_id_in(line: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
-/// The version header every `--dump-database` file must start with.
-const EXPECTED_DUMP_HEADER: &str = "pseudo-Boolean database dump version 1";
+/// Strips a dump line's terminating `;`, plus whitespace either side of it.
+fn strip_terminator<'a>(text: &'a str, line: &str) -> anyhow::Result<&'a str> {
+    Ok(text
+        .trim_end()
+        .strip_suffix(';')
+        .with_context(|| format!("malformed dump line (no terminating ';'): {line:?}"))?
+        .trim_end())
+}
+
+/// The version header and footer every `--dump-database` file must match.
+const EXPECTED_DATABASE_DUMP_HEADER: &str = "pseudo-Boolean database dump version 1";
+const EXPECTED_DATABASE_DUMP_FOOTER: &str = "end pseudo-Boolean database dump;";
 
 /// Parses a `--dump-database` file's contents into a [`Database`].
 ///
@@ -177,8 +187,17 @@ pub fn parse_database_dump(dump: &str) -> anyhow::Result<Database> {
         .next()
         .context("empty database dump — missing its version header line")?;
     anyhow::ensure!(
-        header == EXPECTED_DUMP_HEADER,
-        "unrecognized database dump header {header:?} (expected {EXPECTED_DUMP_HEADER:?}) — \
+        header == EXPECTED_DATABASE_DUMP_HEADER,
+        "unrecognized database dump header {header:?} (expected {EXPECTED_DATABASE_DUMP_HEADER:?}) — \
+         the core binary's dump format may have changed since this parser was written",
+    );
+
+    let footer = lines
+        .next_back()
+        .context("truncated database dump — missing its end line")?;
+    anyhow::ensure!(
+        footer == EXPECTED_DATABASE_DUMP_FOOTER,
+        "unexpected end of database dump {footer:?} (expected {EXPECTED_DATABASE_DUMP_FOOTER:?}) — \
          the core binary's dump format may have changed since this parser was written",
     );
 
@@ -189,7 +208,7 @@ pub fn parse_database_dump(dump: &str) -> anyhow::Result<Database> {
     Ok(Database { entries })
 }
 
-/// Parses one `<id> <core|derived> <text>` database-dump line.
+/// Parses one `<id> <core|derived> <text> ;` database-dump line.
 fn parse_database_dump_line(line: &str) -> anyhow::Result<DatabaseEntry> {
     let (id, rest) = line
         .split_once(' ')
@@ -207,6 +226,8 @@ fn parse_database_dump_line(line: &str) -> anyhow::Result<DatabaseEntry> {
         _ => anyhow::bail!("malformed database dump line (unknown tag {tag:?}): {line:?}"),
     };
 
+    let text = strip_terminator(text, line)?;
+
     Ok(DatabaseEntry {
         id,
         is_core,
@@ -214,16 +235,18 @@ fn parse_database_dump_line(line: &str) -> anyhow::Result<DatabaseEntry> {
     })
 }
 
-/// The version header every `--dump-objective` file must start with.
+/// The version header and footer every `--dump-objective` file must provide.
 const EXPECTED_OBJECTIVE_DUMP_HEADER: &str = "pseudo-Boolean objective dump version 1";
+const EXPECTED_OBJECTIVE_DUMP_FOOTER: &str = "end pseudo-Boolean objective dump;";
 
 /// Parses a `--dump-objective` file's contents into [`ObjectiveBounds`].
 /// Expected format:
 ///
 /// ```text
 /// pseudo-Boolean objective dump version 1
-/// best_objective_value: <integer-or-none>
-/// best_valid_objective_value: <integer-or-none>
+/// best_objective_value: <integer-or-none> ;
+/// best_valid_objective_value: <integer-or-none> ;
+/// end pseudo-Boolean objective dump;
 /// ```
 pub fn parse_objective_dump(dump: &str) -> anyhow::Result<ObjectiveBounds> {
     let mut lines = dump.lines();
@@ -238,13 +261,22 @@ pub fn parse_objective_dump(dump: &str) -> anyhow::Result<ObjectiveBounds> {
          since this parser was written",
     );
 
+    let footer = lines
+        .next_back()
+        .context("truncated objective dump — missing its end line")?;
+    anyhow::ensure!(
+        footer == EXPECTED_OBJECTIVE_DUMP_FOOTER,
+        "unexpected end of objective dump {footer:?} (expected {EXPECTED_OBJECTIVE_DUMP_FOOTER:?}) — \
+         the core binary's dump format may have changed since this parser was written",
+    );
+
     let best = parse_objective_dump_field(&mut lines, "best_objective_value")?;
     let best_valid = parse_objective_dump_field(&mut lines, "best_valid_objective_value")?;
 
     Ok(ObjectiveBounds { best, best_valid })
 }
 
-/// Parses one `<field>: <integer-or-none>` objective-dump line, checking
+/// Parses one `<field>: <integer-or-none> ;` objective-dump line, checking
 /// its field name matches `expected_field`.
 fn parse_objective_dump_field(
     lines: &mut std::str::Lines<'_>,
@@ -260,6 +292,13 @@ fn parse_objective_dump_field(
         field == expected_field,
         "malformed objective dump line (expected field {expected_field:?}, found {field:?}): \
          {line:?}",
+    );
+    let value = strip_terminator(value, line)?;
+    anyhow::ensure!(
+        value == "none"
+            || value.strip_prefix('-').unwrap_or(value).chars().all(|c| c.is_ascii_digit())
+                && !value.trim_start_matches('-').is_empty(),
+        "malformed objective dump line (value {value:?} is not an integer or `none`): {line:?}",
     );
     Ok((value != "none").then(|| value.to_string()))
 }

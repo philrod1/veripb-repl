@@ -11,8 +11,9 @@ use veripb_repl::checker::parse::parse_objective_dump;
 fn parses_two_known_values() {
     let dump = "\
 pseudo-Boolean objective dump version 1
-best_objective_value: 7
-best_valid_objective_value: 5
+best_objective_value: 7 ;
+best_valid_objective_value: 5 ;
+end pseudo-Boolean objective dump;
 ";
     let bounds = parse_objective_dump(dump).expect("should parse");
     assert_eq!(bounds.best.as_deref(), Some("7"));
@@ -23,8 +24,9 @@ best_valid_objective_value: 5
 fn parses_negative_values() {
     let dump = "\
 pseudo-Boolean objective dump version 1
-best_objective_value: -3
-best_valid_objective_value: -3
+best_objective_value: -3 ;
+best_valid_objective_value: -3 ;
+end pseudo-Boolean objective dump;
 ";
     let bounds = parse_objective_dump(dump).expect("should parse");
     assert_eq!(bounds.best.as_deref(), Some("-3"));
@@ -35,8 +37,9 @@ best_valid_objective_value: -3
 fn parses_none_values() {
     let dump = "\
 pseudo-Boolean objective dump version 1
-best_objective_value: none
-best_valid_objective_value: none
+best_objective_value: none ;
+best_valid_objective_value: none ;
+end pseudo-Boolean objective dump;
 ";
     let bounds = parse_objective_dump(dump).expect("should parse");
     assert!(bounds.best.is_none());
@@ -47,8 +50,9 @@ best_valid_objective_value: none
 fn parses_mixed_known_and_none() {
     let dump = "\
 pseudo-Boolean objective dump version 1
-best_objective_value: 12
-best_valid_objective_value: none
+best_objective_value: 12 ;
+best_valid_objective_value: none ;
+end pseudo-Boolean objective dump;
 ";
     let bounds = parse_objective_dump(dump).expect("should parse");
     assert_eq!(bounds.best.as_deref(), Some("12"));
@@ -59,8 +63,9 @@ best_valid_objective_value: none
 fn rejects_wrong_header() {
     let dump = "\
 pseudo-Boolean objective dump version 2
-best_objective_value: 7
-best_valid_objective_value: 5
+best_objective_value: 7 ;
+best_valid_objective_value: 5 ;
+end pseudo-Boolean objective dump;
 ";
     assert!(parse_objective_dump(dump).is_err());
 }
@@ -74,7 +79,8 @@ fn rejects_empty_dump() {
 fn rejects_missing_second_field() {
     let dump = "\
 pseudo-Boolean objective dump version 1
-best_objective_value: 7
+best_objective_value: 7 ;
+end pseudo-Boolean objective dump;
 ";
     assert!(parse_objective_dump(dump).is_err());
 }
@@ -83,8 +89,9 @@ best_objective_value: 7
 fn rejects_wrong_field_order() {
     let dump = "\
 pseudo-Boolean objective dump version 1
-best_valid_objective_value: 5
-best_objective_value: 7
+best_valid_objective_value: 5 ;
+best_objective_value: 7 ;
+end pseudo-Boolean objective dump;
 ";
     assert!(parse_objective_dump(dump).is_err());
 }
