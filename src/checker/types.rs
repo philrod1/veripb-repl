@@ -53,6 +53,13 @@ impl Database {
 /// unparsed — this REPL only ever splices them into further proof text
 /// (`BOUNDS v v`), never does arithmetic on them.
 pub struct ObjectiveBounds {
+    /// The objective function itself — the checker's pretty-printed
+    /// `<coeff> <lit> ... <constant>` text, unparsed, or `None` if the
+    /// problem has no objective. Unlike `Session::objective` (the
+    /// formula's own, static text), this reflects the *current* value
+    /// after any `obju` update rules applied so far in the replayed
+    /// proof, so the two can genuinely differ.
+    pub objective: Option<String>,
     /// The best objective value logged so far, with or without
     /// checked-deletion guarantees.
     pub best: Option<String>,

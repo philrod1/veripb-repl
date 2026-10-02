@@ -244,6 +244,7 @@ const EXPECTED_OBJECTIVE_DUMP_FOOTER: &str = "end pseudo-Boolean objective dump;
 ///
 /// ```text
 /// pseudo-Boolean objective dump version 1
+/// objective: min <coeff> <lit> ... <constant> | none ;
 /// best_objective_value: <integer-or-none> ;
 /// best_valid_objective_value: <integer-or-none> ;
 /// end pseudo-Boolean objective dump;
@@ -270,17 +271,36 @@ pub fn parse_objective_dump(dump: &str) -> anyhow::Result<ObjectiveBounds> {
          the core binary's dump format may have changed since this parser was written",
     );
 
-    let best = parse_objective_dump_field(&mut lines, "best_objective_value")?;
-    let best_valid = parse_objective_dump_field(&mut lines, "best_valid_objective_value")?;
+    let objective = parse_objective_dump_field(&mut lines, "objective", ValueShape::Any)?;
+    let best = parse_objective_dump_field(&mut lines, "best_objective_value", ValueShape::Integer)?;
+    let best_valid =
+        parse_objective_dump_field(&mut lines, "best_valid_objective_value", ValueShape::Integer)?;
 
-    Ok(ObjectiveBounds { best, best_valid })
+    Ok(ObjectiveBounds {
+        objective,
+        best,
+        best_valid,
+    })
 }
 
-/// Parses one `<field>: <integer-or-none> ;` objective-dump line, checking
-/// its field name matches `expected_field`.
+/// What a [`parse_objective_dump_field`] value is allowed to look like,
+/// beyond the universal `none` sentinel.
+enum ValueShape {
+    /// An arbitrary-precision integer (optionally `-`-prefixed).
+    Integer,
+    /// Any non-empty text — the objective function's pretty-printed
+    /// expression is opaque to this parser, same as every other
+    /// pretty-printed expression this format carries (e.g. database dump
+    /// constraint text).
+    Any,
+}
+
+/// Parses one `<field>: <value> ;` objective-dump line, checking its field
+/// name matches `expected_field` and its value matches `shape`.
 fn parse_objective_dump_field(
     lines: &mut std::str::Lines<'_>,
     expected_field: &str,
+    shape: ValueShape,
 ) -> anyhow::Result<Option<String>> {
     let line = lines
         .next()
@@ -294,11 +314,17 @@ fn parse_objective_dump_field(
          {line:?}",
     );
     let value = strip_terminator(value, line)?;
-    anyhow::ensure!(
-        value == "none"
-            || value.strip_prefix('-').unwrap_or(value).chars().all(|c| c.is_ascii_digit())
-                && !value.trim_start_matches('-').is_empty(),
-        "malformed objective dump line (value {value:?} is not an integer or `none`): {line:?}",
-    );
+    match shape {
+        ValueShape::Integer => anyhow::ensure!(
+            value == "none"
+                || value.strip_prefix('-').unwrap_or(value).chars().all(|c| c.is_ascii_digit())
+                    && !value.trim_start_matches('-').is_empty(),
+            "malformed objective dump line (value {value:?} is not an integer or `none`): {line:?}",
+        ),
+        ValueShape::Any => anyhow::ensure!(
+            value == "none" || !value.is_empty(),
+            "malformed objective dump line (empty value): {line:?}",
+        ),
+    }
     Ok((value != "none").then(|| value.to_string()))
 }

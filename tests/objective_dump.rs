@@ -8,14 +8,16 @@
 use veripb_repl::checker::parse::parse_objective_dump;
 
 #[test]
-fn parses_two_known_values() {
+fn parses_objective_and_two_known_values() {
     let dump = "\
 pseudo-Boolean objective dump version 1
+objective: min 2 x1 0 ;
 best_objective_value: 7 ;
 best_valid_objective_value: 5 ;
 end pseudo-Boolean objective dump;
 ";
     let bounds = parse_objective_dump(dump).expect("should parse");
+    assert_eq!(bounds.objective.as_deref(), Some("min 2 x1 0"));
     assert_eq!(bounds.best.as_deref(), Some("7"));
     assert_eq!(bounds.best_valid.as_deref(), Some("5"));
 }
@@ -24,6 +26,7 @@ end pseudo-Boolean objective dump;
 fn parses_negative_values() {
     let dump = "\
 pseudo-Boolean objective dump version 1
+objective: min 2 x1 0 ;
 best_objective_value: -3 ;
 best_valid_objective_value: -3 ;
 end pseudo-Boolean objective dump;
@@ -37,6 +40,7 @@ end pseudo-Boolean objective dump;
 fn parses_none_values() {
     let dump = "\
 pseudo-Boolean objective dump version 1
+objective: min 2 x1 0 ;
 best_objective_value: none ;
 best_valid_objective_value: none ;
 end pseudo-Boolean objective dump;
@@ -50,6 +54,7 @@ end pseudo-Boolean objective dump;
 fn parses_mixed_known_and_none() {
     let dump = "\
 pseudo-Boolean objective dump version 1
+objective: min 2 x1 0 ;
 best_objective_value: 12 ;
 best_valid_objective_value: none ;
 end pseudo-Boolean objective dump;
@@ -59,10 +64,43 @@ end pseudo-Boolean objective dump;
     assert!(bounds.best_valid.is_none());
 }
 
+/// A decision instance (no objective) has no objective function to show,
+/// distinct from (and orthogonal to) whether any value has been logged.
+#[test]
+fn parses_no_objective() {
+    let dump = "\
+pseudo-Boolean objective dump version 1
+objective: none ;
+best_objective_value: none ;
+best_valid_objective_value: none ;
+end pseudo-Boolean objective dump;
+";
+    let bounds = parse_objective_dump(dump).expect("should parse");
+    assert!(bounds.objective.is_none());
+    assert!(bounds.best.is_none());
+    assert!(bounds.best_valid.is_none());
+}
+
+/// A multi-term objective with a nonzero constant, parsed as one opaque
+/// pretty-printed expression (this parser does no arithmetic on it).
+#[test]
+fn parses_multi_term_objective() {
+    let dump = "\
+pseudo-Boolean objective dump version 1
+objective: min 1 x1 2 ~x2 3 x3 4 ;
+best_objective_value: none ;
+best_valid_objective_value: none ;
+end pseudo-Boolean objective dump;
+";
+    let bounds = parse_objective_dump(dump).expect("should parse");
+    assert_eq!(bounds.objective.as_deref(), Some("min 1 x1 2 ~x2 3 x3 4"));
+}
+
 #[test]
 fn rejects_wrong_header() {
     let dump = "\
 pseudo-Boolean objective dump version 2
+objective: min 2 x1 0 ;
 best_objective_value: 7 ;
 best_valid_objective_value: 5 ;
 end pseudo-Boolean objective dump;
@@ -76,9 +114,21 @@ fn rejects_empty_dump() {
 }
 
 #[test]
+fn rejects_missing_objective_line() {
+    let dump = "\
+pseudo-Boolean objective dump version 1
+best_objective_value: 7 ;
+best_valid_objective_value: 5 ;
+end pseudo-Boolean objective dump;
+";
+    assert!(parse_objective_dump(dump).is_err());
+}
+
+#[test]
 fn rejects_missing_second_field() {
     let dump = "\
 pseudo-Boolean objective dump version 1
+objective: min 2 x1 0 ;
 best_objective_value: 7 ;
 end pseudo-Boolean objective dump;
 ";
@@ -89,6 +139,7 @@ end pseudo-Boolean objective dump;
 fn rejects_wrong_field_order() {
     let dump = "\
 pseudo-Boolean objective dump version 1
+objective: min 2 x1 0 ;
 best_valid_objective_value: 5 ;
 best_objective_value: 7 ;
 end pseudo-Boolean objective dump;
