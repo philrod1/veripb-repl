@@ -150,7 +150,8 @@ enum VimSubMode {
     /// (`h`/`j`/`k`/`l`, `i`/`a`/`o`/`O`, `x`, `dd`), not text.
     Normal,
     /// Free typing, via the same `App::editor: LineEditor` the ordinary
-    /// prompt uses — Esc/Enter commit and return to `Normal`.
+    /// prompt uses — Enter opens the next proof line; Esc commits and
+    /// returns to `Normal`.
     Insert,
 }
 
@@ -162,10 +163,10 @@ enum VimSubMode {
 /// terminal's real cursor renders directly in the pane (see
 /// `draw::draw`'s tail) instead of mirroring the current line in the
 /// bottom prompt. Nothing touches the session at all in `Normal` mode —
-/// only `x`/`dd` (immediate) and committing out of `Insert` (`Esc`/
-/// `Enter`) ever call into `Session::set_line`/`insert_line`/
-/// `delete_line`, each its own independently-undoable action (the same
-/// per-commit undo-stack pattern `formula_browse_apply` uses).
+/// only `x`/`dd` (immediate), splitting a line in `Insert` (`Enter`), and
+/// committing out of `Insert` (`Esc`) ever call into `Session::set_line`,
+/// `insert_line`, or `delete_line`; each edit is recorded as one undoable
+/// action, following the same per-commit pattern as `formula_browse_apply`.
 struct VimState {
     /// The proof line currently under the cursor — a display line number
     /// (1-based, proof-panel numbering). Can sit on a preamble line while
@@ -1489,12 +1490,55 @@ impl App {
         self.editor.set_text(":");
     }
 
-    /// Esc/Enter in `Insert` mode: commit `self.editor`'s current text as
-    /// the line's new content and return to `Normal` on the same line,
-    /// cursor where typing left it — its own independently-undoable
-    /// action, same pattern as every other Vim-mode commit here. Never
-    /// rejected: nothing is checked, so this always succeeds (barring an
-    /// internal replay bug, reported like any other).
+    /// Enter in `Insert` mode: split the current line at the editor cursor,
+    /// insert the remainder as the next proof line, and stay in `Insert`
+    /// mode at its start. The two buffer mutations form one undoable
+    /// action, so the split reverses atomically.
+    fn vim_insert_newline(&mut self) {
+        let Some(vim) = &self.vim else {
+            return;
+        };
+        let line = vim.line;
+        let text = self.editor.text();
+        let split_at = self.editor.cursor().min(text.chars().count());
+        let chars: Vec<char> = text.chars().collect();
+        let before: String = chars[..split_at].iter().collect();
+        let after: String = chars[split_at..].iter().collect();
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let Some(idx) = session.buffer_index(line) else {
+            return;
+        };
+
+        let undo_before = (session.generation, session.snapshot());
+        let result = session
+            .set_line(idx, &before)
+            .and_then(|()| session.insert_line(idx + 1, &after));
+        if session.generation != undo_before.0 {
+            session.push_undo(undo_before.1);
+        }
+        if let Err(err) = result {
+            self.scrollback.push(&format!("Error: {err:#}"));
+            return;
+        }
+
+        let next_line = session.display_line(idx + 1);
+        if let Some(vim) = &mut self.vim {
+            vim.line = next_line;
+            vim.col = 0;
+        }
+        self.editor.set_text(&after);
+        self.editor.set_cursor(0);
+        self.scroll_proof_to_cursor(next_line);
+    }
+
+    /// Esc in `Insert` mode: commit `self.editor`'s current text as the
+    /// line's new content and return to `Normal` on the same line, cursor
+    /// where typing left it — its own independently-undoable action, same
+    /// pattern as every other Vim-mode commit here. Never rejected:
+    /// nothing is checked, so this always succeeds (barring an internal
+    /// replay bug, reported like any other).
     fn vim_commit_insert(&mut self) {
         let Some(vim) = &self.vim else {
             return;
@@ -2160,14 +2204,13 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 match key.code {
-                    // Vim `Insert` sub-mode: Esc/Enter commit the line and
-                    // return to `Normal`; Up/Down are swallowed (history
-                    // recall would clobber the line mid-edit); everything
-                    // else falls through unchanged to the ordinary editor
-                    // at the bottom of this match, exactly like the
-                    // regular prompt.
+                    // Vim `Insert` sub-mode: Esc commits and returns to
+                    // `Normal`; Enter opens the next proof line. Up/Down
+                    // are swallowed (history recall would clobber the line
+                    // mid-edit); everything else falls through unchanged
+                    // to the ordinary editor at the bottom of this match.
                     KeyCode::Esc if app.vim_inserting() => app.vim_commit_insert(),
-                    KeyCode::Enter if app.vim_inserting() => app.vim_commit_insert(),
+                    KeyCode::Enter if app.vim_inserting() => app.vim_insert_newline(),
                     KeyCode::Up | KeyCode::Down if app.vim_inserting() => {}
                     // Vim `Normal` sub-mode owns every key outright while
                     // active — checked ahead of every other meaning these
