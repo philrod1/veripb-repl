@@ -1533,6 +1533,96 @@ impl App {
         self.scroll_proof_to_cursor(next_line);
     }
 
+    /// Move the Insert cursor to another proof line, committing the
+    /// current line only when its text changed. The destination column is
+    /// clamped to that line's length, matching a text editor's vertical
+    /// cursor movement without marking untouched checked lines unchecked.
+    fn vim_insert_move_to(&mut self, line: usize, col: usize) {
+        let Some(current_line) = self.vim.as_ref().map(|vim| vim.line) else {
+            return;
+        };
+        if line == current_line {
+            return;
+        }
+        let text = self.editor.text();
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let Some(current_idx) = session.buffer_index(current_line) else {
+            return;
+        };
+        let Some(target_idx) = session.buffer_index(line) else {
+            return;
+        };
+
+        if session.buffer[current_idx] != text {
+            let undo_before = (session.generation, session.snapshot());
+            if let Err(err) = session.set_line(current_idx, &text) {
+                self.scrollback.push(&format!("Error: {err:#}"));
+                return;
+            }
+            if session.generation != undo_before.0 {
+                session.push_undo(undo_before.1);
+            }
+        }
+
+        let target_text = session.buffer[target_idx].clone();
+        let target_col = col.min(target_text.chars().count());
+        if let Some(vim) = &mut self.vim {
+            vim.line = line;
+            vim.col = target_col;
+        }
+        self.editor.set_text(&target_text);
+        self.editor.set_cursor(target_col);
+        self.scroll_proof_to_cursor(line);
+    }
+
+    /// Up/Down in Insert mode move through editable proof lines while
+    /// preserving the current column where possible.
+    fn vim_insert_move_vertical(&mut self, up: bool) {
+        let Some((line, col)) = self.vim_cursor() else {
+            return;
+        };
+        let max_line = self
+            .session
+            .as_ref()
+            .map_or(3, |session| 2 + session.buffer.len());
+        let target = if up {
+            line.saturating_sub(1).max(3)
+        } else {
+            (line + 1).min(max_line)
+        };
+        self.vim_insert_move_to(target, col);
+    }
+
+    /// Left/Right cross into the neighboring proof line at the current
+    /// line's beginning/end. Within a line, `LineEditor` keeps its normal
+    /// character-level behavior.
+    fn vim_insert_move_horizontal(&mut self, right: bool) {
+        let Some((line, col)) = self.vim_cursor() else {
+            return;
+        };
+        let current_len = self.editor.text().chars().count();
+        if right && col == current_len {
+            let max_line = self
+                .session
+                .as_ref()
+                .map_or(3, |session| 2 + session.buffer.len());
+            if line < max_line {
+                self.vim_insert_move_to(line + 1, 0);
+            }
+        } else if !right && col == 0 && line > 3 {
+            let previous_text = self
+                .session
+                .as_ref()
+                .and_then(|session| session.buffer_index(line - 1))
+                .and_then(|idx| self.session.as_ref()?.buffer.get(idx))
+                .cloned()
+                .unwrap_or_default();
+            self.vim_insert_move_to(line - 1, previous_text.chars().count());
+        }
+    }
+
     /// Esc in `Insert` mode: commit `self.editor`'s current text as the
     /// line's new content and return to `Normal` on the same line, cursor
     /// where typing left it — its own independently-undoable action, same
@@ -1552,11 +1642,13 @@ impl App {
         let Some(idx) = session.buffer_index(line) else {
             return;
         };
-        let undo_before = (session.generation, session.snapshot());
-        if let Err(err) = session.set_line(idx, &text) {
-            self.scrollback.push(&format!("Error: {err:#}"));
-        } else if session.generation != undo_before.0 {
-            session.push_undo(undo_before.1);
+        if session.buffer[idx] != text {
+            let undo_before = (session.generation, session.snapshot());
+            if let Err(err) = session.set_line(idx, &text) {
+                self.scrollback.push(&format!("Error: {err:#}"));
+            } else if session.generation != undo_before.0 {
+                session.push_undo(undo_before.1);
+            }
         }
         self.editor.set_text("");
         let len = text.chars().count();
@@ -2205,13 +2297,23 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 match key.code {
                     // Vim `Insert` sub-mode: Esc commits and returns to
-                    // `Normal`; Enter opens the next proof line. Up/Down
-                    // are swallowed (history recall would clobber the line
-                    // mid-edit); everything else falls through unchanged
-                    // to the ordinary editor at the bottom of this match.
+                    // `Normal`; Enter opens the next proof line; arrows
+                    // navigate the proof buffer instead of prompt history.
                     KeyCode::Esc if app.vim_inserting() => app.vim_commit_insert(),
                     KeyCode::Enter if app.vim_inserting() => app.vim_insert_newline(),
-                    KeyCode::Up | KeyCode::Down if app.vim_inserting() => {}
+                    KeyCode::Up if app.vim_inserting() => app.vim_insert_move_vertical(true),
+                    KeyCode::Down if app.vim_inserting() => app.vim_insert_move_vertical(false),
+                    KeyCode::Left
+                        if app.vim_inserting() && app.editor.cursor() == 0 =>
+                    {
+                        app.vim_insert_move_horizontal(false);
+                    }
+                    KeyCode::Right
+                        if app.vim_inserting()
+                            && app.editor.cursor() == app.editor.text().chars().count() =>
+                    {
+                        app.vim_insert_move_horizontal(true);
+                    }
                     // Vim `Normal` sub-mode owns every key outright while
                     // active — checked ahead of every other meaning these
                     // keys have, including each other's normal pane-
