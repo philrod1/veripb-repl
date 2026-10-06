@@ -50,7 +50,7 @@ impl VarNames {
 
     /// The scan itself, split out from [`Self::from_formula_file`] so the
     /// logic doesn't depend on the source being a real file on disk.
-    fn from_formula_text(text: &str) -> Self {
+    pub(crate) fn from_formula_text(text: &str) -> Self {
         let mut known = AHashSet::new();
         for line in text.lines() {
             // Skip comments

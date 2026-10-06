@@ -21,6 +21,16 @@ use crate::checker::parse::is_rup_line;
 use crate::output::{self, Output, outln};
 use crate::session::{RejectionDiagnosis, Session};
 
+// Fixed phrases in this command's output, shared with the TUI's
+// scrollback highlighter (`tui::draw::scrollback`), which keys its colours
+// off them — rewording one here rewords the match there too.
+pub(crate) const NEEDED_SUFFIX: &str = " needed:";
+pub(crate) const REJECTED_INFIX: &str = " is rejected: ";
+pub(crate) const TYPED_HINTS: &str = "Typed hints:";
+pub(crate) const VERDICT_CHECKS: &str = "Without hints it DOES check";
+pub(crate) const VERDICT_FAILS: &str = "Without hints it still fails";
+pub(crate) const NEGATED_PREMISE: &str = "~ (the negated constraint itself)";
+
 pub fn run(session: &Session, args: &str, out: &mut dyn Output) {
     let arg = args.trim();
     let rejected_line = session
@@ -87,7 +97,7 @@ fn explain_checked(session: &Session, n: usize, out: &mut dyn Output) {
     if is_rup {
         match session.rup_needed_hints(n) {
             Ok(Ok(hints)) => {
-                outln!(out, "Line {n} needed:");
+                outln!(out, "Line {n}{NEEDED_SUFFIX}");
                 print_hint_list(session, &hints, "  ", out);
             }
             Ok(Err(msg)) => outln!(out, "Error: {msg}"),
@@ -101,7 +111,7 @@ fn explain_checked(session: &Session, n: usize, out: &mut dyn Output) {
 /// underneath.
 fn print_rejection(session: &Session, n: usize, out: &mut dyn Output) {
     let reason = session.known_bad.as_deref().unwrap_or_default();
-    outln!(out, "Line {n} is rejected: {reason}");
+    outln!(out, "Line {n}{REJECTED_INFIX}{reason}");
 
     match session.diagnose_rejected_rup() {
         Ok(Some(diagnosis)) => print_diagnosis(session, &diagnosis, out),
@@ -112,7 +122,7 @@ fn print_rejection(session: &Session, n: usize, out: &mut dyn Output) {
 
 fn print_diagnosis(session: &Session, diagnosis: &RejectionDiagnosis, out: &mut dyn Output) {
     if diagnosis.typed_hints.is_empty() {
-        outln!(out, "  Typed hints: (none)");
+        outln!(out, "  {TYPED_HINTS} (none)");
     } else {
         let typed: Vec<String> = diagnosis
             .typed_hints
@@ -122,7 +132,7 @@ fn print_diagnosis(session: &Session, diagnosis: &RejectionDiagnosis, out: &mut 
                 RupHint::NegatedPremise => "~".to_string(),
             })
             .collect();
-        outln!(out, "  Typed hints: {}", typed.join(" "));
+        outln!(out, "  {TYPED_HINTS} {}", typed.join(" "));
     }
     for id in &diagnosis.missing_ids {
         outln!(
@@ -140,14 +150,13 @@ fn print_diagnosis(session: &Session, diagnosis: &RejectionDiagnosis, out: &mut 
         Ok(hints) => {
             outln!(
                 out,
-                "  Without hints it DOES check — the hint list is the problem. The checker needed:"
+                "  {VERDICT_CHECKS} — the hint list is the problem. The checker needed:"
             );
             print_hint_list(session, hints, "    ", out);
         }
         Err(_) => outln!(
             out,
-            "  Without hints it still fails: the constraint isn't RUP-implied by the current \
-             database."
+            "  {VERDICT_FAILS}: the constraint isn't RUP-implied by the current database."
         ),
     }
 }
@@ -184,7 +193,7 @@ fn print_hint_list(session: &Session, hints: &[RupHint], indent: &str, out: &mut
     for hint in hints {
         match hint {
             RupHint::NegatedPremise => {
-                outln!(out, "{indent}~ (the negated constraint itself)");
+                outln!(out, "{indent}{NEGATED_PREMISE}");
             }
             RupHint::ConstraintId(id) => {
                 let labels = labels_by_id

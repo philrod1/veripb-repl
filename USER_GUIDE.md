@@ -143,6 +143,16 @@ whichever hue that theme already uses for assertion, in every palette
 including `colorblind`, since it can't coincide with an actual assertion
 row in practice and so never needs to stay distinguishable from one.
 
+The Output pane (scrollback) gets a lighter touch of structure on top:
+checker trace headers (`line 3: ...`) and `:explain`'s own headers
+(`Line 3 needed:`, `Line 4 is rejected:`) in bold, `ConstraintId N:`
+prefixes dimmed, variables and `@labels` inside constraint and rule text
+coloured the same way the panes colour them, a `~` hint picked out in the
+accent colour, and failures — `Error:` lines, a rejection's reason,
+missing hint IDs, "Without hints it still fails" — in red, with "Without
+hints it DOES check" in green (vermillion and blue-green under
+`colorblind`). Anything else prints plain, as before.
+
 This is genuinely app-wide, not just the accents: every character the
 TUI prints — pane content, borders, scrollbar chrome, the scrollback,
 the prompt, all of it — carries an explicit background and foreground
