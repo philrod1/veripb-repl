@@ -8,9 +8,10 @@ pub enum CheckOutcome {
     /// Checking stopped at `line`.
     Rejected {
         line: usize,
-        /// The checker's error text for `line`.
+        /// Just the reason `line` was rejected, one line — see
+        /// [`super::parse::rejection_reason`].
         message: String,
-        /// Any output printed before the rejection.
+        /// The checker's full raw output, rejection included.
         trace: String,
     },
 }
@@ -22,6 +23,7 @@ impl CheckOutcome {
 }
 
 /// One hint in a `rup` step's minimized hint list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RupHint {
     /// A specific already-derived constraint.
     ConstraintId(usize),

@@ -414,12 +414,11 @@ the eventual design.
 | `:quit` | exit the REPL | **Implemented** |
 | `:theme [<name>]` | TUI only: switch the color palette (`dark`/`light`/`hi-contrast`/`colorblind`) | **Implemented** — see below |
 | `:check [<conclusion>]` | bare: auto-tries `UNSAT`, `SAT`, and (once known) `BOUNDS v v` — the conclusions needing no extra input — and shows whichever the real checker accepts, else a REPL-native "not yet" status. With an argument: non-destructively test whether the session would verify with that conclusion, without closing it | **Implemented** — see below |
-| `:explain <n>` | show an expanded derivation for proof line `n` — `pol`'s full step-by-step table, `red`'s substitution witness and proofgoals, or (every other rule, for now) the same baseline `ConstraintId N: ...` line every rule prints when traced | **Implemented** — see below |
+| `:explain [<n>]` | show how proof line `n` was derived — `pol`'s full step-by-step table, `red`'s substitution witness and proofgoals, `rup`'s minimized set of needed hints, or (every other rule) the baseline `ConstraintId N: ...` line — or, if `n` is the rejected line, why it was rejected (with a hint diagnosis for `rup`). No `n`: the rejected line, else the last checked one | **Implemented** — see below |
 | `:list` | print every buffer line, checked or not (tagged `[unchecked]`, or `[breakpoint]` if one's set there), numbered by position | **Implemented** — see below |
 | `:load <file>` | load a formula (resets session) | **Implemented** — OPB only, same as startup; see below |
 | `:instance <file.opb\|file.pbp\|stem>` | load a formula and its matching proof together — `:load` then `:source`, from either half of the pair or their bare stem | **Implemented** — see below |
 | `:show [filters]` | list database constraints; filter by variable, ID/range, or label (each exact or `*`-glob), or core/derived | **Implemented** — filters combine (AND); see below |
-| `:why [all\|needed]` | explain the last successful `rup` step — or, if a line is currently rejected, explain that instead. Bare/`needed` shows the minimized set of already-derived constraints (and/or the rule's own negation) the checker actually needed; `all` — the fuller literal-by-literal propagation trail — needs upstream changes | **Implemented** — `needed` only; see below |
 | `:objective` | show current objective and best known bounds | **Implemented** — see below |
 | `:goals` | inside a subproof, list remaining proof goals | Not implemented |
 | `:undo [n]` | undo the last *n* actions (default 1) — not lines, whatever counted as one thing done | **Implemented** — see below |
@@ -434,7 +433,7 @@ the eventual design.
 | `:delete <n>` \| `:delete <n>-<m>` | remove proof line(s) immediately, checked or not | **Implemented** — see below |
 | `:insert <n>` | *(tentative in plain)* add new, unchecked proof line(s) before line n | **Implemented** — see below |
 | `:formula [<n>]` \| `:formula <n>-<m>` \| `:formula cancel` | switch into formula-editing mode (`opb>` prompt) and retype constraint(s) in place, reverifying the whole buffer against each commit (unchecked tail preserved, never discarded, on a partial failure); `cancel` undoes the most recent commit | **Implemented** — see below |
-| `:debug` | switch into stepping/breakpoint mode (`debug>` prompt): `:step`/`:back` move `checked_len` one line at a time, `:continue`/`:until <n>` run to the next breakpoint (or a one-off line) or a rejection, `:break`/`:break <n>`/`:break clear` manage breakpoints, `:restart` retracts to the top without discarding anything. `:show`/`:list`/`:explain`/`:why`/`:objective`/`:check` all still work; `:done` (or Esc, in the TUI) leaves | **Implemented** — see below |
+| `:debug` | switch into stepping/breakpoint mode (`debug>` prompt): `:step`/`:back` move `checked_len` one line at a time, `:continue`/`:until <n>` run to the next breakpoint (or a one-off line) or a rejection, `:break`/`:break <n>`/`:break clear` manage breakpoints, `:restart` retracts to the top without discarding anything. `:show`/`:list`/`:explain`/`:objective`/`:check` all still work; `:done` (or Esc, in the TUI) leaves | **Implemented** — see below |
 
 ## What works today, concretely
 
@@ -543,65 +542,58 @@ the eventual design.
   produce a confusing "expected EOF" error rather than a clean message — it
   doesn't yet detect "the proof is already closed" as a distinct state.
 
-- `:explain <n>` — an expanded, non-destructive derivation of one already-
-  accepted proof line: replays just that line through a fresh, throwaway
-  checker with tracing turned up, the same pattern `:check` uses to avoid
-  touching the live session. For a `pol` line: the full step-by-step
-  reverse-polish table (each operator applied, and the running constraint
-  after it). For a `red` line: the substitution witness plus every
-  proofgoal and how it was auto-proven — genuinely verbose, since that's
-  what `red` actually does. For every other rule (`rup` included, for
-  now): the same baseline `ConstraintId N: ...` line every rule prints
-  when traced — a real, honest result, not a placeholder; `:why` (see
-  below) covers `rup` specifically, with its own kind of detail. `n` must
-  name an already-accepted line — the synthesized preamble or anything
-  past the end of the proof errors rather than guessing. Read-only, so —
-  like `:show`/`:list`/`:objective`/`:check`/`:why` — it also works
-  mid-`:edit`/mid-`:deassert`/mid-`:insert` in the plain frontend's
+- `:explain [<n>]` — an expanded, non-destructive account of proof line
+  `n`: how it was derived if it's checked, or why it was rejected if it's
+  the line `:verify` stopped at. Everything replays through a fresh,
+  throwaway checker, the same pattern `:check` uses to avoid touching the
+  live session.
+
+  For a checked line, by rule:
+  - `pol`: the full step-by-step reverse-polish table (each operator
+    applied, and the running constraint after it).
+  - `red`: the substitution witness plus every proofgoal and how it was
+    auto-proven — genuinely verbose, since that's what `red` actually
+    does.
+  - `rup`: the baseline `ConstraintId N: ...` line, then `Line n needed:`
+    and the minimized set of hints the checker actually needed to reach
+    its conflict — which already-derived constraints (and/or `~`, the
+    rule's own negation) genuinely contributed a propagation, whatever
+    hint list, if any, was typed. A lone `~` means the negation alone
+    reached the conflict; alongside constraint IDs it's one contributor
+    among several. This is data the checker already computes for every
+    accepted `rup` step — `RUPRule::compute` in
+    `veripb-checker/src/rules/rup.rs` builds it either by filtering a
+    typed hint list down to what actually propagated, or, with no hints,
+    via the propagation engine's own trail-minimization — but normally
+    only uses to write an `--elaborate` output file. `:explain` replays
+    the prefix with the elaborator pointed at a scratch file and reads
+    the hints back from the one `rup <constraint> : <hints>;` line it
+    wrote; nothing in `veripb-checker` changes for this.
+  - Every other rule: the same baseline `ConstraintId N: ...` line every
+    rule prints when traced.
+
+  For the rejected line: the checker's reason (the same one `:list` and
+  `:save` show), and, for a `rup` line, a diagnosis underneath — the hints
+  you typed, any typed constraint ID that isn't in the live database
+  (deleted, or never derived), and the result of re-checking the same
+  constraint with its hint list stripped: either "Without hints it DOES
+  check", followed by the hints the checker actually needed (so the hint
+  list was the problem), or "Without hints it still fails" (the
+  constraint isn't RUP-implied by the current database at all).
+
+  With no `n`, targets the rejected line if there is one, otherwise the
+  last checked line. Any other `n` must name an already-accepted line —
+  the synthesized preamble, an unchecked line, or anything past the end of
+  the proof errors rather than guessing.
+
+  Read-only, so — like `:show`/`:list`/`:objective`/`:check` — it also
+  works mid-`:edit`/mid-`:deassert`/mid-`:insert` in the plain frontend's
   queue-based flow, without disturbing what's queued. In the TUI's Vim
   mode, typing `:` leaves the editor and hands focus to the ordinary
   prompt with `:` pre-typed — so this (and anything else you'd type
   there) runs the same way it always does once you're back at the
   prompt, but the edit itself is over; the buffer keeps whatever it
   committed, `:edit`/`:deassert`/`:insert` again to resume elsewhere.
-
-- `:why [all|needed]` — explains the *last* `rup` step in the buffer's
-  checked prefix (never a specific line number — always whichever one was
-  most recently checked), by showing the minimized set of hints the
-  checker actually needed to reach its conflict: which already-derived
-  constraints (and/or the rule's own negation) genuinely contributed a
-  propagation, as opposed to whatever hint list, if any, was typed. Bare
-  `:why` and `:why needed` are the same thing. This is real data the
-  checker already computes internally for every accepted `rup` step,
-  explicit-hint or bare alike —
-  `RUPRule::compute` in `veripb-checker/src/rules/rup.rs` builds exactly
-  this minimized list either way, filtering a typed hint down to only
-  what actually propagated something, or, with no hint typed at all,
-  building it fresh via the propagation engine's own trail-minimization —
-  but it's normally only ever *used* to write an elaborated (explicit-hint,
-  minimized) proof file when the checker's own `--elaborate` output is
-  requested, never surfaced back to a human interactively. `:why` gets at
-  it by replaying the buffer's prefix through `display_line` — the
-  usual non-destructive throwaway-checker pattern, same as `:check`/
-  `:explain` — but this time with the checker's elaborator pointed at a
-  scratch temp file, then reads back the one `rup <constraint> : <hints>;`
-  line it wrote and reports those hints. Entirely a `veripb-repl`-side
-  trick: nothing in `veripb-checker`/`veripb-rules` changes for this, on
-  purpose, until (if ever) the REPL becomes permanent enough to justify a
-  proper in-memory elaboration hook instead of a scratch file. `:why all`
-  — the fuller literal-by-literal propagation trail every intermediate
-  assignment took, not just the minimized hint set — is a different, and
-  genuinely unavailable, kind of data: it exists in the checker only on
-  the *failure* path (`trace_failed_with_hints` in `rup.rs`, printed when
-  a RUP check doesn't reach a conflict), with no equivalent hook for a
-  successful step. Asking for `:why all` says so plainly rather than
-  silently falling back to `needed` or doing nothing. Errors with "no
-  `rup` step in the proof yet" if the checked prefix doesn't have one.
-  Read-only, so it works the same way `:explain` does above — mid-edit in
-  the plain frontend's queue, or after leaving the TUI's Vim mode via
-  `:` — though since it always targets "whatever's currently the *last*
-  `rup` line," that target can itself shift if editing removed or added
-  one.
 
 - `:objective` — prints the current objective (`context.objective`, which
   reflects any `obju` updates, not just the formula's original one), plus
@@ -841,8 +833,8 @@ the eventual design.
     restoring the buffer exactly as it was when the edit began (no
     re-verification needed, since that prior state was already
     known-good). While an edit is active, only `:skip`, `:done`,
-    `:cancel`, and the six read-only commands — `:show`, `:list`,
-    `:objective`, `:check`, `:explain`, `:why` — are recognized; everything
+    `:cancel`, and the five read-only commands — `:show`, `:list`,
+    `:objective`, `:check`, `:explain` — are recognized; everything
     else you type (or don't) is proof-rule text. The read-only ones run in
     place and leave whatever's queued untouched, exactly as they would at
     the ordinary prompt (and, same as always, still refuse a line that
@@ -1153,12 +1145,12 @@ the eventual design.
   - `:restart` retracts all the way back to the top, keeping every
     line — the non-destructive sibling of `:reset`, which drops the
     buffer entirely.
-  - `:show`, `:list`, `:objective`, `:check`, `:explain`, and `:why`
-    all still work without leaving the mode — the same read-only
-    commands the ordinary prompt has, reused as-is (see `:why`'s own
-    entry above for what it explains when a line is currently
-    rejected — exactly the "why is this line bad" question stepping
-    through a proof tends to raise).
+  - `:show`, `:list`, `:objective`, `:check`, and `:explain` all
+    still work without leaving the mode — the same read-only commands
+    the ordinary prompt has, reused as-is (see `:explain`'s own entry
+    above for what it shows when a line is currently rejected —
+    exactly the "why is this line bad" question stepping through a
+    proof tends to raise).
   - `:done` (or Esc, in the TUI) leaves the mode.
 
   Every `:step`/`:back`/`:continue`/`:until`/`:restart` is its own
@@ -1275,13 +1267,13 @@ the eventual design.
 
 ## Not yet implemented
 
-- `:why all` — the full literal-by-literal propagation trail behind a
-  `rup` step (every intermediate assignment, not just which constraints
-  were needed). `:why`/`:why needed` (see above) already covers the
-  minimized-hints half — that one didn't need upstream changes, just a
-  scratch-file trick; `all` genuinely does, since the checker only builds
-  that fuller trail on the *failure* path today, with no equivalent hook
-  for a successful step.
+- The full literal-by-literal propagation trail behind a `rup` step
+  (every intermediate assignment, not just which constraints were
+  needed). `:explain` (see above) already shows the minimized-hints half.
+  For a *rejected* step the checker can already print the trail
+  (`--trace-failed`), so `:explain` could surface it there; for a
+  successful step it needs upstream changes, since the checker has no
+  equivalent hook.
 - `:goals` — inside a subproof, list remaining proof goals.
 - `:trace on|off` — verbose checker tracing for subsequent lines; tracing
   is currently always scoped internally to just-accepted lines.

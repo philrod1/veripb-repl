@@ -15,27 +15,38 @@ use super::types::{CheckOutcome, Database, DatabaseEntry, ObjectiveBounds, RupHi
 /// unambiguously the one being asked about.
 pub fn last_rup_hints(elaborated_proof: &str) -> Option<Vec<RupHint>> {
     let last_rup_line = elaborated_proof.lines().rev().find(|line| is_rup_line(line))?;
-    let (_constraint, hints) = last_rup_line.split_once(':')?;
+    split_rup_hints(last_rup_line).1
+}
+
+/// Splits one `rup` line into everything before its hint list (label,
+/// rule keyword and constraint, trimmed) and the parsed hints after its
+/// `:`, or `None` for the hints if the line has no `:` at all (a bare
+/// `rup <constraint> ;`, whose prefix then has its `;` stripped too).
+/// Doesn't check that `line` is a `rup` line — see [`is_rup_line`].
+pub fn split_rup_hints(line: &str) -> (&str, Option<Vec<RupHint>>) {
+    let Some((prefix, hints)) = line.split_once(':') else {
+        let prefix = line.trim();
+        return (prefix.strip_suffix(';').unwrap_or(prefix).trim_end(), None);
+    };
     let hints = hints.trim();
     let hints = hints.strip_suffix(';').unwrap_or(hints);
-    Some(
-        hints
-            .split_whitespace()
-            .filter_map(|tok| {
-                if tok == "~" {
-                    Some(RupHint::NegatedPremise)
-                } else {
-                    // An unparsable token is dropped rather than aborting
-                    tok.parse::<usize>().ok().map(RupHint::ConstraintId)
-                }
-            })
-            .collect(),
-    )
+    let hints = hints
+        .split_whitespace()
+        .filter_map(|tok| {
+            if tok == "~" {
+                Some(RupHint::NegatedPremise)
+            } else {
+                // An unparsable token is dropped rather than aborting
+                tok.parse::<usize>().ok().map(RupHint::ConstraintId)
+            }
+        })
+        .collect();
+    (prefix.trim(), Some(hints))
 }
 
 /// Returns whether `line` is a `rup` rule line, optionally preceded by
-/// an `@label`.
-fn is_rup_line(line: &str) -> bool {
+/// an `@label`. An exact token match, not a prefix check.
+pub fn is_rup_line(line: &str) -> bool {
     let mut tokens = line.split_whitespace();
     match tokens.next() {
         Some(t) if t.starts_with('@') => tokens.next() == Some("rup"),
@@ -89,7 +100,7 @@ pub fn check_outcome(raw: &RawInvocation) -> anyhow::Result<CheckOutcome> {
     match line {
         Some(line) => Ok(CheckOutcome::Rejected {
             line,
-            message: combined.clone(),
+            message: rejection_reason(&combined),
             trace: combined,
         }),
         None => anyhow::bail!(
@@ -101,6 +112,29 @@ pub fn check_outcome(raw: &RawInvocation) -> anyhow::Result<CheckOutcome> {
             raw.stderr,
         ),
     }
+}
+
+/// Returns just the reason from a rejection's raw output — the first
+/// non-blank line under its `Caused by:` header, e.g. `"Accessing the
+/// database out of bound with index 99. ..."`, without the version banner,
+/// the `Error: Checking error at <path>:<line>` wrapper (a scratch path,
+/// meaningless to the user), or a syntax error's source excerpt and `^^^`
+/// marker lines. Falls back to the `Error: ` line's own text, then to the
+/// whole output trimmed, if the shape isn't recognized. The raw output
+/// stays available as the outcome's `trace`.
+pub fn rejection_reason(output: &str) -> String {
+    let mut lines = output.lines();
+    if lines.by_ref().any(|line| line.trim() == "Caused by:")
+        && let Some(reason) = lines.map(str::trim).find(|line| !line.is_empty())
+    {
+        return reason.to_string();
+    }
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix("Error: "))
+        .unwrap_or(output)
+        .trim()
+        .to_string()
 }
 
 /// Returns the line number in a `"<proof_file_path>:<line>"` message —

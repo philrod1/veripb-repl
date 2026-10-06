@@ -577,7 +577,7 @@ impl Session {
 
     /// Like [`Self::buffer_index`], but additionally requires the line to
     /// be checked — `None` for the preamble, past the end of the buffer, or
-    /// the unchecked tail. Used by `:explain`/`:why`, which replay
+    /// the unchecked tail. Used by `:explain`, which replays
     /// already-accepted content.
     pub fn checked_index(&self, display_line: usize) -> Option<usize> {
         let idx = self.buffer_index(display_line)?;
@@ -793,14 +793,77 @@ impl Session {
 
         let text = self.preamble_and_lines(&self.buffer[..=idx]);
         let formula_file = self.formula_temp_file()?;
-        match checker::why_rup(formula_file.path(), &text)? {
-            Some(hints) => Ok(Ok(hints)),
-            None => Ok(Err(format!(
-                "line {display_line} doesn't look like a `rup` step — nothing to explain with \
-                 :why."
+        match checker::elaborate_rup(formula_file.path(), &text)? {
+            Ok(Some(hints)) => Ok(Ok(hints)),
+            Ok(None) => Ok(Err(format!(
+                "line {display_line} doesn't look like a `rup` step — no hints to show."
+            ))),
+            Err(message) => Ok(Err(format!(
+                "internal error: replaying line {display_line}, which should already be \
+                 checked, was rejected: {message}"
             ))),
         }
     }
+
+    /// Non-destructively diagnoses the pending rejection, if there is one
+    /// and the rejected line (`buffer[checked_len]`) is a `rup` step:
+    /// which of its typed hint IDs aren't in the live database, and
+    /// whether the same constraint checks with its hint list stripped
+    /// (and if so, which hints the checker found it needed). `None` if
+    /// nothing is rejected or the rejected line isn't `rup`.
+    pub fn diagnose_rejected_rup(&self) -> anyhow::Result<Option<RejectionDiagnosis>> {
+        if self.known_bad.is_none() {
+            return Ok(None);
+        }
+        let Some(line) = self.buffer.get(self.checked_len) else {
+            return Ok(None);
+        };
+        if !checker::parse::is_rup_line(line) {
+            return Ok(None);
+        }
+
+        let (prefix, typed_hints) = checker::parse::split_rup_hints(line);
+        let typed_hints = typed_hints.unwrap_or_default();
+
+        let database = self.database()?;
+        let missing_ids = typed_hints
+            .iter()
+            .filter_map(|hint| match hint {
+                checker::RupHint::ConstraintId(id) => Some(*id),
+                checker::RupHint::NegatedPremise => None,
+            })
+            .filter(|id| database.get(*id).is_none())
+            .collect();
+        drop(database);
+
+        let mut text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
+        text.push_str(&format!("{prefix} ;\n"));
+        let formula_file = self.formula_temp_file()?;
+        let without_hints = match checker::elaborate_rup(formula_file.path(), &text)? {
+            Ok(hints) => Ok(hints.unwrap_or_default()),
+            Err(message) => Err(message),
+        };
+
+        Ok(Some(RejectionDiagnosis {
+            display_line: self.display_line(self.checked_len),
+            typed_hints,
+            missing_ids,
+            without_hints,
+        }))
+    }
+}
+
+/// [`Session::diagnose_rejected_rup`]'s result.
+pub struct RejectionDiagnosis {
+    /// The rejected line's display line number.
+    pub display_line: usize,
+    /// The hints typed after the line's `:` (empty if it had none).
+    pub typed_hints: Vec<checker::RupHint>,
+    /// Typed `ConstraintId`s not in the live database.
+    pub missing_ids: Vec<usize>,
+    /// Re-checking the same constraint with no hints: `Ok` with the hints
+    /// the checker then needed, or `Err` with its rejection message.
+    pub without_hints: Result<Vec<checker::RupHint>, String>,
 }
 
 /// Returns the shared "nothing to explain there" message for
