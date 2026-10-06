@@ -9,7 +9,7 @@
 //! and `:restart` retracts all the way back to the top without touching
 //! the buffer at all — the non-destructive sibling of `:reset`. Every
 //! read-only inspection command (`:show`/`:list`/`:objective`/`:check`/
-//! `:explain`/`:why`) keeps working exactly as it does at the ordinary
+//! `:explain`) keeps working exactly as it does at the ordinary
 //! prompt, since they only ever read `checked_len`/the checker's current
 //! state, never caring who moved it there — see
 //! `edit::READONLY_DURING_EDIT`, reused as-is.
@@ -54,7 +54,7 @@ pub struct DebugState;
 
 /// The `:`-commands debug mode recognizes beyond the shared read-only
 /// set (`READONLY_DURING_EDIT` — `:show`/`:list`/`:objective`/`:check`/
-/// `:explain`/`:why`, chained on separately by
+/// `:explain`, chained on separately by
 /// `tui::App::refresh_candidates` rather than duplicated here, so that
 /// allowlist stays the one place deciding which read-only commands work
 /// mid-mode). None of these are real dispatchable commands outside
@@ -133,7 +133,7 @@ pub fn start(session: &Session, out: &mut dyn Output) -> Option<DebugState> {
         out,
         "Debugging (prompt becomes debug>) — :step/:back move one line, :continue runs to \
          the next breakpoint or a rejection, :break <n> toggles one. :show/:list/:explain/\
-         :why/:objective/:check still work. :done (or Esc in the TUI) to leave."
+         :objective/:check still work. :done (or Esc in the TUI) to leave."
     );
     Some(DebugState)
 }

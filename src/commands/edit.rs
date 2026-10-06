@@ -54,25 +54,25 @@
 //! dispatch, since neither the undo-stack bookkeeping nor the `:formula
 //! cancel` invalidation dispatch does around a call means anything for a
 //! command that changes nothing — `:show`/`:list`/`:objective`/`:check`/
-//! `:explain`/`:why` (see [`READONLY_DURING_EDIT`]). Everything else
+//! `:explain` (see [`READONLY_DURING_EDIT`]). Everything else
 //! starting with `:` is reported as unavailable rather than ambiguous
 //! with proof-rule text (which never starts with `:` in v3 syntax);
 //! anything not starting with `:` is the replacement for whatever's
 //! currently queued (or, once the queue's empty, a new line inserted
 //! after it).
 
-use crate::commands::{check, explain, list, objective, resolve_command, show, why};
+use crate::commands::{check, explain, list, objective, resolve_command, show};
 use crate::output::{Output, outln};
 use crate::session::Session;
 
 /// Commands safe to run without disturbing a queued edit — none of them
-/// touch the buffer. `:show`/`:list`/`:objective`/`:explain`/`:why` just
-/// print; `:check` is, per its own docs, "always a dry run... the live
-/// session is never touched" even outside an edit. `:explain`/`:why`
-/// still refuse a line that isn't checked, same as always — an active
-/// edit doesn't change that.
+/// touch the buffer. `:show`/`:list`/`:objective`/`:explain` just print;
+/// `:check` is, per its own docs, "always a dry run... the live session
+/// is never touched" even outside an edit. `:explain` still refuses a
+/// line that isn't checked (other than a pending rejection), same as
+/// always — an active edit doesn't change that.
 pub(crate) const READONLY_DURING_EDIT: &[&str] =
-    &["show", "list", "objective", "check", "explain", "why"];
+    &["show", "list", "objective", "check", "explain"];
 
 /// Run one of `READONLY_DURING_EDIT`'s commands, bypassing
 /// `commands::dispatch` entirely: dispatch's undo-stack bookkeeping and
@@ -80,7 +80,7 @@ pub(crate) const READONLY_DURING_EDIT: &[&str] =
 /// something, neither means anything here. `pub(crate)` — originally
 /// [`handle`]'s own helper, now shared with `commands::debug`, which
 /// reuses the exact same allowlist (`READONLY_DURING_EDIT`) for the same
-/// reason: `:show`/`:list`/`:objective`/`:check`/`:explain`/`:why` are
+/// reason: `:show`/`:list`/`:objective`/`:check`/`:explain` are
 /// just as safe to run without disturbing a `:debug` stop as they are
 /// mid-`:edit`.
 pub(crate) fn run_readonly(
@@ -95,7 +95,6 @@ pub(crate) fn run_readonly(
         "objective" => objective::run(session, out),
         "explain" => explain::run(session, args, out),
         "check" => check::run(session, args, out)?,
-        "why" => why::run(session, args, out),
         _ => unreachable!("only ever called with a READONLY_DURING_EDIT name"),
     }
     Ok(())
@@ -737,7 +736,7 @@ pub fn handle(
                 _ => {
                     outln!(
                         out,
-                        "Only :show, :list, :objective, :check, :explain, :why, :skip, \
+                        "Only :show, :list, :objective, :check, :explain, :skip, \
                          :done, and :cancel work while editing — type the replacement \
                          line, or one of those."
                     );

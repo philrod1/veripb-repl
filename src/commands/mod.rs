@@ -23,7 +23,6 @@ pub mod source;
 pub mod theme;
 pub mod undo;
 pub mod verify;
-pub mod why;
 
 use crate::output::{self, Output, outln};
 use crate::session::{AppendOutcome, Session};
@@ -310,7 +309,6 @@ fn dispatch_inner(
         match cmd {
             "show" => show::run(session, cmd_args, out),
             "explain" => explain::run(session, cmd_args, out),
-            "why" => why::run(session, cmd_args, out),
             "check" => check::run(session, cmd_args, out)?,
             "objective" => objective::run(session, out),
             "list" => list::run(session, out),

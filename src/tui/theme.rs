@@ -103,6 +103,15 @@ pub struct Theme {
     /// own — a preview is context, not committed state, exactly `dim`'s
     /// existing job.
     pub breakpoint: Color,
+    /// Foreground for failure text in the scrollback: `Error:` lines, a
+    /// rejection's reason, `:explain`'s "still fails" verdict. A
+    /// foreground-grade tone, like `breakpoint`, not `error_bg`'s muted
+    /// background one.
+    pub error_fg: Color,
+    /// Foreground for success text in the scrollback — `:explain`'s
+    /// "Without hints it DOES check" verdict. Paired with `error_fg`, so
+    /// the two must stay distinguishable in every palette.
+    pub ok_fg: Color,
 }
 
 /// The default palette. `bg`/`fg` and the foreground accents (`dim`
@@ -123,6 +132,8 @@ pub const DARK: Theme = Theme {
     derived_bg: rgb(0x4A, 0x3E, 0x10),
     error_bg: rgb(0x7F, 0x1D, 0x1D),
     breakpoint: rgb(0xE0, 0x6C, 0x75),
+    error_fg: rgb(0xE0, 0x6C, 0x75),
+    ok_fg: rgb(0x98, 0xC3, 0x79),
 };
 
 /// `DARK`'s opposite number, for a light terminal background — borrowed
@@ -145,6 +156,8 @@ pub const LIGHT: Theme = Theme {
     derived_bg: rgb(0xF6, 0xE6, 0xBE),
     error_bg: rgb(0xFC, 0xA5, 0xA5),
     breakpoint: rgb(0xE4, 0x56, 0x49),
+    error_fg: rgb(0xE4, 0x56, 0x49),
+    ok_fg: rgb(0x50, 0xA1, 0x4F),
 };
 
 /// Maximum distinction over subtlety: true black `bg`, true white `fg`,
@@ -166,6 +179,8 @@ pub const HI_CONTRAST: Theme = Theme {
     derived_bg: rgb(0xB8, 0x5C, 0x00),
     error_bg: rgb(0xFF, 0x00, 0x00),
     breakpoint: rgb(0xFF, 0xA5, 0x00),
+    error_fg: rgb(0xFF, 0x5F, 0x5F),
+    ok_fg: rgb(0x00, 0xFF, 0x5F),
 };
 
 /// `bg`/`fg`/`dim` are the same dark base as `DARK` — background doesn't
@@ -196,6 +211,10 @@ pub const COLORBLIND: Theme = Theme {
     derived_bg: rgb(0x54, 0x50, 0x17),
     error_bg: rgb(0xD5, 0x5E, 0x00),
     breakpoint: rgb(0xE6, 0x9F, 0x00),
+    // Okabe-Ito vermillion vs bluish green: the palette's own pairing
+    // for "bad"/"good" that survives red-green color blindness.
+    error_fg: rgb(0xD5, 0x5E, 0x00),
+    ok_fg: rgb(0x00, 0x9E, 0x73),
 };
 
 /// Which palette is active. `:theme <name>` switches it (TUI only — the

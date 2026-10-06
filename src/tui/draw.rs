@@ -34,6 +34,13 @@
 //! keyword or a constraint-ID hint as a variable, unlike guessing from
 //! position.
 //!
+//! The scrollback adds a few *structural* roles on top of those two
+//! accents — section headers bold, `ConstraintId N:` dimmed, errors and
+//! verdicts in `error_fg`/`ok_fg` — by recognizing fixed line shapes (see
+//! `scrollback`). Still no keyword/operator/number colouring there either;
+//! constraint and rule text inside those lines gets the same
+//! variables-and-labels treatment as the panes.
+//!
 //! The Proof pane's Vim-mode cursor gets its own signal on top of all
 //! that: the line it sits on renders on a background color (token
 //! foreground colors still apply on top of it), tying it visually to the
@@ -70,6 +77,8 @@ use crate::tui::layout::{self, Layout};
 use crate::tui::{App, Pane, Zoom, theme::Theme};
 use crate::varnames::VarNames;
 
+mod scrollback;
+
 const NORMAL_PROMPT: &str = "pbp> ";
 const FORMULA_PROMPT: &str = "opb> ";
 const DEBUG_PROMPT: &str = "debug> ";
@@ -79,13 +88,22 @@ const DEBUG_PROMPT: &str = "debug> ";
 /// prompt only ever sits at two positions: strip hidden, or strip shown.
 const SUGGESTION_ROWS: usize = 6;
 
-/// What color, if any, a run of text in a panel line carries. Kept to
-/// exactly two accents plus "none" — see the module docs for why.
-#[derive(Clone, Copy, PartialEq)]
+/// What color, if any, a run of text carries. The top panes only ever use
+/// `Plain`/`Variable`/`Label` — see the module docs for why; the rest are
+/// the scrollback's structural roles (see `scrollback::tokenize`).
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum TokenStyle {
     Plain,
     Variable,
     Label,
+    /// A section header (`line 3:`, `Line 3 needed:`): bold `fg`.
+    Heading,
+    /// Context rather than content (`ConstraintId 3:`, the veripb banner).
+    Dim,
+    /// A lone symbol worth picking out (`~` as a hint).
+    Accent,
+    Error,
+    Ok,
 }
 
 /// One run of same-styled text within a panel line's content.
@@ -116,6 +134,27 @@ fn label(text: String) -> Span {
     }
 }
 
+fn styled(text: &str, style: TokenStyle) -> Span {
+    Span {
+        text: text.to_string(),
+        style,
+    }
+}
+
+/// The foreground `style` draws in, and whether it's bold.
+fn style_fg(style: TokenStyle, theme: Theme) -> (Color, bool) {
+    match style {
+        TokenStyle::Plain => (theme.fg, false),
+        TokenStyle::Variable => (theme.variable, false),
+        TokenStyle::Label => (theme.label, false),
+        TokenStyle::Heading => (theme.fg, true),
+        TokenStyle::Dim => (theme.dim, false),
+        TokenStyle::Accent => (theme.cursor_accent, false),
+        TokenStyle::Error => (theme.error_fg, false),
+        TokenStyle::Ok => (theme.ok_fg, false),
+    }
+}
+
 /// Plain content text on the theme's base background — the "nothing
 /// special going on here" style. Everywhere text isn't part of an accent,
 /// a row highlight, or border/scrollbar chrome (see `chrome`) goes
@@ -139,16 +178,7 @@ fn chrome(text: &str, theme: Theme) -> String {
 /// visible width — never on text that might still get char-sliced
 /// afterward, since slicing an ANSI-embedded string would corrupt it.
 fn style_span(span: &Span, theme: Theme) -> String {
-    match span.style {
-        TokenStyle::Plain => base(&span.text, theme),
-        TokenStyle::Variable => span
-            .text
-            .clone()
-            .with(theme.variable)
-            .on(theme.bg)
-            .to_string(),
-        TokenStyle::Label => span.text.clone().with(theme.label).on(theme.bg).to_string(),
-    }
+    style_span_on_bg(span, theme.bg, theme)
 }
 
 /// Same per-token foreground coloring as `style_span`, plus a solid
@@ -158,11 +188,9 @@ fn style_span(span: &Span, theme: Theme) -> String {
 /// assertion, a Database-pane row's core/derived status): they only ever
 /// differ in which `theme` background they pass in.
 fn style_span_on_bg(span: &Span, bg: Color, theme: Theme) -> String {
-    match span.style {
-        TokenStyle::Plain => span.text.clone().with(theme.fg).on(bg).to_string(),
-        TokenStyle::Variable => span.text.clone().with(theme.variable).on(bg).to_string(),
-        TokenStyle::Label => span.text.clone().with(theme.label).on(bg).to_string(),
-    }
+    let (fg, bold) = style_fg(span.style, theme);
+    let text = span.text.clone().with(fg).on(bg);
+    if bold { text.bold() } else { text }.to_string()
 }
 
 fn spans_char_len(spans: &[Span]) -> usize {
@@ -822,7 +850,8 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             continue;
         }
         let line = visible.get(i).map(String::as_str).unwrap_or("");
-        let cell = base(&windowed(line, app.output_hscroll, sb_eff_w), theme);
+        let vars = app.session.as_ref().map(|s| &s.variables);
+        let cell = scrollback_cell(line, vars, app.output_hscroll, sb_eff_w, theme);
         rows.push(match &output_vbar {
             Some(range) if range.contains(&i) => {
                 format!("{bar}{cell}{}{bar}", "┃".with(theme.fg).on(theme.bg))
@@ -1607,17 +1636,23 @@ fn fit(s: &str, width: usize) -> String {
     }
 }
 
-/// Skip `offset` characters of `s`, then take/pad to exactly `width` —
-/// the scrollback's equivalent of `panel_cell`'s span-based windowing,
-/// simpler since scrollback lines carry no styling/tokenizing to
-/// preserve (unlike the top panes' constraint text): just plain
-/// character-level slicing.
-fn windowed(s: &str, offset: usize, width: usize) -> String {
-    let taken: String = s.chars().skip(offset).take(width).collect();
-    let pad = width.saturating_sub(taken.chars().count());
-    let mut out = taken;
-    out.extend(std::iter::repeat_n(' ', pad));
-    out
+/// One scrollback row: `line` tokenized (see `scrollback::tokenize`),
+/// `offset` characters skipped for horizontal scrolling, then clipped and
+/// padded to exactly `width` — the scrollback's equivalent of
+/// `panel_cell`, without the pinned prefix.
+fn scrollback_cell(
+    line: &str,
+    vars: Option<&VarNames>,
+    offset: usize,
+    width: usize,
+    theme: Theme,
+) -> String {
+    let spans = scrollback::tokenize(line, vars);
+    let clipped = spans_take(&spans_skip(&spans, offset), width);
+    let pad = width - spans_char_len(&clipped);
+    let mut cell: String = clipped.iter().map(|span| style_span(span, theme)).collect();
+    cell.push_str(&base(&" ".repeat(pad), theme));
+    cell
 }
 
 /// A border segment carrying a pane title: `─ Title ────`, truncated

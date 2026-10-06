@@ -70,18 +70,19 @@ pub fn explain_line(formula_path: &Path, proof_text: &str) -> anyhow::Result<Che
 
 /// Returns the minimized RUP-hint list for the last `rup` line in
 /// `proof_text`, or `None` if that line isn't a `rup` step. `proof_text`
-/// must end exactly at the step being asked about.
-pub fn why_rup(formula_path: &Path, proof_text: &str) -> anyhow::Result<Option<Vec<RupHint>>> {
+/// must end exactly at the step being asked about. The inner `Err` is the
+/// checker's rejection message if `proof_text` doesn't check — an
+/// internal error for an already-checked prefix, but the expected answer
+/// when probing a candidate line (see `Session::diagnose_rejected_rup`).
+pub fn elaborate_rup(
+    formula_path: &Path,
+    proof_text: &str,
+) -> anyhow::Result<Result<Option<Vec<RupHint>>, String>> {
     let elaborated = invoke::run_with_elaboration(formula_path, proof_text)?;
-    anyhow::ensure!(
-        elaborated.raw.success,
-        "internal error: elaborating a proof that should already be fully checked failed \
-         (exit code {:?})\n--- stdout ---\n{}\n--- stderr ---\n{}",
-        elaborated.raw.code,
-        elaborated.raw.stdout,
-        elaborated.raw.stderr,
-    );
-    Ok(parse::last_rup_hints(&elaborated.elaborated_proof))
+    match parse::check_outcome(&elaborated.raw)? {
+        CheckOutcome::Accepted { .. } => Ok(Ok(parse::last_rup_hints(&elaborated.elaborated_proof))),
+        CheckOutcome::Rejected { message, .. } => Ok(Err(message)),
+    }
 }
 
 /// Returns the live database after replaying `proof_text`.
