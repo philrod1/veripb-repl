@@ -399,7 +399,8 @@ enum RefKind {
 
 fn rule_ref_kind(rule: &str) -> RefKind {
     match rule {
-        "red" | "pbc" | "obju" | "sol" | "soli" | "solx" | "a" => RefKind::Variable,
+        "red" | "pbc" | "obju" | "sol" | "soli" | "solx" | "a" | "preserved_add"
+        | "preserved_rm" | "epreserved" => RefKind::Variable,
         "delc" | "deld" | "core" | "proofgoal" | "qed" => RefKind::Constraint,
         _ => RefKind::Both,
     }

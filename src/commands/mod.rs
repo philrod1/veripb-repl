@@ -289,6 +289,7 @@ fn dispatch_inner(
         AppendOutcome::Rejected { captured, error } => {
             output::text(out, &captured);
             output::error(out, &error);
+            help::print_rejection_hint(out, line);
             outln!(out, "(line rejected, state unchanged)");
         }
         AppendOutcome::Deferred => {
