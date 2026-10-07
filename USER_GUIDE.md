@@ -430,6 +430,7 @@ the eventual design.
 | `:instance <file.opb\|file.pbp\|stem>` | load a formula and its matching proof together — `:load` then `:source`, from either half of the pair or their bare stem | **Implemented** — see below |
 | `:show [filters]` | list database constraints; filter by variable, ID/range, or label (each exact or `*`-glob), or core/derived | **Implemented** — filters combine (AND); see below |
 | `:objective` | show current objective and best known bounds | **Implemented** — see below |
+| `:preserved` | show the current preserved variable set — the formula's `preserved:` set as changed by `preserved_add`/`preserved_rm` | **Implemented** — read from the checker's trace; see below |
 | `:goals` | inside a subproof, list remaining proof goals | Not implemented |
 | `:undo [n]` | undo the last *n* actions (default 1) — not lines, whatever counted as one thing done | **Implemented** — see below |
 | `:source <file.pbp>` | load a proof from a file into the buffer, unchecked | **Implemented** — see below |
@@ -443,7 +444,7 @@ the eventual design.
 | `:delete <n>` \| `:delete <n>-<m>` | remove proof line(s) immediately, checked or not | **Implemented** — see below |
 | `:insert <n>` | *(tentative in plain)* add new, unchecked proof line(s) before line n | **Implemented** — see below |
 | `:formula [<n>]` \| `:formula <n>-<m>` \| `:formula cancel` | switch into formula-editing mode (`opb>` prompt) and retype constraint(s) in place, reverifying the whole buffer against each commit (unchecked tail preserved, never discarded, on a partial failure); `cancel` undoes the most recent commit | **Implemented** — see below |
-| `:debug` | switch into stepping/breakpoint mode (`debug>` prompt): `:step`/`:back` move `checked_len` one line at a time, `:continue`/`:until <n>` run to the next breakpoint (or a one-off line) or a rejection, `:break`/`:break <n>`/`:break clear` manage breakpoints, `:restart` retracts to the top without discarding anything. `:show`/`:list`/`:explain`/`:objective`/`:check` all still work; `:done` (or Esc, in the TUI) leaves | **Implemented** — see below |
+| `:debug` | switch into stepping/breakpoint mode (`debug>` prompt): `:step`/`:back` move `checked_len` one line at a time, `:continue`/`:until <n>` run to the next breakpoint (or a one-off line) or a rejection, `:break`/`:break <n>`/`:break clear` manage breakpoints, `:restart` retracts to the top without discarding anything. `:show`/`:list`/`:explain`/`:objective`/`:preserved`/`:check` all still work; `:done` (or Esc, in the TUI) leaves | **Implemented** — see below |
 
 ## What works today, concretely
 
@@ -596,7 +597,7 @@ the eventual design.
   the synthesized preamble, an unchecked line, or anything past the end of
   the proof errors rather than guessing.
 
-  Read-only, so — like `:show`/`:list`/`:objective`/`:check` — it also
+  Read-only, so — like `:show`/`:list`/`:objective`/`:preserved`/`:check` — it also
   works mid-`:edit`/mid-`:deassert`/mid-`:insert` in the plain frontend's
   queue-based flow, without disturbing what's queued. In the TUI's Vim
   mode, typing `:` leaves the editor and hands focus to the ordinary
@@ -613,6 +614,28 @@ the eventual design.
   checked-deletion guarantees — the stricter one `conclusion BOUNDS`
   actually relies on). If there's no objective at all (a pure satisfaction
   problem), says so and stops there.
+
+- `:preserved` — prints the preserved variable set as it stands after the
+  checked part of the proof: the formula's `preserved:` declaration, as
+  changed by any `preserved_add`/`preserved_rm` steps since, sorted by
+  name. If something has changed it, also says which line last did and
+  what the formula originally declared:
+
+  ```
+  Preserved set (3): x1 x3 x5
+    last changed by line 7; the formula declared: x1 x3
+  ```
+
+  If the formula has no `preserved:` line, says so. The checker has no
+  way to dump this set directly (yet — a `--dump-preserved` flag, like
+  `--dump-database`/`--dump-objective`, is being proposed upstream), so
+  `:preserved` reads the `Preserved set: ...` line the checker prints when
+  tracing a `preserved_add`/`preserved_rm`: it replays the proof up to the
+  last such line, tracing just that one. No replay at all if nothing has
+  changed the set. It shows only the set itself, not the related state
+  `solx` and `output EQUIENUMERABLE` depend on (whether the set was ever
+  changed, whether a witness has been used). Read-only, so it works
+  mid-edit and in `:debug` like `:objective`.
 
 - `:list` — prints the two synthesized preamble lines (tagged
   `[preamble]` — they're supplied by the session, not editable or
@@ -843,8 +866,8 @@ the eventual design.
     restoring the buffer exactly as it was when the edit began (no
     re-verification needed, since that prior state was already
     known-good). While an edit is active, only `:skip`, `:done`,
-    `:cancel`, and the five read-only commands — `:show`, `:list`,
-    `:objective`, `:check`, `:explain` — are recognized; everything
+    `:cancel`, and the six read-only commands — `:show`, `:list`,
+    `:objective`, `:preserved`, `:check`, `:explain` — are recognized; everything
     else you type (or don't) is proof-rule text. The read-only ones run in
     place and leave whatever's queued untouched, exactly as they would at
     the ordinary prompt (and, same as always, still refuse a line that
@@ -1155,7 +1178,7 @@ the eventual design.
   - `:restart` retracts all the way back to the top, keeping every
     line — the non-destructive sibling of `:reset`, which drops the
     buffer entirely.
-  - `:show`, `:list`, `:objective`, `:check`, and `:explain` all
+  - `:show`, `:list`, `:objective`, `:preserved`, `:check`, and `:explain` all
     still work without leaving the mode — the same read-only commands
     the ordinary prompt has, reused as-is (see `:explain`'s own entry
     above for what it shows when a line is currently rejected —

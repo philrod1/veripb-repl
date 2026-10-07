@@ -1,88 +1,35 @@
-//! `:edit <n>` / `:edit <n>-<m>` — retype one or more existing buffer
-//! lines in place, live. Also `:deassert` — find the first unchecked
-//! `a`-rule assertion and open it the same way, for replacing scaffolding
-//! with a real derivation — and `:delete`/`:insert`, the two operations
-//! `:edit` doesn't itself cover: removing line(s) with nothing put back,
-//! and adding new ones with nothing pulled out.
+//! Plain-frontend line editing: `:edit <n>[-<m>]` (retype lines in place),
+//! `:deassert [<n>]` (replace an `a`-rule with real derivation steps),
+//! `:insert <n>` (add lines) and `:delete <n>[-<m>]` (remove lines).
 //!
-//! **Nothing here ever truncates or checks anything.** Every mutation —
-//! retyping a line, skipping one, inserting a new one — is an immediate,
-//! always-successful edit to `session.buffer` (see `session.rs`'s module
-//! docs for the full checked/unchecked model): retyping a line inside the
-//! checked prefix retracts `checked_len` to that point, but the text of
-//! every other line, checked or not, stays exactly where it is. Nothing
-//! is ever reverified as a side effect of an edit — that's `:verify`'s
-//! job, on request. This is a substantial simplification from the old
-//! truncate-and-replay design: there's no way for an edit to "half
-//! succeed," so there's nothing left to report partial success or
-//! failure about.
+//! Edits never check anything: each mutation is an immediate edit to
+//! `session.buffer`, and retyping a checked line only retracts `checked_len`
+//! to it. Re-verification is `:verify`'s job.
 //!
-//! These three commands are kept for now mostly as-is (their surface
-//! syntax, `:skip`/`:cancel`/`:done`) while the live, in-place-editable
-//! buffer beds in — flagged as tentative in `:help`. The TUI has already
-//! moved past this queue-based flow entirely: `:edit`/`:deassert`/
-//! `:insert` there are all intercepted before dispatch and driven by its
-//! own Vim-style modal editor instead (`tui/mod.rs`'s `VimState`), calling
-//! straight into [`Session::set_line`]/`insert_line`/`delete_line` with no
-//! queue at all. This module — [`EditState`], [`start`], [`handle`] — is
-//! now the plain frontend's alone.
+//! `:edit`/`:deassert`/`:insert` produce an [`EditState`] driven by [`handle`]
+//! until `:done`/`:cancel`; `delete` is immediate. The TUI does not use the
+//! queue (its Vim mode calls [`Session::set_line`]/`insert_line`/`delete_line`
+//! directly) but reuses the `pub(crate)` helpers `find_first_assertion`,
+//! `is_assertion_line`, `assertion_constraint_text`,
+//! `suggest_related_constraints` and `parse_start_line`.
 //!
-//! Two shapes exist, sharing the same underlying `Session` primitives
-//! (`buffer_index`, `set_line`, `insert_line`, `delete_line`):
-//!
-//! - **Queue-based, open-ended** ([`EditState`], [`start`], [`handle`]):
-//!   `:edit`, `:deassert`, and `:insert` all produce an [`EditState`] and
-//!   are driven the same way from there: retype (or, for `:deassert`/
-//!   `:insert`, freely type any number of new lines) until `:done` leaves
-//!   the mode, `:skip`/`:cancel` available throughout. `:edit`/
-//!   `:deassert` start with one or more existing lines queued for
-//!   retyping; `:insert` starts with an empty queue and nothing but a
-//!   position to insert new lines at — see [`EditState`]'s own docs for
-//!   how the same `next`/`end` pair models both.
-//! - [`delete`] (`:delete`) is immediate: [`Session::delete_line`] per
-//!   removed line, nothing queued or retyped.
-//!
-//! A few pieces are `pub(crate)` for the TUI's Vim mode to reuse directly,
-//! since its `:deassert`/`:edit` entry points need the identical line-
-//! finding/validation/hint logic: [`find_first_assertion`],
-//! [`is_assertion_line`], [`assertion_constraint_text`],
-//! [`suggest_related_constraints`], [`parse_start_line`].
-//!
-//! While a queue-based edit is active, `commands::dispatch` is bypassed
-//! entirely: [`handle`] is the sole entry point, recognizing `:skip`,
-//! `:done`, `:cancel`, and — routed to their own command code, not
-//! dispatch, since neither the undo-stack bookkeeping nor the `:formula
-//! cancel` invalidation dispatch does around a call means anything for a
-//! command that changes nothing — `:show`/`:list`/`:objective`/`:check`/
-//! `:explain` (see [`READONLY_DURING_EDIT`]). Everything else
-//! starting with `:` is reported as unavailable rather than ambiguous
-//! with proof-rule text (which never starts with `:` in v3 syntax);
-//! anything not starting with `:` is the replacement for whatever's
-//! currently queued (or, once the queue's empty, a new line inserted
-//! after it).
+//! While an edit is active, `commands::dispatch` is bypassed: [`handle`]
+//! accepts `:skip`, `:done`, `:cancel` and the `READONLY_DURING_EDIT`
+//! commands, rejects any other `:` input (proof-rule text never starts with
+//! `:`), and treats everything else as the replacement or inserted line.
 
-use crate::commands::{check, explain, list, objective, resolve_command, show};
+use crate::commands::{check, explain, list, objective, preserved, resolve_command, show};
 use crate::output::{Output, outln};
 use crate::session::Session;
 
-/// Commands safe to run without disturbing a queued edit — none of them
-/// touch the buffer. `:show`/`:list`/`:objective`/`:explain` just print;
-/// `:check` is, per its own docs, "always a dry run... the live session
-/// is never touched" even outside an edit. `:explain` still refuses a
-/// line that isn't checked (other than a pending rejection), same as
-/// always — an active edit doesn't change that.
+/// The single allowlist of commands safe to run mid-`:edit` (none touch the
+/// buffer; `:check` is always a dry run). `:debug` reuses it.
 pub(crate) const READONLY_DURING_EDIT: &[&str] =
-    &["show", "list", "objective", "check", "explain"];
+    &["show", "list", "objective", "preserved", "check", "explain"];
 
-/// Run one of `READONLY_DURING_EDIT`'s commands, bypassing
-/// `commands::dispatch` entirely: dispatch's undo-stack bookkeeping and
-/// `:formula cancel` invalidation both exist for commands that change
-/// something, neither means anything here. `pub(crate)` — originally
-/// [`handle`]'s own helper, now shared with `commands::debug`, which
-/// reuses the exact same allowlist (`READONLY_DURING_EDIT`) for the same
-/// reason: `:show`/`:list`/`:objective`/`:check`/`:explain` are
-/// just as safe to run without disturbing a `:debug` stop as they are
-/// mid-`:edit`.
+/// Runs a `READONLY_DURING_EDIT` command directly, skipping `dispatch`'s undo
+/// and `:formula` bookkeeping (these commands change nothing). Used by `:edit`
+/// and `:debug`. Panics on any other `cmd`.
 pub(crate) fn run_readonly(
     session: &Session,
     cmd: &str,
@@ -93,6 +40,7 @@ pub(crate) fn run_readonly(
         "show" => show::run(session, args, out),
         "list" => list::run(session, out),
         "objective" => objective::run(session, out),
+        "preserved" => preserved::run(session, out),
         "explain" => explain::run(session, args, out),
         "check" => check::run(session, args, out)?,
         _ => unreachable!("only ever called with a READONLY_DURING_EDIT name"),
@@ -100,53 +48,33 @@ pub(crate) fn run_readonly(
     Ok(())
 }
 
-/// A queue-based edit's entire state: which buffer lines are still
-/// waiting to be offered for retyping, plus enough of the pre-edit buffer
-/// to restore on `:cancel`.
+/// State of a queue-based edit: the queued buffer range plus the pre-edit
+/// state that `:cancel` restores.
 ///
-/// `next` and `end` together model both halves of what this covers:
-/// while `next < end`, `buffer[next]` is an *original* line still
-/// waiting to be retyped or skipped (retyping it commits in place via
-/// [`Session::set_line`] and advances `next`; skipping it removes it via
-/// [`Session::delete_line`] and shrinks `end`, since the line after it
-/// slides into the same index). Once `next == end`, nothing original is
-/// left — any further typed line is a brand new insertion at that same
-/// position (`Session::insert_line`), advancing both `next` and `end`
-/// together so repeated free typing keeps inserting in order. `:insert`
-/// starts directly in this second state (`next == end` from the outset,
-/// nothing pulled out to offer); `:edit`/`:deassert` start in the first
-/// and fall into the second once their queue drains.
+/// While `next < end`, `buffer[next]` is an original line awaiting retype
+/// ([`Session::set_line`], advances `next`) or skip ([`Session::delete_line`],
+/// shrinks `end`). Once `next == end`, each typed line is inserted at `next`
+/// (`Session::insert_line`), advancing both. `:insert` starts with
+/// `next == end`.
 pub struct EditState {
     next: usize,
     end: usize,
-    /// The bare-number shorthand (`:edit n`, no `-`) finishes the instant
-    /// its one queued line is accepted; an explicit range — including a
-    /// degenerate one-line range (`:edit n-n`) — always waits for an
-    /// explicit `:done`, since there's no way to tell "that submission
-    /// was your last edit" from "you want to keep typing more lines"
-    /// without being told. `:deassert`/`:insert` always behave like the
-    /// latter: both are inherently open-ended, never a one-line swap.
+    /// True only for bare `:edit n`: the edit ends once its one line is
+    /// accepted. Ranges (even `n-n`), `:deassert` and `:insert` wait for `:done`.
     single_line: bool,
-    /// For a `:deassert`-started edit, the bare constraint text (label and
-    /// `a` keyword stripped) of the assertion being replaced — captured
-    /// once at the start, so it stays available for the rest of the edit.
-    /// `None` for an ordinary `:edit`/`:insert`. See [`Self::deassert_source`].
+    /// For `:deassert`, the replaced assertion's bare constraint text; `None`
+    /// otherwise. See [`Self::deassert_source`].
     deassert_source: Option<String>,
-    /// The buffer, checked prefix, and known-bad state from immediately
-    /// before this edit began — what `:cancel` restores, verbatim, no
-    /// re-verification needed (all of it was already exactly this before
-    /// a single keystroke of this edit landed).
+    /// Buffer, checked prefix and known-bad state from before the edit,
+    /// restored verbatim by `:cancel` without re-verification.
     prior_buffer: Vec<String>,
     prior_checked_len: usize,
     prior_known_bad: Option<String>,
 }
 
 impl EditState {
-    /// What `:deassert` is replacing, for display alongside the edit —
-    /// e.g. the TUI's Output-pane heading, or the plain frontend's
-    /// prompt — so it stays visible for the whole edit, not just the
-    /// intro message printed once at the start. `None` outside a
-    /// `:deassert`-started edit.
+    /// The constraint text `:deassert` is replacing, for display for the
+    /// duration of the edit. `None` outside a `:deassert`-started edit.
     pub(crate) fn deassert_source(&self) -> Option<&str> {
         self.deassert_source.as_deref()
     }
@@ -160,12 +88,9 @@ pub enum EditFlow {
     Ended,
 }
 
-/// Parses `<n>` or `<n>-<m>`, returning `(lo, hi, was_a_range)` — the
-/// third element distinguishes `:edit 5` from `:edit 5-5`, which parse to
-/// the same numbers but mean different things (see `EditState::single_line`).
-/// `pub(crate)` so `commands::formula::start` can reuse the exact same
-/// syntax (and single-vs-range distinction) for `:formula <n>`/`:formula
-/// <n>-<m>` rather than duplicating it.
+/// Parses `<n>` or `<n>-<m>` into `(lo, hi, was_a_range)`; `was_a_range`
+/// distinguishes `5` from `5-5` (see `EditState::single_line`). Errors on
+/// empty input, non-numbers, or `hi < lo`. Also used by `:formula`.
 pub(crate) fn parse_range(args: &str) -> Result<(usize, usize, bool), String> {
     if args.is_empty() {
         return Err("usage :edit <n> or :edit <n>-<m>".to_string());
@@ -194,28 +119,17 @@ pub(crate) fn parse_range(args: &str) -> Result<(usize, usize, bool), String> {
     }
 }
 
-/// Just the starting line of `:edit <n>` / `:edit <n>-<m>`, for the TUI's
-/// Vim-mode entry point (`tui::App::start_vim_edit`) — a range only ever
-/// picks where the cursor starts there, never queues anything, so the end
-/// of the range (and whether a `-` was used) is unused.
+/// The start line of `:edit <n>[-<m>]`, for the TUI's Vim-mode entry point
+/// (`tui::App::start_vim_edit`), which only positions the cursor.
 pub(crate) fn parse_start_line(args: &str) -> Result<usize, String> {
     parse_range(args).map(|(lo, ..)| lo)
 }
 
-/// Shared mechanics behind `:edit` and `:deassert`: queue lines `lo..=hi`
-/// for retyping. Otherwise read-only — nothing is truncated or otherwise
-/// touched until an actual retype/skip happens — except for one
-/// deliberate marker bump of `session.generation`, for the same reason
-/// `commands::formula::start` bumps it at mode entry: with no other
-/// mutation to notice, `commands::dispatch`'s undo-stack tracking
-/// wouldn't otherwise realize an edit session began, and everything a
-/// later retype commits (via `edit::handle`, which bypasses `dispatch`
-/// entirely while the mode is active) would be unreachable to `:undo`
-/// once the mode ends. `single_line` is passed in rather than derived
-/// from `lo == hi`, since a caller may want a degenerate one-line range
-/// to still behave like a real range (see `EditState::single_line`).
-/// Callers own their own intro messaging — this only reports a bad line
-/// number.
+/// Starts an edit with display lines `lo..=hi` queued for retyping. Leaves the
+/// buffer untouched but bumps `session.generation` so `dispatch` records an
+/// undo point for the edit (later changes go through [`handle`], bypassing
+/// `dispatch`). Prints an error and returns `None` on an invalid line; callers
+/// print their own intro.
 fn start_at(
     session: &mut Session,
     lo: usize,
@@ -245,9 +159,7 @@ fn start_at(
         next: start_idx,
         end: end_idx + 1,
         single_line,
-        // Set by `start_deassert` after this returns, for a
-        // `:deassert`-started edit specifically — plain `:edit`/`:insert`
-        // have no single "assertion being replaced" to remember.
+        // Filled in by `start_deassert`.
         deassert_source: None,
         prior_buffer: session.buffer.clone(),
         prior_checked_len: session.checked_len,
@@ -255,12 +167,8 @@ fn start_at(
     })
 }
 
-/// `:edit <arg>` — parse and start a *plain-mode* queue edit on the named
-/// line(s). Never called by the TUI — see the module docs. With no
-/// argument, targets the last buffer line, matching the TUI's Vim mode
-/// (which starts there too when opened bare) rather than erroring —
-/// otherwise a plain-mode user would need to already know that line
-/// number just to get the same starting point a TUI user gets for free.
+/// `:edit [<n>[-<m>]]` — starts a plain-frontend queue edit. With no argument,
+/// targets the last buffer line (matching the TUI's bare `:edit`).
 pub fn start(session: &mut Session, args: &str, out: &mut dyn Output) -> Option<EditState> {
     let (lo, hi, is_range) = if args.trim().is_empty() {
         if session.buffer.is_empty() {
@@ -295,15 +203,8 @@ pub fn start(session: &mut Session, args: &str, out: &mut dyn Output) -> Option<
     Some(state)
 }
 
-/// Whether `line` is an `a`-rule (unchecked assertion) — `a <constraint>
-/// ...;`, optionally preceded by a `@label` (labels sit ahead of the rule
-/// keyword, not after — see `proof_format_overview.md`'s "Constraint
-/// Labels" section). An exact token match, not a prefix check, so
-/// distinct rules that happen to start with the letter `a` (there are
-/// none today, but `ia`/`obj`-style names are the shape to worry about)
-/// can never false-match. `pub(crate)` so the TUI can check a
-/// double-clicked line itself, to route to `:deassert` instead of plain
-/// Vim-mode editing when it's an assertion.
+/// Whether `line` is an `a`-rule (unchecked assertion), optionally preceded
+/// by a `@label`. Matches the rule keyword as a whole token, not a prefix.
 pub(crate) fn is_assertion_line(line: &str) -> bool {
     let mut tokens = line.split_whitespace();
     match tokens.next() {
@@ -313,14 +214,9 @@ pub(crate) fn is_assertion_line(line: &str) -> bool {
     }
 }
 
-/// The bare constraint text of an `a`-rule line — its label (if any) and
-/// the `a` keyword itself stripped, along with a trailing `;` — for
-/// display alongside "what am I replacing" while `:deassert` is active
-/// (see `EditState::deassert_source`). `line` must already satisfy
-/// [`is_assertion_line`]; this doesn't re-validate, and returns whatever
-/// happens to be left if it doesn't. `pub(crate)` so the TUI's own Vim-
-/// mode `:deassert` entry point can build the same header text without
-/// going through the plain queue's `start_deassert`.
+/// The constraint text of an `a`-rule line, with label, `a` keyword and
+/// trailing `;` stripped. Expects `line` to satisfy [`is_assertion_line`];
+/// does not re-validate.
 pub(crate) fn assertion_constraint_text(line: &str) -> String {
     let mut rest = line.trim();
     // A label sits ahead of the `a` keyword — skip it first, if present.
@@ -337,16 +233,8 @@ pub(crate) fn assertion_constraint_text(line: &str) -> String {
     rest.strip_suffix(';').unwrap_or(rest).trim().to_string()
 }
 
-/// The display line number of the first `a`-rule in the buffer, if any —
-/// what bare `:deassert` (no line number) targets. Always the *earliest*
-/// one: assertions are meant to be temporary scaffolding (see
-/// `proof_format_overview.md`'s "Unchecked Assertion" section), and
-/// clearing them from the front keeps the remaining count shrinking in a
-/// predictable order rather than jumping around the proof. Looks at the
-/// whole buffer, checked or not — an `a`-rule is never itself rejected
-/// (it's unchecked by definition), so one can perfectly well be sitting
-/// in the unchecked tail too. `pub(crate)` so the TUI's own Vim-mode
-/// `:deassert` entry point can reuse the identical search.
+/// Display line of the earliest `a`-rule anywhere in the buffer (checked or
+/// not), if any. The target of bare `:deassert`.
 pub(crate) fn find_first_assertion(session: &Session) -> Option<usize> {
     session
         .buffer
@@ -355,16 +243,10 @@ pub(crate) fn find_first_assertion(session: &Session) -> Option<usize> {
         .map(|idx| session.display_line(idx))
 }
 
-/// `:deassert [<n>]` — find an `a`-rule and open it for editing exactly
-/// like an explicit one-line range (`single_line = false`): accepting a
-/// replacement doesn't auto-finish, so any number of real derivation
-/// steps (`rup`, `pol`, `red`, ...) can go in before `:done` retires it.
-/// Nothing requires the replacement to be a single rule — that's the
-/// whole point, versus `:edit n`. With no argument, targets the earliest
-/// assertion in the proof (see `find_first_assertion`); with one, targets
-/// that specific line instead — still validated as an actual `a`-rule,
-/// so pointing it at an ordinary line errors rather than silently doing
-/// something else.
+/// `:deassert [<n>]` — opens an `a`-rule for open-ended replacement (any
+/// number of lines until `:done`). Targets `find_first_assertion` by default;
+/// an explicit `<n>` must be an `a`-rule or it errors. Prints related
+/// constraints as a hint.
 pub fn start_deassert(
     session: &mut Session,
     args: &str,
@@ -405,8 +287,7 @@ pub fn start_deassert(
         n
     };
 
-    // Captured up front, since `assertion_text` needs to outlive `state`'s
-    // construction below (both borrow `session`).
+    // Cloned before `start_at` takes `session` mutably.
     let assertion_text = session.buffer[session.buffer_index(line)?].clone();
 
     let mut state = start_at(session, line, line, false, out)?;
@@ -421,16 +302,9 @@ pub fn start_deassert(
     Some(state)
 }
 
-/// Hint at what's around to build the replacement from: every checked
-/// constraint currently live that mentions any variable the assertion
-/// itself mentioned (see `mentioned_vars`). Printed once, here, as a
-/// starting point — the TUI additionally keeps this signal current for
-/// the *whole* edit by highlighting the same matches live in the
-/// Database pane (see `tui::draw::database_lines`), since a one-time list
-/// goes stale the moment a new intermediate constraint joins the database.
-/// Purely a courtesy listing either way: nothing here is verified or
-/// required. `pub(crate)` so the TUI's own Vim-mode `:deassert` entry
-/// point can print the identical hint list.
+/// Prints up to 8 live database constraints sharing a variable with
+/// `assertion_text`, most shared variables first, then newest. Informational
+/// only.
 pub(crate) fn suggest_related_constraints(session: &Session, assertion_text: &str, out: &mut dyn Output) {
     let vars = session.variables.mentioned(assertion_text);
     if vars.is_empty() {
@@ -445,9 +319,8 @@ pub(crate) fn suggest_related_constraints(session: &Session, assertion_text: &st
         }
     };
 
-    // (constraint ID, how many of `vars` it mentions) — most-relevant
-    // first (most variables in common), then most-recent, since that's
-    // usually what you were just working on and so most likely relevant.
+    // (constraint ID, number of `vars` shared), sorted by shared count, then
+    // newest first.
     let mut matches: Vec<(usize, usize)> = database
         .entries
         .iter()
@@ -485,11 +358,8 @@ pub(crate) fn suggest_related_constraints(session: &Session, assertion_text: &st
     }
 }
 
-/// Remove lines `lo..=hi` immediately — `:delete`'s mechanics. Deleted
-/// back-to-front internally so earlier removals don't shift the indices
-/// later ones still need — from the caller's perspective it's just
-/// "these lines are gone," in one step, nothing to reject and nothing
-/// left to reverify.
+/// Removes display lines `lo..=hi` immediately. Prints an error and returns
+/// `Ok` on an invalid line.
 fn delete(
     session: &mut Session,
     lo: usize,
@@ -521,10 +391,8 @@ fn delete(
     Ok(())
 }
 
-/// `:delete <n>` / `:delete <n>-<m>` — parse and delete. No `:edit
-/// cancel`-style safety net, deliberately: this is meant to be a quick,
-/// direct action, not a staged one — same recovery as any other committed
-/// change (retype it, or :undo).
+/// `:delete <n>[-<m>]` — parses and deletes immediately; recoverable via
+/// `:undo`.
 pub fn start_delete(session: &mut Session, args: &str, out: &mut dyn Output) -> anyhow::Result<()> {
     let (lo, hi, _) = match parse_range(args.trim()) {
         Ok(range) => range,
@@ -536,16 +404,9 @@ pub fn start_delete(session: &mut Session, args: &str, out: &mut dyn Output) -> 
     delete(session, lo, hi, out)
 }
 
-/// `:insert <n>` — start an open-ended, queue-based edit that inserts new
-/// lines *before* the line currently numbered `n` (or at the very end,
-/// if `n` names the line one past the last one — the same convention
-/// `Vec::insert` uses for its index), pushing everything from `n` onward
-/// down without touching it. Nothing is pulled out to retype — the queue
-/// starts empty (`next == end` from the outset — see `EditState`'s own
-/// docs), so this behaves exactly like `:deassert` from the first
-/// keystroke on: type as many new lines as it takes, `:done` when
-/// finished, `:skip`/`:cancel` still apply (skip is simply a no-op here,
-/// since there's nothing queued to skip).
+/// `:insert <n>` — starts an open-ended edit inserting lines before display
+/// line `n`, or at the end if `n` is one past the last line. The queue starts
+/// empty, so `:skip` is a no-op.
 pub fn start_insert(session: &mut Session, args: &str, out: &mut dyn Output) -> Option<EditState> {
     let n: usize = match args.trim().parse() {
         Ok(n) => n,
@@ -581,9 +442,7 @@ pub fn start_insert(session: &mut Session, args: &str, out: &mut dyn Output) -> 
         prior_checked_len: session.checked_len,
         prior_known_bad: session.known_bad.clone(),
     };
-    // Marker bump — see `start_at`'s own doc comment for why: mode entry
-    // otherwise mutates nothing at all, and `commands::dispatch`'s
-    // undo-stack tracking needs to notice one began anyway.
+    // Marks an undo point for `dispatch` (see `start_at`).
     session.generation += 1;
     outln!(
         out,
@@ -594,10 +453,8 @@ pub fn start_insert(session: &mut Session, args: &str, out: &mut dyn Output) -> 
     Some(state)
 }
 
-/// Print whatever's queued next: the current text of `buffer[next]` if
-/// anything original is still left, or an invitation to type freely once
-/// the queue's drained. Always reads the buffer fresh rather than a
-/// stored copy — there's no separate "queued text" state to keep in sync.
+/// Prints the queued line's current buffer text, or a free-typing prompt once
+/// the queue is drained.
 fn announce_next(state: &EditState, session: &Session, out: &mut dyn Output) {
     if state.next < state.end {
         let display = session.display_line(state.next);
@@ -610,11 +467,9 @@ fn announce_next(state: &EditState, session: &Session, out: &mut dyn Output) {
     }
 }
 
-/// Commit `line` as either the retyped replacement for the currently
-/// queued original line (`next < end`) or a brand new insertion once the
-/// queue's drained — see `EditState`'s own docs for how `next`/`end`
-/// model both. Always succeeds (nothing is checked), so there's nothing
-/// left to report beyond "here's what's queued next."
+/// Commits `line` as the replacement for the queued line, or as a new line
+/// once the queue is drained (see [`EditState`]). Ends the edit if
+/// `single_line`.
 fn submit(
     session: &mut Session,
     state: &mut EditState,
@@ -639,8 +494,7 @@ fn submit(
     Ok(EditFlow::Continue)
 }
 
-/// `:skip` — drop the currently queued line without replacing it (i.e.
-/// delete it from the buffer outright, checked or not).
+/// `:skip` — deletes the queued line from the buffer.
 fn skip(session: &mut Session, state: &mut EditState, out: &mut dyn Output) -> anyhow::Result<()> {
     if state.next < state.end {
         let display = session.display_line(state.next);
@@ -654,9 +508,8 @@ fn skip(session: &mut Session, state: &mut EditState, out: &mut dyn Output) -> a
     Ok(())
 }
 
-/// `:cancel` — instantly restore the buffer (and checked prefix) exactly
-/// as they were before the edit began. No re-verification needed:
-/// `prior_buffer`/`prior_checked_len` were already known-good.
+/// `:cancel` — restores the pre-edit buffer, checked prefix and known-bad
+/// state without re-verification.
 fn cancel(session: &mut Session, state: &EditState, out: &mut dyn Output) -> anyhow::Result<()> {
     session.restore_buffer_state(
         state.prior_buffer.clone(),
@@ -667,10 +520,8 @@ fn cancel(session: &mut Session, state: &EditState, out: &mut dyn Output) -> any
     Ok(())
 }
 
-/// Route one input line while a queue-based edit is active — the sole
-/// entry point either frontend needs during one (`:edit` in plain,
-/// `:deassert`/`:insert` in both): `commands::dispatch` isn't consulted
-/// at all until `EditFlow::Ended` comes back.
+/// Routes one input line during a queue-based edit; the frontend must not call
+/// `commands::dispatch` until this returns `EditFlow::Ended`.
 pub fn handle(
     session: &mut Session,
     state: &mut EditState,
@@ -697,16 +548,8 @@ pub fn handle(
             outln!(out, "Edit complete.");
             Ok(EditFlow::Ended)
         }
-        // A bare Enter. This module's prompt is never pre-filled (that's
-        // only the TUI's Vim-mode `Insert`, which has its own delete-on-
-        // empty-line meaning via `x`/`dd` instead) — so what's on screen
-        // is just the
-        // reference text `announce_next` printed, e.g. "Line 5: ...". That
-        // reads like a value already sitting there, and the expectation is
-        // that Enter alone accepts it rather than silently doing nothing.
-        // So: keep the queued line's text exactly as it is and move on.
-        // Once the queue's drained (free typing after it), there's no
-        // line "shown" to reaffirm, so this stays the no-op it always was.
+        // Bare Enter keeps the queued line unchanged and advances; a no-op
+        // once the queue is drained.
         "" => {
             if state.next < state.end {
                 let display = session.display_line(state.next);
@@ -736,7 +579,7 @@ pub fn handle(
                 _ => {
                     outln!(
                         out,
-                        "Only :show, :list, :objective, :check, :explain, :skip, \
+                        "Only :show, :list, :objective, :preserved, :check, :explain, :skip, \
                          :done, and :cancel work while editing — type the replacement \
                          line, or one of those."
                     );

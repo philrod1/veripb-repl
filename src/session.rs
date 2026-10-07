@@ -1,36 +1,19 @@
-//! The REPL's core engine: session state plus the replay machinery shared by
-//! every command that checks something against it (typing a bare rule,
-//! `:check`, `:save`, `:source`, `:edit`, ...).
+//! Session state (formula + proof buffer) and the replay machinery every
+//! checking command uses. No `:command` parsing/printing lives here.
 //!
-//! Holds no `:command`-syntax parsing/printing logic — that belongs to the
-//! frontends' dispatch and the individual `commands::*` modules. This module
-//! builds a candidate buffer, hands it to the `veripb` subprocess (via
-//! `crate::checker`), and classifies/applies the result. No checker object
-//! is kept resident between calls: every check re-invokes `veripb` from
-//! scratch against the current formula plus whatever candidate text is being
-//! tried, so retracting `checked_len` is pure bookkeeping, not a rebuild.
-//!
-//! **The buffer is a live, always-present list of proof-format lines, only
-//! some prefix of which is currently checked.** `buffer: Vec<String>` never
-//! shrinks except by an explicit, user-requested delete. `checked_len: usize`
-//! marks how much of the front of `buffer` has been verified; everything
-//! from there on is unverified text that may not even parse. Typing a new
-//! line at the end (`append_line`) checks it immediately if nothing was
-//! already pending. Editing an existing line (`set_line`/`insert_line`/
-//! `delete_line`) never checks anything — it retracts `checked_len` if the
-//! edit falls inside the checked prefix. Checking is always an explicit act
-//! (`drive_forward`, `:verify`'s implementation) that walks forward from
-//! `checked_len` and stops — without discarding anything — at the first line
-//! that doesn't check out.
-//!
-//! **The formula is also just text this REPL owns**, not a parsed object:
-//! `formula: Vec<String>` holds its constraint lines (comments and the
-//! `#variable=`/`#constraint=` header stripped at load time), `objective`,
-//! separately, its `min:`/`max:` line if it has one, and `preserved`,
-//! separately again, its `preserved: ...;` line if it declares a preserved
-//! variable set. Every `checker::` call writes the current formula to a
-//! fresh temp file first (see `formula_temp_file`); no permanent on-disk
-//! copy is kept in sync with `formula_path` after the initial load.
+//! Rules:
+//! - No checker state is kept between calls: every check re-runs `veripb`
+//!   (via [`crate::checker`]) on the current formula plus candidate text, so
+//!   retracting `checked_len` is pure bookkeeping.
+//! - `buffer` holds every proof line, checked or not; `buffer[..checked_len]`
+//!   is verified. Only an explicit delete shrinks it; a failed check never does.
+//! - Editing a line (`set_line`/`insert_line`/`delete_line`) never checks;
+//!   it retracts `checked_len` if the edit is inside the checked prefix.
+//!   Checking (`drive_forward` etc.) walks forward from `checked_len` and
+//!   stops at the first failing line.
+//! - The formula is held as text (`formula`, `objective`, `preserved`) and
+//!   written to a fresh temp file for each checker call; `formula_path` is
+//!   never re-read after load.
 
 use std::{
     collections::{BTreeSet, VecDeque},
@@ -45,8 +28,7 @@ use crate::varnames::VarNames;
 /// Lines in a synthesized v3 proof preamble.
 const PREAMBLE_LINES: usize = 2;
 
-/// One `:undo`-stack entry — everything `restore_snapshot` needs to fully
-/// restore a `Session`.
+/// One `:undo`-stack entry: the state `restore_snapshot` restores.
 pub(crate) struct Snapshot {
     formula: Vec<String>,
     objective: Option<String>,
@@ -57,106 +39,76 @@ pub(crate) struct Snapshot {
     last_step_constraint_ids: Vec<usize>,
 }
 
-/// Maximum entries kept in `Session::undo_stack` before the oldest is
-/// discarded. Unbounded would be O(actions²) worst-case memory — each entry
-/// clones the buffer as it stood then, pushed once per accepted line.
+/// Maximum `Session::undo_stack` entries; the oldest is dropped beyond this.
+/// Each entry clones the whole buffer, so the stack must stay bounded.
 const UNDO_STACK_CAP: usize = 200;
 
-/// A `:formula` edit's undo point: the formula constraint it replaced, plus
-/// the buffer to restore alongside it. Set by `replace_formula_constraint`,
-/// consumed by `:formula cancel`; invalidated by anything else the user
-/// types in between (see `commands::dispatch`).
+/// A `:formula` edit's undo point. Set by `replace_formula_constraint`,
+/// consumed by `:formula cancel`, invalidated by any other command (see
+/// `commands::dispatch`).
 pub(crate) struct FormulaEditSnapshot {
     /// 1-based formula constraint number that was edited.
     pub(crate) n: usize,
-    /// What used to occupy it, verbatim.
+    /// The replaced constraint text, verbatim.
     pub(crate) constraint: String,
-    /// The buffer this edit tried to reverify against — see
-    /// `Session::recoverable_buffer`, not necessarily just `buffer` as it
-    /// stood right before this call.
+    /// The base buffer the edit reverifies against (see
+    /// `Session::recoverable_buffer`).
     pub(crate) buffer: Vec<String>,
 }
 
-/// The state of one REPL session: the formula it was loaded with and the
-/// live proof buffer (see the module docs).
+/// One REPL session: the loaded formula and the proof buffer (see the module
+/// docs).
 pub struct Session {
-    /// The path the formula was loaded from, for display only — the file is
-    /// never re-read after load.
+    /// The formula's source path, for display only.
     pub formula_path: String,
-    /// The formula's constraint lines, 1-based indices matching
-    /// `:formula`/the Formula pane's own numbering.
+    /// The formula's constraint lines; index `i` is constraint `i + 1` in
+    /// `:formula`/the Formula pane.
     pub formula: Vec<String>,
-    /// The formula's `min:`/`max:` objective line, verbatim, if it has one.
+    /// The formula's `min:`/`max:` objective line, verbatim, if any.
     pub objective: Option<String>,
-    /// The formula's `preserved: <variable> <variable> ...;` line, verbatim,
-    /// if it declares a preserved variable set (used by `preserved_add`/
-    /// `preserved_rm`/`epreserved`/`solx` proof rules).
+    /// The formula's `preserved: <var> ...;` line, verbatim, if any.
     pub preserved: Option<String>,
     pub variables: VarNames,
-    /// Always empty for now: labels need a correlation mechanism now that
-    /// no in-process parser tracks `@label` tokens against the constraint
-    /// IDs they name. Kept as a real field so `labels_by_id` and its
-    /// callers need no second API change once that's solved.
+    /// Always empty: `@label`s are not yet correlated with constraint IDs.
     pub labels: ahash::AHashMap<String, isize>,
     pub label_map: ahash::AHashMap<String, isize>,
-    /// Every proof-format line currently in the proof, in order, checked or
-    /// not. Never truncated as a side effect of a failed check — only grown,
-    /// shrunk by an explicit delete, or has an entry's text replaced in
-    /// place. See the module docs.
+    /// Every proof line, in order, checked or not. A failed check never
+    /// truncates it.
     pub buffer: Vec<String>,
-    /// How many lines from the front of `buffer` have been verified. Lines
-    /// at index `>= checked_len` haven't been checked against the buffer's
-    /// current content.
+    /// Number of verified lines at the front of `buffer`; also the index of
+    /// the first unchecked line.
     pub checked_len: usize,
-    /// Set when `buffer[checked_len]` is known, right now, to fail — the
-    /// line `drive_forward`/`:verify` most recently stopped on. Cleared by
-    /// anything that changes `checked_len` or that line's text. Drives the
-    /// Proof pane's error highlight and `:list`'s failure tag.
+    /// The rejection message for `buffer[checked_len]`, when it is known to
+    /// fail. Cleared by anything that changes `checked_len` or that line.
+    /// Drives the Proof pane's error highlight and `:list`'s failure tag.
     pub known_bad: Option<String>,
-    /// The constraint ID(s) the checker attributed to the most recently
-    /// *accepted* line (see [`checker::parse::last_line_constraint_ids`]).
-    /// Empty until the first line is accepted. Cleared by anything that
-    /// moves `checked_len` backward or invalidates the buffer without a
-    /// fresh check taking its place (`set_line`/`insert_line`/
-    /// `delete_line`/`retract_checked_len`/`reset`/`restore_buffer_state`/
-    /// `replace_formula_constraint`) — `known_bad`'s lifecycle, inverted:
-    /// set on acceptance, cleared otherwise. Drives the Database pane's
-    /// `:debug`-mode "highlight (and scroll to) what the last step
-    /// produced" highlighting; unused outside it.
+    /// Constraint IDs derived by the most recently accepted line (see
+    /// [`checker::parse::last_line_constraint_ids`]). Set on acceptance;
+    /// cleared by every mutation that isn't a fresh acceptance. Used by
+    /// `:debug`'s Database-pane highlight.
     pub last_step_constraint_ids: Vec<usize>,
-    /// Set by the most recent `:formula` edit, consumed by `:formula
-    /// cancel` — see `FormulaEditSnapshot`.
+    /// The most recent `:formula` edit, consumed by `:formula cancel`.
     pub(crate) last_formula_edit: Option<FormulaEditSnapshot>,
-    /// The fullest buffer still worth retrying against a formula edit,
-    /// remembered across a sequence of edits so one bad edit doesn't
-    /// permanently drop lines a later, corrected edit could still recover.
-    /// `None` means "use `buffer` itself." Set by
-    /// `replace_formula_constraint`; cleared by `commands::formula::commit`
-    /// once a reverify fully succeeds, by `:formula cancel`, and by
-    /// anything else typed in between (see `commands::dispatch`).
+    /// The fullest buffer to retry across successive `:formula` edits, so a
+    /// bad edit doesn't lose lines a later edit could recover. `None` means
+    /// use `buffer`. Set by `replace_formula_constraint`; cleared by a fully
+    /// successful reverify (`commands::formula::commit`), `:formula cancel`,
+    /// or any other command (see `commands::dispatch`).
     pub(crate) recoverable_buffer: Option<Vec<String>>,
-    /// Bumped by every method that mutates `formula`/`objective`/`buffer`/
-    /// `checked_len` on success. What `commands::dispatch` checks to decide
-    /// whether to push onto `undo_stack`, and what `database_cache` keys
-    /// its staleness check on.
+    /// Bumped on every successful mutation of `formula`/`objective`/`buffer`/
+    /// `checked_len`. `commands::dispatch` uses it to decide whether to push
+    /// an undo entry; `database_cache` is refreshed only when it changes.
     pub(crate) generation: u64,
-    /// Snapshots of state from before each undo-able action, most recent
-    /// last — see `Snapshot`, `push_undo`, `pop_undo`, `restore_snapshot`.
+    /// Pre-action snapshots, most recent last; capped at `UNDO_STACK_CAP`.
     pub(crate) undo_stack: VecDeque<Snapshot>,
-    /// Buffer indices with a debugging breakpoint set, for the TUI's
-    /// Vim-mode `b` key (and, eventually, `:debug`'s own `:break`). Not
-    /// consulted by any checking path, and not part of [`Snapshot`]/`:undo`
-    /// — a breakpoint is editor furniture, not proof state. Kept in step
-    /// with the buffer by [`Self::insert_line`]/[`Self::delete_line`];
-    /// [`Self::set_line`] never needs to touch them. [`Self::reset`] clears
-    /// them.
+    /// Buffer indices with a breakpoint. Not proof state: excluded from
+    /// `Snapshot` and `generation`, ignored by `:verify`. Shifted by
+    /// [`Self::insert_line`]/[`Self::delete_line`]; cleared by
+    /// [`Self::reset`].
     pub breakpoints: BTreeSet<usize>,
-    /// The live database as of some earlier `generation`, refreshed lazily
-    /// by [`Self::database`] rather than kept in sync by every mutator.
-    /// `RefCell`, not a plain field: populating the cache is not a
-    /// domain-level mutation, and several read-only call sites
-    /// (`commands::edit::run_readonly`, `:debug`'s allowlisted commands)
-    /// need `&Session` to be enough to read from.
+    /// The database for `(generation, buffer[..checked_len])`, refreshed
+    /// lazily by [`Self::database`]. A `RefCell` so read-only (`&Session`)
+    /// contexts can populate it.
     database_cache: std::cell::RefCell<Option<(u64, checker::Database)>>,
 }
 
@@ -164,17 +116,15 @@ pub struct Session {
 pub enum AppendOutcome {
     /// Nothing was pending; `line` was checked immediately and accepted.
     Verified { captured: String },
-    /// Nothing was pending; `line` was checked immediately and rejected —
-    /// not added to the buffer, state unchanged.
+    /// Nothing was pending; `line` was checked immediately and rejected. It
+    /// is not added to the buffer and state is unchanged.
     Rejected { captured: String, error: String },
-    /// Something was already pending, so `line` joined the end of it,
-    /// unchecked — no check was attempted.
+    /// Lines were already pending; `line` was appended unchecked.
     Deferred,
 }
 
 impl Session {
-    /// Loads a formula (OPB only, for now) and starts a fresh, empty
-    /// session.
+    /// Loads an OPB formula and starts an empty session.
     pub fn load(formula_path: &str) -> anyhow::Result<Self> {
         let (formula, objective, preserved) = read_formula_lines(formula_path)
             .with_context(|| format!("failed to read formula file {formula_path}"))?;
@@ -202,9 +152,8 @@ impl Session {
         })
     }
 
-    /// Returns the labels naming each constraint ID, inverted from
-    /// `label_map` (several labels can name one ID, so each gets a sorted
-    /// list). Always empty today — see `label_map`'s own docs.
+    /// Returns `label_map` inverted: each constraint ID's labels, sorted.
+    /// Currently always empty (see `labels`).
     pub fn labels_by_id(&self) -> ahash::AHashMap<isize, Vec<String>> {
         let mut by_id: ahash::AHashMap<isize, Vec<String>> = ahash::AHashMap::new();
         for (name, id) in &self.label_map {
@@ -216,9 +165,9 @@ impl Session {
         by_id
     }
 
-    /// Returns the synthesized preamble lines every replay buffer starts
-    /// with, for `:list`/the TUI's proof panel to number their own display
-    /// consistently with the checker's `line N:` trace output.
+    /// Returns the synthesized preamble every replayed proof starts with.
+    /// Display line numbers count these lines, matching the checker's
+    /// `line N:` trace.
     pub fn preamble_lines(&self) -> [String; PREAMBLE_LINES] {
         [
             "pseudo-Boolean proof version 3.0".to_string(),
@@ -226,11 +175,8 @@ impl Session {
         ]
     }
 
-    /// Returns the synthesized v3 preamble plus `lines`, ready to hand to
-    /// [`checker::check`] and friends. `lines` is a parameter rather than
-    /// always `&self.buffer`: checking machinery wants only the checked
-    /// prefix (`buffer[..checked_len]`), while `listing` (what `:save`
-    /// writes) wants the whole buffer regardless of check status.
+    /// Returns the preamble followed by `lines`, newline-terminated, ready
+    /// for [`checker::check`] and friends.
     fn preamble_and_lines(&self, lines: &[String]) -> String {
         let mut text = String::new();
         for line in self.preamble_lines() {
@@ -244,31 +190,22 @@ impl Session {
         text
     }
 
-    /// Writes this session's current formula to a fresh temp `.opb` file —
-    /// every `checker::` call needs one on disk.
+    /// Writes the current formula to a fresh temp `.opb` file.
     fn formula_temp_file(&self) -> anyhow::Result<tempfile::NamedTempFile> {
         write_formula_temp_file(&self.formula, &self.objective, &self.preserved)
     }
 
-    /// Checks `text` against this session's current formula, tracing scoped
-    /// to `trace_range`. The shared entry point every replay in this module
-    /// funnels through.
+    /// Checks `text` against the current formula, tracing `trace_range`
+    /// (display lines, inclusive).
     fn check(&self, text: &str, trace_range: Option<(usize, usize)>) -> anyhow::Result<CheckOutcome> {
         let formula_file = self.formula_temp_file()?;
         checker::check(formula_file.path(), text, trace_range)
     }
 
-    /// Returns the live database reflecting `buffer[..checked_len]`,
-    /// refreshed (one subprocess call) only if `generation` has moved since
-    /// it was last cached. Never checks anything itself — call
-    /// `drive_forward`/`:verify` first for unchecked content to be
-    /// reflected here.
-    ///
-    /// Takes `&self`, not `&mut self`: populating the cache stays callable
-    /// from read-only contexts (`commands::edit::run_readonly`, `:debug`'s
-    /// allowlisted commands) — see `database_cache`'s own docs. Returns a
-    /// `Ref` for the same reason; derefs like `&checker::Database` at every
-    /// call site (`session.database()?.entries`, etc.).
+    /// Returns the live database for `buffer[..checked_len]`, re-running
+    /// `veripb` only if `generation` changed since it was cached. Unchecked
+    /// lines are not reflected. Takes `&self` so read-only contexts can call
+    /// it; the returned `Ref` derefs to `checker::Database`.
     pub fn database(&self) -> anyhow::Result<std::cell::Ref<'_, checker::Database>> {
         let fresh = matches!(
             &*self.database_cache.borrow(),
@@ -285,30 +222,66 @@ impl Session {
         }))
     }
 
-    /// Returns the best-known objective bounds reflecting
-    /// `buffer[..checked_len]`. One subprocess call per call, uncached —
-    /// unlike [`Self::database`], this is only ever called once per
-    /// `:check`/`:objective` invocation, not once per frame.
+    /// Returns the best-known objective bounds for `buffer[..checked_len]`.
+    /// Uncached: one `veripb` call per call.
     pub fn objective_bounds(&self) -> anyhow::Result<checker::ObjectiveBounds> {
         let text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
         let formula_file = self.formula_temp_file()?;
         checker::show_objective_bounds(formula_file.path(), &text)
     }
 
-    /// Attempts `buffer[checked_len]` — the first unchecked line. On
-    /// acceptance, advances `checked_len` by one. On rejection, `buffer`/
-    /// `checked_len` are unchanged and `known_bad` is set. Panics if nothing
-    /// is pending (`checked_len == buffer.len()`) — callers
-    /// ([`Self::verify_forward`], [`Self::append_line`]) only call this
-    /// after confirming there is.
+    /// Returns the preserved set as of the checked prefix: the declared set
+    /// if no checked `preserved_add`/`preserved_rm` line exists (no
+    /// subprocess), otherwise the `Preserved set:` line veripb traces for
+    /// the last such line.
+    ///
+    /// TODO: read veripb's trace only until it has a `--dump-preserved` flag.
+    pub fn preserved_set(&self) -> anyhow::Result<PreservedSet> {
+        let declared = self.preserved.as_deref().map(checker::parse::preserved_declaration);
+        let Some(idx) = self.buffer[..self.checked_len]
+            .iter()
+            .rposition(|line| checker::parse::is_preserved_change_line(line))
+        else {
+            return Ok(PreservedSet {
+                current: declared.clone(),
+                declared,
+                last_change: None,
+            });
+        };
+
+        let line = self.display_line(idx);
+        let text = self.preamble_and_lines(&self.buffer[..=idx]);
+        let current = match self.check(&text, Some((line, line)))? {
+            CheckOutcome::Accepted { trace } => checker::parse::last_preserved_set(&trace)
+                .with_context(|| {
+                    format!(
+                        "veripb printed no `Preserved set:` line for line {line} — its trace \
+                         format may have changed"
+                    )
+                })?,
+            CheckOutcome::Rejected { message, .. } => anyhow::bail!(
+                "internal error: replaying line {line}, which should already be checked, was \
+                 rejected: {message}"
+            ),
+        };
+        Ok(PreservedSet {
+            declared,
+            current: Some(current),
+            last_change: Some(line),
+        })
+    }
+
+    /// Checks `buffer[checked_len]`. Acceptance advances `checked_len` by
+    /// one; rejection sets `known_bad` and changes nothing else. Returns the
+    /// trace and the rejection message, if any. Panics if
+    /// `checked_len == buffer.len()`.
     fn verify_next(&mut self) -> anyhow::Result<(String, Option<String>)> {
         let candidate_line = self.buffer[self.checked_len].clone();
         let mut text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
         text.push_str(&candidate_line);
         text.push('\n');
 
-        // Trace only the new line, not the whole replayed prefix (already
-        // shown when it was first accepted).
+        // Trace only the new line; the prefix was traced when accepted.
         let candidate_line_no = PREAMBLE_LINES + self.checked_len + 1;
         let outcome = self.check(&text, Some((candidate_line_no, candidate_line_no)))?;
 
@@ -327,17 +300,11 @@ impl Session {
         }
     }
 
-    /// Advances `checked_len` from wherever it stands up to `boundary`
-    /// (`<= buffer.len()`), in one subprocess call replaying the whole
-    /// buffer through `boundary` at once — one `veripb` invocation no
-    /// matter how many lines are involved, rather than one per line (each
-    /// paying to re-replay everything before it). On acceptance, commits
-    /// `checked_len = boundary` directly. On rejection, the batched
-    /// attempt's own output is dropped (it can't say which line actually
-    /// failed) and falls back to [`Self::verify_next`] in a loop, bounded
-    /// by `boundary`, to pinpoint exactly where — without discarding
-    /// anything past it. A no-op, returning an empty capture, if
-    /// `boundary <= checked_len`.
+    /// Advances `checked_len` to `boundary` (`<= buffer.len()`) with one
+    /// batched `veripb` call. If the batch is rejected, its output is
+    /// discarded and [`Self::verify_next`] runs line by line up to
+    /// `boundary` to find the failing line. No-op returning an empty
+    /// capture if `boundary <= checked_len`.
     fn verify_forward(&mut self, boundary: usize) -> anyhow::Result<(String, Option<String>)> {
         if boundary <= self.checked_len {
             return Ok((String::new(), None));
@@ -366,20 +333,14 @@ impl Session {
         Ok((captured_all, None))
     }
 
-    /// Drives `checked_len` forward through the whole buffer —
-    /// [`Self::verify_forward`] up to `buffer.len()`. `:verify`'s entire
-    /// implementation, and what `:formula`'s post-edit reverify reduces to
-    /// once its candidate buffer is in place (see
-    /// [`Self::replace_buffer_and_verify`]).
+    /// Checks forward through the whole buffer (`verify_forward` to
+    /// `buffer.len()`). Implements `:verify`; ignores breakpoints.
     pub fn drive_forward(&mut self) -> anyhow::Result<(String, Option<String>)> {
         self.verify_forward(self.buffer.len())
     }
 
-    /// `:debug`'s `:step` primitive: attempts exactly the next unchecked
-    /// line — the same check [`Self::append_line`]'s "check immediately"
-    /// path runs, for a line already in the buffer rather than one just
-    /// typed. Returns `Ok(None)`, not an error, once nothing is left to
-    /// step onto.
+    /// `:debug`'s `:step`: checks the next unchecked line. `Ok(None)` if
+    /// nothing is unchecked.
     pub fn step(&mut self) -> anyhow::Result<Option<(String, Option<String>)>> {
         if self.checked_len >= self.buffer.len() {
             return Ok(None);
@@ -387,14 +348,10 @@ impl Session {
         self.verify_next().map(Some)
     }
 
-    /// `:debug`'s `:continue`/`:until <n>` engine: batch-checks forward via
-    /// [`Self::verify_forward`] up to the first of `buffer.len()`,
-    /// `target` (a one-off destination for `:until`), or the next
-    /// registered [`Self::breakpoints`] entry strictly after the current
-    /// `checked_len` — excluding `checked_len` itself, so resuming from a
-    /// line that's itself marked doesn't immediately re-stop there without
-    /// advancing at all. Not used by `drive_forward`: `:verify` stays
-    /// breakpoint-oblivious.
+    /// `:debug`'s `:continue`/`:until <n>`: `verify_forward` up to
+    /// the smallest of `buffer.len()`, `target`, and the first breakpoint
+    /// after `checked_len` (strictly after, so resuming from a breakpoint
+    /// makes progress).
     pub fn continue_run(&mut self, target: Option<usize>) -> anyhow::Result<(String, Option<String>)> {
         let next_breakpoint = self.breakpoints.range((self.checked_len + 1)..).next().copied();
         let boundary = [Some(self.buffer.len()), target, next_breakpoint]
@@ -405,10 +362,8 @@ impl Session {
         self.verify_forward(boundary)
     }
 
-    /// The ordinary `pbp>`-prompt path for a freshly-typed line. If nothing
-    /// was already pending, checks `line` immediately (rejection: not added
-    /// to the buffer, state unchanged). If something was already pending,
-    /// `line` joins the end of it, unchecked, same as `:source` appending.
+    /// Appends a typed line. If nothing was pending, checks it immediately
+    /// and drops it on rejection; otherwise appends it unchecked.
     pub fn append_line(&mut self, line: &str) -> anyhow::Result<AppendOutcome> {
         let was_live_edge = self.checked_len == self.buffer.len();
         self.buffer.push(line.to_string());
@@ -426,11 +381,8 @@ impl Session {
         }
     }
 
-    /// Replaces `buffer[idx]`'s text in place — the mechanism behind
-    /// `:edit`/`:deassert`/`:insert`'s retyping and the TUI Vim-mode's
-    /// commit action. Never checks the new text and never touches any other
-    /// buffer entry. If `idx` was inside the checked prefix, retracts
-    /// `checked_len` to `idx`.
+    /// Replaces `buffer[idx]` without checking it. Retracts `checked_len` to
+    /// `idx` if `idx` was checked.
     pub fn set_line(&mut self, idx: usize, new_text: &str) -> anyhow::Result<()> {
         self.buffer[idx] = new_text.to_string();
         self.checked_len = self.checked_len.min(idx);
@@ -440,9 +392,8 @@ impl Session {
         Ok(())
     }
 
-    /// Inserts a new, unchecked line before buffer index `idx` (`:insert`'s
-    /// mechanism), shifting everything at/after `idx` down. Same
-    /// retract-`checked_len` rule as [`Self::set_line`].
+    /// Inserts an unchecked line before buffer index `idx`, shifting later
+    /// lines and breakpoints. Retracts `checked_len` as [`Self::set_line`].
     pub fn insert_line(&mut self, idx: usize, text: &str) -> anyhow::Result<()> {
         self.buffer.insert(idx, text.to_string());
         self.checked_len = self.checked_len.min(idx);
@@ -457,8 +408,8 @@ impl Session {
         Ok(())
     }
 
-    /// Removes buffer index `idx` outright (`:delete`'s mechanism). Same
-    /// retract-`checked_len` rule as [`Self::set_line`].
+    /// Removes buffer index `idx` and its breakpoint, shifting later
+    /// breakpoints. Retracts `checked_len` as [`Self::set_line`].
     pub fn delete_line(&mut self, idx: usize) -> anyhow::Result<()> {
         self.buffer.remove(idx);
         self.checked_len = self.checked_len.min(idx);
@@ -478,17 +429,15 @@ impl Session {
     }
 
     /// Toggles a breakpoint on buffer index `idx`. Doesn't bump
-    /// `generation`: a breakpoint isn't proof state (see `breakpoints`'s
-    /// own docs).
+    /// `generation`.
     pub fn toggle_breakpoint(&mut self, idx: usize) {
         if !self.breakpoints.remove(&idx) {
             self.breakpoints.insert(idx);
         }
     }
 
-    /// Replaces the buffer wholesale with `lines` and checks as much of it
-    /// as still holds — [`Self::verify_forward`] up to `buffer.len()`,
-    /// starting from `checked_len = 0`.
+    /// Replaces the buffer with `lines` and checks from the start as far as
+    /// it holds.
     pub(crate) fn replace_buffer_and_verify(&mut self, lines: Vec<String>) -> anyhow::Result<(String, Option<String>)> {
         self.buffer = lines;
         self.checked_len = 0;
@@ -497,10 +446,9 @@ impl Session {
         self.verify_forward(self.buffer.len())
     }
 
-    /// Restores `buffer`/`checked_len`/`known_bad` directly (formula
-    /// untouched) — the edit-family commands' `:cancel` mechanism. Also
-    /// clears `last_step_constraint_ids`: an arbitrary restored snapshot,
-    /// not a fresh check, has nothing real to attribute it to.
+    /// Restores `buffer`/`checked_len`/`known_bad` as given, leaving the
+    /// formula alone (edit commands' `:cancel`). Clears
+    /// `last_step_constraint_ids`.
     pub(crate) fn restore_buffer_state(
         &mut self,
         buffer: Vec<String>,
@@ -515,8 +463,8 @@ impl Session {
         Ok(())
     }
 
-    /// Drops every buffer line, checked or not, without touching
-    /// `formula`/`variables`/`labels`.
+    /// Clears the buffer, breakpoints, and undo stack, leaving
+    /// `formula`/`variables`/`labels` alone.
     pub fn reset(&mut self) -> anyhow::Result<()> {
         self.buffer.clear();
         self.checked_len = 0;
@@ -525,16 +473,12 @@ impl Session {
         self.label_map = self.labels.clone();
         self.breakpoints.clear();
         self.generation += 1;
-        // Mutates in place rather than replacing the session, so
-        // `undo_stack` needs an explicit clear.
         self.undo_stack.clear();
         Ok(())
     }
 
-    /// Retracts `checked_len` to `target` (must be `<= checked_len`) —
-    /// `:debug`'s analog of [`Self::set_line`]'s retract rule, without any
-    /// text changing. Shared by [`Self::step_back`] (`target = checked_len
-    /// - 1`) and [`Self::restart`] (`target = 0`).
+    /// Retracts `checked_len` to `target` (`<= checked_len`) without
+    /// changing any text.
     fn retract_checked_len(&mut self, target: usize) -> anyhow::Result<()> {
         debug_assert!(target <= self.checked_len);
         self.checked_len = target;
@@ -544,9 +488,8 @@ impl Session {
         Ok(())
     }
 
-    /// `:back`: steps the checked prefix backward by exactly one line, if
-    /// possible. Nothing is re-verified going backward. Returns whether
-    /// anything moved.
+    /// `:back`: retracts `checked_len` by one line, without re-verifying.
+    /// Returns whether it moved.
     pub fn step_back(&mut self) -> anyhow::Result<bool> {
         if self.checked_len == 0 {
             return Ok(false);
@@ -555,9 +498,8 @@ impl Session {
         Ok(true)
     }
 
-    /// `:restart`: retracts the checked prefix to the start, keeping every
-    /// buffer line as-is — the non-destructive sibling of [`Self::reset`].
-    /// A no-op if nothing was checked yet.
+    /// `:restart`: retracts `checked_len` to 0, keeping the buffer (unlike
+    /// [`Self::reset`]). No-op if nothing is checked.
     pub fn restart(&mut self) -> anyhow::Result<()> {
         if self.checked_len == 0 {
             return Ok(());
@@ -565,42 +507,34 @@ impl Session {
         self.retract_checked_len(0)
     }
 
-    /// Converts a 1-based display line number — `:list`'s/the proof
-    /// panel's/the checker's own `line N:` numbering, preamble first — into
-    /// a 0-based index into `buffer`. `None` for a preamble line or
-    /// anything at or past the end of the buffer. Says nothing about
-    /// whether the line is checked — see [`Self::checked_index`].
+    /// Converts a 1-based display line number (preamble included, as in the
+    /// checker's `line N:` trace) to a `buffer` index. `None` for a preamble
+    /// line or past the end. Ignores checked status; see
+    /// [`Self::checked_index`].
     pub fn buffer_index(&self, display_line: usize) -> Option<usize> {
         let idx = display_line.checked_sub(PREAMBLE_LINES + 1)?;
         (idx < self.buffer.len()).then_some(idx)
     }
 
-    /// Like [`Self::buffer_index`], but additionally requires the line to
-    /// be checked — `None` for the preamble, past the end of the buffer, or
-    /// the unchecked tail. Used by `:explain`, which replays
-    /// already-accepted content.
+    /// Like [`Self::buffer_index`], but also `None` for an unchecked line.
     pub fn checked_index(&self, display_line: usize) -> Option<usize> {
         let idx = self.buffer_index(display_line)?;
         (idx < self.checked_len).then_some(idx)
     }
 
-    /// The inverse of `buffer_index`: the display line number for a 0-based
-    /// `buffer` index. Always valid for an in-range index. Unaffected by
-    /// checked status, since the buffer is never truncated.
+    /// Inverse of [`Self::buffer_index`]: the display line number for a
+    /// `buffer` index.
     pub fn display_line(&self, buffer_idx: usize) -> usize {
         buffer_idx + PREAMBLE_LINES + 1
     }
 
-    /// Converts a 1-based formula constraint number — `:show`'s/the Formula
-    /// pane's numbering — into a 0-based index into `formula`. A distinct
-    /// numbering space from `buffer_index`'s. `None` for anything out of
-    /// range.
+    /// Converts a 1-based formula constraint number (as in `:show`/the
+    /// Formula pane) to a `formula` index. `None` if out of range.
     pub(crate) fn formula_index(&self, n: usize) -> Option<usize> {
         (n >= 1 && n <= self.formula.len()).then(|| n - 1)
     }
 
-    /// Returns a clone of everything `restore_snapshot` needs to bring
-    /// `self` back to exactly its current state.
+    /// Captures the current state for [`Self::restore_snapshot`].
     pub(crate) fn snapshot(&self) -> Snapshot {
         Snapshot {
             formula: self.formula.clone(),
@@ -613,8 +547,8 @@ impl Session {
         }
     }
 
-    /// Pushes `snapshot` onto the undo stack, discarding the oldest entry
-    /// first if already at `UNDO_STACK_CAP`.
+    /// Pushes `snapshot` onto the undo stack, dropping the oldest entry at
+    /// `UNDO_STACK_CAP`.
     pub(crate) fn push_undo(&mut self, snapshot: Snapshot) {
         if self.undo_stack.len() == UNDO_STACK_CAP {
             self.undo_stack.pop_front();
@@ -627,9 +561,8 @@ impl Session {
         self.undo_stack.pop_back()
     }
 
-    /// Restores `self` to exactly what `snapshot` captured. Also clears
-    /// `last_formula_edit`/`recoverable_buffer`, since whatever they
-    /// referred to is no longer the most recent thing that happened.
+    /// Restores the state `snapshot` captured and clears
+    /// `last_formula_edit`/`recoverable_buffer`.
     pub(crate) fn restore_snapshot(&mut self, snapshot: Snapshot) -> anyhow::Result<()> {
         self.formula = snapshot.formula;
         self.objective = snapshot.objective;
@@ -644,21 +577,14 @@ impl Session {
         Ok(())
     }
 
-    /// Replaces formula constraint `n` with `new_text` (`:formula`'s
-    /// mechanism). Validated against a candidate formula file before `self`
-    /// is touched, so a rejection leaves `self` unchanged. On success,
-    /// `buffer` is cleared (`checked_len`/`known_bad` reset with it);
-    /// reverifying whatever of the base buffer still holds against the new
-    /// formula is the caller's job (`commands::formula`, via
-    /// [`Self::replace_buffer_and_verify`]). That base is
-    /// `recoverable_buffer` if one is already remembered, or `buffer`
-    /// itself otherwise; either way it's what
-    /// `last_formula_edit`/`recoverable_buffer` are set to, so `:formula
-    /// cancel` can undo both together.
+    /// Replaces formula constraint `n` (1-based) with `new_text`. The new
+    /// formula is validated first; on error `self` is unchanged. On success
+    /// the buffer is cleared and the base buffer (`recoverable_buffer`, else
+    /// `buffer`) is stored in `recoverable_buffer`/`last_formula_edit`; the
+    /// caller reverifies it via `replace_buffer_and_verify`.
     ///
-    /// Only in-place, same-count edits are supported: an OPB `=` constraint
-    /// is really two constraints (`>=` and `<=`), which would change the
-    /// total count — rejected rather than mishandled.
+    /// Rejects `=` constraints: OPB splits them in two, changing the
+    /// constraint count.
     pub fn replace_formula_constraint(&mut self, n: usize, new_text: &str) -> anyhow::Result<()> {
         let idx = self.formula_index(n).ok_or_else(|| {
             anyhow::anyhow!(
@@ -668,8 +594,7 @@ impl Session {
             )
         })?;
 
-        // The trailing `;` OPB syntax requires is implied when editing one
-        // already-formatted constraint at a time.
+        // Add the trailing `;` if omitted.
         let mut new_text = new_text.trim().to_string();
         if !new_text.ends_with(';') {
             new_text.push_str(" ;");
@@ -700,14 +625,11 @@ impl Session {
             anyhow::bail!("the edited formula doesn't check out: {message}");
         }
 
-        // Re-scan the already-written candidate file to pick up any new
-        // variable names in `new_text`.
+        // Pick up any new variable names in `new_text`.
         let candidate_vars = VarNames::from_formula_file(candidate_file.path())
             .context("failed to re-scan variable names after the formula edit")?;
 
-        // The base to reverify against isn't necessarily `buffer` as it
-        // stands now — `recoverable_buffer` holds the fuller buffer an
-        // earlier, only-partially-reverified edit was trying to restore.
+        // Prefer the fuller buffer an earlier, partially reverified edit kept.
         let base_buffer = match &self.recoverable_buffer {
             Some(b) => b.clone(),
             None => self.buffer.clone(),
@@ -731,12 +653,9 @@ impl Session {
         Ok(())
     }
 
-    /// Returns the full synthesized `.pbp` text this session currently
-    /// represents: the v3 preamble, the `f N;` line, the entire buffer
-    /// (checked or not), and a closing `output NONE; conclusion
-    /// <conclusion>; end pseudo-Boolean proof;` sequence. Pure text
-    /// construction — never checked, so makes no claim the result actually
-    /// verifies; see `dry_run_conclusion` for that.
+    /// Returns the full `.pbp` text: preamble, the whole buffer (checked or
+    /// not), and `output NONE; conclusion <conclusion>; end pseudo-Boolean
+    /// proof;`. Not checked; see [`Self::dry_run_conclusion`].
     pub fn listing(&self, conclusion: &str) -> String {
         let mut text = self.preamble_and_lines(&self.buffer);
         text.push_str("output NONE;\n");
@@ -745,13 +664,10 @@ impl Session {
         text
     }
 
-    /// Non-destructively tests whether the checked prefix of the buffer,
-    /// followed by `output NONE; conclusion <conclusion>; end
-    /// pseudo-Boolean proof;`, would form a complete, valid proof. Ignores
-    /// any unchecked tail. `conclusion` is spliced in verbatim (e.g.
-    /// `"NONE"`, `"UNSAT"`, `"BOUNDS 0 10"`), validated by the real
-    /// checker. The captured `String` is whatever the checker printed
-    /// during the run.
+    /// Checks whether the checked prefix plus `output NONE; conclusion
+    /// <conclusion>; end pseudo-Boolean proof;` is a complete valid proof,
+    /// without changing state. `conclusion` is spliced verbatim (e.g.
+    /// `"UNSAT"`, `"BOUNDS 0 10"`). Returns the trace and the result.
     pub fn dry_run_conclusion(&self, conclusion: &str) -> anyhow::Result<(String, Result<(), String>)> {
         let mut text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
         text.push_str("output NONE;\n");
@@ -764,9 +680,8 @@ impl Session {
         }
     }
 
-    /// Non-destructively re-derives proof line `display_line` alone, with
-    /// tracing scoped to just that line. Only replays through
-    /// `display_line`, not the whole buffer.
+    /// Replays through checked line `display_line` and returns its trace.
+    /// The inner `Err` is a user-facing message.
     pub fn explain_line(&self, display_line: usize) -> anyhow::Result<Result<String, String>> {
         let Some(idx) = self.checked_index(display_line) else {
             return Ok(Err(unchecked_or_out_of_range(self, display_line)));
@@ -783,9 +698,8 @@ impl Session {
         }
     }
 
-    /// Non-destructively computes the minimized set of hints the checker
-    /// needed to derive proof line `display_line` (must be a `rup` step).
-    /// Only replays through `display_line`.
+    /// Returns the minimized hints the checker needed for checked `rup`
+    /// line `display_line`. The inner `Err` is a user-facing message.
     pub fn rup_needed_hints(&self, display_line: usize) -> anyhow::Result<Result<Vec<checker::RupHint>, String>> {
         let Some(idx) = self.checked_index(display_line) else {
             return Ok(Err(unchecked_or_out_of_range(self, display_line)));
@@ -805,12 +719,9 @@ impl Session {
         }
     }
 
-    /// Non-destructively diagnoses the pending rejection, if there is one
-    /// and the rejected line (`buffer[checked_len]`) is a `rup` step:
-    /// which of its typed hint IDs aren't in the live database, and
-    /// whether the same constraint checks with its hint list stripped
-    /// (and if so, which hints the checker found it needed). `None` if
-    /// nothing is rejected or the rejected line isn't `rup`.
+    /// Diagnoses a rejected `rup` line at `buffer[checked_len]`: typed hint
+    /// IDs missing from the database, and the result of re-checking it with
+    /// no hints. `None` unless `known_bad` is set and the line is `rup`.
     pub fn diagnose_rejected_rup(&self) -> anyhow::Result<Option<RejectionDiagnosis>> {
         if self.known_bad.is_none() {
             return Ok(None);
@@ -853,6 +764,17 @@ impl Session {
     }
 }
 
+/// [`Session::preserved_set`]'s result. Variable names are sorted.
+pub struct PreservedSet {
+    /// The formula's `preserved:` line, `None` if it has none.
+    pub declared: Option<Vec<String>>,
+    /// The set as of the checked prefix.
+    pub current: Option<Vec<String>>,
+    /// The display line of the last `preserved_add`/`preserved_rm` that
+    /// changed it, `None` if nothing has.
+    pub last_change: Option<usize>,
+}
+
 /// [`Session::diagnose_rejected_rup`]'s result.
 pub struct RejectionDiagnosis {
     /// The rejected line's display line number.
@@ -866,9 +788,8 @@ pub struct RejectionDiagnosis {
     pub without_hints: Result<Vec<checker::RupHint>, String>,
 }
 
-/// Returns the shared "nothing to explain there" message for
-/// `explain_line`/`rup_needed_hints`, distinguishing an out-of-range/
-/// preamble line from one sitting unchecked.
+/// Returns the error message for a display line that isn't a checked buffer
+/// line (preamble/out of range vs. unchecked).
 fn unchecked_or_out_of_range(session: &Session, display_line: usize) -> String {
     match session.buffer_index(display_line) {
         None => format!(
@@ -882,11 +803,8 @@ fn unchecked_or_out_of_range(session: &Session, display_line: usize) -> String {
     }
 }
 
-/// Reads `path` as an OPB formula, returning its constraint lines (in
-/// order), its `min:`/`max:` objective line if it has one, and its
-/// `preserved: ...;` line if it declares a preserved variable set. Comment
-/// lines (starting with `*`) are dropped; nothing else is parsed or
-/// validated.
+/// Reads an OPB file as `(constraint lines, objective line, preserved
+/// line)`, trimmed. Drops blank and `*` comment lines; validates nothing.
 fn read_formula_lines(path: &str) -> anyhow::Result<(Vec<String>, Option<String>, Option<String>)> {
     let text = std::fs::read_to_string(path)?;
     let mut formula = Vec::new();
@@ -908,9 +826,8 @@ fn read_formula_lines(path: &str) -> anyhow::Result<(Vec<String>, Option<String>
     Ok((formula, objective, preserved))
 }
 
-/// Writes `formula`/`objective`/`preserved` to a fresh temp `.opb` file —
-/// shared by [`Session::formula_temp_file`] and
-/// [`Session::replace_formula_constraint`]'s candidate validation.
+/// Writes `objective`, `preserved`, then `formula` to a fresh temp `.opb`
+/// file.
 fn write_formula_temp_file(
     formula: &[String],
     objective: &Option<String>,

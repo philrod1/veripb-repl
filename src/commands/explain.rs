@@ -1,29 +1,19 @@
-//! `:explain [<n>]` — show an expanded derivation for proof line `n`:
-//! `pol`'s full step-by-step reverse-polish table, `red`'s substitution
-//! witness and proofgoal listing, or (every other rule) the same baseline
-//! `"ConstraintId N: ..."` line every rule prints when traced. See
-//! [`Session::explain_line`] for what's already available per rule and why.
-//! For a `rup` line, the minimized set of hints the checker actually needed
-//! is folded in underneath (see [`Session::rup_needed_hints`]).
+//! `:explain [<n>]` — shows the expanded derivation of checked line `n` (see
+//! [`Session::explain_line`]), plus for `rup` the minimal needed hints
+//! ([`Session::rup_needed_hints`]).
 //!
-//! If `n` is the line `:verify` most recently rejected
-//! (`Session::known_bad`), explains the rejection instead: the checker's
-//! reason, plus — for a `rup` line — [`Session::diagnose_rejected_rup`]'s
-//! findings. Bare `:explain` targets that rejected line if there is one,
-//! otherwise the last checked line.
-//!
-//! Never touches the live session — everything replays through a fresh,
-//! throwaway checker, the same non-destructive pattern `:check` already
-//! uses.
+//! If `n` is the pending rejected line (`Session::known_bad`), shows the
+//! rejection reason and, for `rup`, [`Session::diagnose_rejected_rup`]'s
+//! findings. Bare `:explain` targets the rejected line, else the last checked
+//! line. Read-only: replays through a throwaway checker.
 
 use crate::checker::RupHint;
 use crate::checker::parse::is_rup_line;
 use crate::output::{self, Output, outln};
 use crate::session::{RejectionDiagnosis, Session};
 
-// Fixed phrases in this command's output, shared with the TUI's
-// scrollback highlighter (`tui::draw::scrollback`), which keys its colours
-// off them — rewording one here rewords the match there too.
+// Output phrases matched by the TUI scrollback highlighter
+// (`tui::draw::scrollback`); it imports these, so edit them only here.
 pub(crate) const NEEDED_SUFFIX: &str = " needed:";
 pub(crate) const REJECTED_INFIX: &str = " is rejected: ";
 pub(crate) const TYPED_HINTS: &str = "Typed hints:";
@@ -106,9 +96,8 @@ fn explain_checked(session: &Session, n: usize, out: &mut dyn Output) {
     }
 }
 
-/// The checker's own rejection reason (`known_bad`) for rejected line `n`,
-/// then — for a `rup` line — [`Session::diagnose_rejected_rup`]'s findings
-/// underneath.
+/// Prints the rejection reason (`known_bad`) for line `n`, then
+/// [`Session::diagnose_rejected_rup`]'s findings for a `rup` line.
 fn print_rejection(session: &Session, n: usize, out: &mut dyn Output) {
     let reason = session.known_bad.as_deref().unwrap_or_default();
     outln!(out, "Line {n}{REJECTED_INFIX}{reason}");
@@ -142,8 +131,8 @@ fn print_diagnosis(session: &Session, diagnosis: &RejectionDiagnosis, out: &mut 
     }
     match &diagnosis.without_hints {
         Ok(hints) if diagnosis.typed_hints.is_empty() => {
-            // Shouldn't happen — the bare line *is* the rejected line —
-            // but say what the checker said rather than contradict it.
+            // Unreachable in practice (the bare line is the rejected line);
+            // report the checker's result anyway.
             outln!(out, "  Re-checking it found these hints:");
             print_hint_list(session, hints, "    ", out);
         }
@@ -161,11 +150,8 @@ fn print_diagnosis(session: &Session, diagnosis: &RejectionDiagnosis, out: &mut 
     }
 }
 
-/// One line per hint, each prefixed with `indent`, cross-referencing each
-/// hinted constraint's current label(s) and pretty-printed text against
-/// the live session — same lookup `:show` uses. A lone `~` means the
-/// negation alone reached the conflict; alongside other hints it's just
-/// one contributor among several.
+/// Prints each hint on its own `indent`ed line with its constraint's current
+/// labels and text. A lone `~` is reported as "no other constraint needed".
 fn print_hint_list(session: &Session, hints: &[RupHint], indent: &str, out: &mut dyn Output) {
     match hints {
         [] => {

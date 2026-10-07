@@ -2,14 +2,13 @@
 
 /// The result of checking a candidate proof.
 pub enum CheckOutcome {
-    /// Every line was accepted. `trace` is the checker's captured
-    /// output.
+    /// Every line was accepted. `trace` is the checker's stdout.
     Accepted { trace: String },
     /// Checking stopped at `line`.
     Rejected {
         line: usize,
-        /// Just the reason `line` was rejected, one line — see
-        /// [`super::parse::rejection_reason`].
+        /// One-line rejection reason (see
+        /// [`super::parse::rejection_reason`]).
         message: String,
         /// The checker's full raw output, rejection included.
         trace: String,
@@ -51,22 +50,16 @@ impl Database {
 }
 
 /// The checker's best-known objective bounds at some point in a replay.
-/// Values are the checker's own arbitrary-precision integer text,
-/// unparsed — this REPL only ever splices them into further proof text
-/// (`BOUNDS v v`), never does arithmetic on them.
+/// Values are unparsed arbitrary-precision integer text, only ever spliced
+/// into proof text.
 pub struct ObjectiveBounds {
-    /// The objective function itself — the checker's pretty-printed
-    /// `<coeff> <lit> ... <constant>` text, unparsed, or `None` if the
-    /// problem has no objective. Unlike `Session::objective` (the
-    /// formula's own, static text), this reflects the *current* value
-    /// after any `obju` update rules applied so far in the replayed
-    /// proof, so the two can genuinely differ.
+    /// The current objective (`<coeff> <lit> ... <constant>`, unparsed),
+    /// reflecting any `obju` updates so far; `None` if there is none.
     pub objective: Option<String>,
     /// The best objective value logged so far, with or without
     /// checked-deletion guarantees.
     pub best: Option<String>,
     /// The best objective value logged while checked-deletion guarantees
-    /// held — the value `conclusion BOUNDS`'s upper-bound check actually
-    /// compares against.
+    /// held; what `conclusion BOUNDS`'s upper bound is checked against.
     pub best_valid: Option<String>,
 }
