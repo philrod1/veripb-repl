@@ -143,6 +143,9 @@ pub fn run(session: &mut Session, args: &str, out: &mut dyn Output) -> anyhow::R
         .into_iter()
         .map(|(_, text)| text.to_string())
         .collect();
+    // Marks the change for `dispatch`'s undo push (and the database cache)
+    // even when the buffer was already empty and `reset` didn't run.
+    session.generation += 1;
     outln!(
         out,
         "Loaded {} line(s) from {path} into the buffer — nothing checked yet. :verify when \

@@ -24,6 +24,9 @@ pub struct RawInvocation {
     /// this path, so `checker::parse` anchors its line-number search to
     /// it.
     pub proof_file_path: PathBuf,
+    /// The formula file passed as `<FORMULA>`; a formula syntax error names
+    /// this path.
+    pub formula_file_path: PathBuf,
 }
 
 /// Runs `veripb <formula_path> <proof_text> ...extra_args` and returns
@@ -33,7 +36,11 @@ pub struct RawInvocation {
 /// spawned, or the temp file couldn't be written — never because the
 /// proof was rejected; that's a normal outcome captured in
 /// `RawInvocation` for `checker::parse` to interpret.
-pub fn run<I, S>(formula_path: &Path, proof_text: &str, extra_args: I) -> anyhow::Result<RawInvocation>
+pub fn run<I, S>(
+    formula_path: &Path,
+    proof_text: &str,
+    extra_args: I,
+) -> anyhow::Result<RawInvocation>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -67,6 +74,7 @@ where
         success: output.status.success(),
         code: output.status.code(),
         proof_file_path,
+        formula_file_path: formula_path.to_path_buf(),
     })
 }
 
@@ -78,7 +86,10 @@ pub struct ElaboratedInvocation {
 
 /// Runs [`run`] with `--elaborate`, and returns the elaborated proof
 /// text it wrote.
-pub fn run_with_elaboration(formula_path: &Path, proof_text: &str) -> anyhow::Result<ElaboratedInvocation> {
+pub fn run_with_elaboration(
+    formula_path: &Path,
+    proof_text: &str,
+) -> anyhow::Result<ElaboratedInvocation> {
     let scratch = tempfile::NamedTempFile::new()
         .context("failed to create a scratch file for elaboration output")?;
     let args: Vec<std::ffi::OsString> = vec!["--elaborate".into(), scratch.path().into()];
@@ -119,24 +130,9 @@ where
     let database_dump = std::fs::read_to_string(scratch.path())
         .context("failed to read back the database dump scratch file")?;
 
-    // A genuine `--dump-database` run always writes at least the version
-    // header, whether it accepted the proof, hit a rejection, or ran out
-    // of input — see `checker::parse`'s own docs. An empty dump here means
-    // the invocation itself didn't behave like that: most likely the
-    // resolved `veripb` binary doesn't support `--dump-database` at all
-    // (an old build, or the wrong one on $PATH/$VERIPB_REPL_VERIPB_BIN).
-    // Surface the raw invocation so that's diagnosable, instead of
-    // `checker::parse::parse_database_dump`'s much later, context-free
-    // "missing its version header line".
-    anyhow::ensure!(
-        !database_dump.is_empty(),
-        "veripb wrote no `--dump-database` output (exit code {:?}) — the resolved `veripb` \
-         binary may not support `--dump-database`, or may be an older build than this REPL \
-         expects. Raw output:\n--- stdout ---\n{}\n--- stderr ---\n{}",
-        raw.code,
-        raw.stdout,
-        raw.stderr,
-    );
+    if database_dump.is_empty() {
+        return Err(missing_dump_error(&raw, "--dump-database"));
+    }
 
     Ok(DatabaseDumpInvocation { raw, database_dump })
 }
@@ -167,17 +163,34 @@ where
     let objective_dump = std::fs::read_to_string(scratch.path())
         .context("failed to read back the objective dump scratch file")?;
 
-    // Same reasoning as `run_with_database_dump`'s own check: a genuine
-    // `--dump-objective` run always writes at least the version header.
-    anyhow::ensure!(
-        !objective_dump.is_empty(),
-        "veripb wrote no `--dump-objective` output (exit code {:?}) — the resolved `veripb` \
-         binary may not support `--dump-objective`, or may be an older build than this REPL \
-         expects. Raw output:\n--- stdout ---\n{}\n--- stderr ---\n{}",
-        raw.code,
-        raw.stdout,
-        raw.stderr,
-    );
+    if objective_dump.is_empty() {
+        return Err(missing_dump_error(&raw, "--dump-objective"));
+    }
 
-    Ok(ObjectiveDumpInvocation { raw, objective_dump })
+    Ok(ObjectiveDumpInvocation {
+        raw,
+        objective_dump,
+    })
+}
+
+/// The error for a run that wrote no dump file (a real run of a supporting
+/// `veripb` always writes at least the header): the formula's own error if
+/// it has one; "unsupported flag" if `veripb` rejected `flag` as an
+/// argument; otherwise `veripb`'s reason for failing.
+fn missing_dump_error(raw: &RawInvocation, flag: &str) -> anyhow::Error {
+    if let Some(message) = super::parse::formula_error(raw) {
+        return anyhow::anyhow!(message);
+    }
+    if raw.stderr.contains(flag) {
+        return anyhow::anyhow!(
+            "the `veripb` in use doesn't support `{flag}` — see README.md for building an \
+             up-to-date one"
+        );
+    }
+    let combined = format!("{}{}", raw.stdout, raw.stderr);
+    anyhow::anyhow!(
+        "veripb wrote no `{flag}` output (exit code {:?}): {}",
+        raw.code,
+        super::parse::rejection_reason(&combined)
+    )
 }

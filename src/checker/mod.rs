@@ -72,19 +72,26 @@ pub fn elaborate_rup(
 ) -> anyhow::Result<Result<Option<Vec<RupHint>>, String>> {
     let elaborated = invoke::run_with_elaboration(formula_path, proof_text)?;
     match parse::check_outcome(&elaborated.raw)? {
-        CheckOutcome::Accepted { .. } => Ok(Ok(parse::last_rup_hints(&elaborated.elaborated_proof))),
+        CheckOutcome::Accepted { .. } => {
+            Ok(Ok(parse::last_rup_hints(&elaborated.elaborated_proof)))
+        }
         CheckOutcome::Rejected { message, .. } => Ok(Err(message)),
     }
 }
 
 /// Returns the live database after replaying `proof_text`.
 pub fn show_database(formula_path: &Path, proof_text: &str) -> anyhow::Result<Database> {
-    let dump = invoke::run_with_database_dump(formula_path, proof_text, std::iter::empty::<&str>())?;
+    let dump =
+        invoke::run_with_database_dump(formula_path, proof_text, std::iter::empty::<&str>())?;
     parse::parse_database_dump(&dump.database_dump)
 }
 
 /// Returns the best-known objective bounds after replaying `proof_text`.
-pub fn show_objective_bounds(formula_path: &Path, proof_text: &str) -> anyhow::Result<ObjectiveBounds> {
-    let dump = invoke::run_with_objective_dump(formula_path, proof_text, std::iter::empty::<&str>())?;
+pub fn show_objective_bounds(
+    formula_path: &Path,
+    proof_text: &str,
+) -> anyhow::Result<ObjectiveBounds> {
+    let dump =
+        invoke::run_with_objective_dump(formula_path, proof_text, std::iter::empty::<&str>())?;
     parse::parse_objective_dump(&dump.objective_dump)
 }

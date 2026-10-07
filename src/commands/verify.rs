@@ -11,7 +11,10 @@ use crate::session::Session;
 pub fn run(session: &mut Session, out: &mut dyn Output) -> anyhow::Result<()> {
     let pending = session.buffer.len() - session.checked_len;
     if pending == 0 {
-        outln!(out, "Nothing unchecked — the whole buffer is already verified.");
+        outln!(
+            out,
+            "Nothing unchecked — the whole buffer is already verified."
+        );
         return Ok(());
     }
 

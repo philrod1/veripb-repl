@@ -124,7 +124,29 @@ pub enum AppendOutcome {
 }
 
 impl Session {
-    /// Loads an OPB formula and starts an empty session.
+    /// Loads an OPB formula, checks it with `veripb` (see
+    /// [`Self::check_formula`]), and starts an empty session. Fails, with
+    /// veripb's message, if the formula has an error.
+    pub fn load_checked(formula_path: &str) -> anyhow::Result<Self> {
+        let session = Self::load(formula_path)?;
+        session.check_formula()?;
+        Ok(session)
+    }
+
+    /// Runs `veripb` on the original formula file with an empty proof.
+    /// Errors (with line/column in that file) if veripb rejects the formula.
+    pub fn check_formula(&self) -> anyhow::Result<()> {
+        let empty_proof = "pseudo-Boolean proof version 3.0\n";
+        match checker::check(std::path::Path::new(&self.formula_path), empty_proof, None)? {
+            CheckOutcome::Accepted { .. } => Ok(()),
+            CheckOutcome::Rejected { message, .. } => {
+                anyhow::bail!("veripb rejected the formula: {message}")
+            }
+        }
+    }
+
+    /// Loads an OPB formula and starts an empty session, without checking
+    /// it; see [`Self::load_checked`].
     pub fn load(formula_path: &str) -> anyhow::Result<Self> {
         let (formula, objective, preserved) = read_formula_lines(formula_path)
             .with_context(|| format!("failed to read formula file {formula_path}"))?;
@@ -197,7 +219,11 @@ impl Session {
 
     /// Checks `text` against the current formula, tracing `trace_range`
     /// (display lines, inclusive).
-    fn check(&self, text: &str, trace_range: Option<(usize, usize)>) -> anyhow::Result<CheckOutcome> {
+    fn check(
+        &self,
+        text: &str,
+        trace_range: Option<(usize, usize)>,
+    ) -> anyhow::Result<CheckOutcome> {
         let formula_file = self.formula_temp_file()?;
         checker::check(formula_file.path(), text, trace_range)
     }
@@ -237,7 +263,10 @@ impl Session {
     ///
     /// TODO: read veripb's trace only until it has a `--dump-preserved` flag.
     pub fn preserved_set(&self) -> anyhow::Result<PreservedSet> {
-        let declared = self.preserved.as_deref().map(checker::parse::preserved_declaration);
+        let declared = self
+            .preserved
+            .as_deref()
+            .map(checker::parse::preserved_declaration);
         let Some(idx) = self.buffer[..self.checked_len]
             .iter()
             .rposition(|line| checker::parse::is_preserved_change_line(line))
@@ -352,8 +381,15 @@ impl Session {
     /// the smallest of `buffer.len()`, `target`, and the first breakpoint
     /// after `checked_len` (strictly after, so resuming from a breakpoint
     /// makes progress).
-    pub fn continue_run(&mut self, target: Option<usize>) -> anyhow::Result<(String, Option<String>)> {
-        let next_breakpoint = self.breakpoints.range((self.checked_len + 1)..).next().copied();
+    pub fn continue_run(
+        &mut self,
+        target: Option<usize>,
+    ) -> anyhow::Result<(String, Option<String>)> {
+        let next_breakpoint = self
+            .breakpoints
+            .range((self.checked_len + 1)..)
+            .next()
+            .copied();
         let boundary = [Some(self.buffer.len()), target, next_breakpoint]
             .into_iter()
             .flatten()
@@ -438,7 +474,10 @@ impl Session {
 
     /// Replaces the buffer with `lines` and checks from the start as far as
     /// it holds.
-    pub(crate) fn replace_buffer_and_verify(&mut self, lines: Vec<String>) -> anyhow::Result<(String, Option<String>)> {
+    pub(crate) fn replace_buffer_and_verify(
+        &mut self,
+        lines: Vec<String>,
+    ) -> anyhow::Result<(String, Option<String>)> {
         self.buffer = lines;
         self.checked_len = 0;
         self.known_bad = None;
@@ -614,7 +653,8 @@ impl Session {
 
         // Validate the candidate formula alone (no proof lines) before
         // touching `self`.
-        let candidate_file = write_formula_temp_file(&candidate_formula, &self.objective, &self.preserved)?;
+        let candidate_file =
+            write_formula_temp_file(&candidate_formula, &self.objective, &self.preserved)?;
         let empty_proof = format!(
             "pseudo-Boolean proof version 3.0\nf {};\n",
             candidate_formula.len()
@@ -668,7 +708,10 @@ impl Session {
     /// <conclusion>; end pseudo-Boolean proof;` is a complete valid proof,
     /// without changing state. `conclusion` is spliced verbatim (e.g.
     /// `"UNSAT"`, `"BOUNDS 0 10"`). Returns the trace and the result.
-    pub fn dry_run_conclusion(&self, conclusion: &str) -> anyhow::Result<(String, Result<(), String>)> {
+    pub fn dry_run_conclusion(
+        &self,
+        conclusion: &str,
+    ) -> anyhow::Result<(String, Result<(), String>)> {
         let mut text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
         text.push_str("output NONE;\n");
         text.push_str(&format!("conclusion {conclusion};\n"));
@@ -700,7 +743,10 @@ impl Session {
 
     /// Returns the minimized hints the checker needed for checked `rup`
     /// line `display_line`. The inner `Err` is a user-facing message.
-    pub fn rup_needed_hints(&self, display_line: usize) -> anyhow::Result<Result<Vec<checker::RupHint>, String>> {
+    pub fn rup_needed_hints(
+        &self,
+        display_line: usize,
+    ) -> anyhow::Result<Result<Vec<checker::RupHint>, String>> {
         let Some(idx) = self.checked_index(display_line) else {
             return Ok(Err(unchecked_or_out_of_range(self, display_line)));
         };
