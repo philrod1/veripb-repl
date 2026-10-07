@@ -173,7 +173,7 @@ class Screen:
                f'viewBox="0 0 {w:.0f} {h:.0f}">',
                f'<rect width="100%" height="100%" fill="{dark_bg}"/>',
                '<g font-family="Menlo, Consolas, \'DejaVu Sans Mono\', monospace" '
-               'font-size="15" xml:space="preserve">']
+               'font-size="15">']
         segments = []
         for y, row in enumerate(self.cells):
             x = 0
@@ -193,11 +193,15 @@ class Screen:
                     elif c in SHAPES:
                         out.append(glyph_svg(c, (x + i) * cw, y * ch, cw, ch, color))
                 text = "".join(" " if c in BOX or c in SHAPES else c for c in text)
-                if text.strip():
-                    weight = ' font-weight="bold"' if bold else ""
-                    out.append(f'<text x="{x*cw:.1f}" y="{y*ch+13.5:.1f}" fill="{fg or dark_fg}"'
-                               f'{weight} textLength="{(x2-x)*cw:.1f}" '
-                               f'lengthAdjust="spacingAndGlyphs">{html.escape(text)}</text>')
+                # One <text> per space-free word, at its own cell position:
+                # renderers may collapse spaces inside SVG text, which would
+                # shift or stretch everything after them.
+                weight = ' font-weight="bold"' if bold else ""
+                for m in re.finditer(r"\S+", text):
+                    wx = (x + m.start()) * cw
+                    out.append(f'<text x="{wx:.1f}" y="{y*ch+13.5:.1f}" fill="{color}"'
+                               f'{weight} textLength="{len(m.group())*cw:.1f}" '
+                               f'lengthAdjust="spacingAndGlyphs">{html.escape(m.group())}</text>')
                 x = x2
         out.extend(merged_lines(segments))
         if self.cursor_visible and 0 <= self.y < self.rows and 0 <= self.x < self.cols:
