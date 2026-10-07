@@ -92,4 +92,3 @@ fn looks_like_variable_name(tok: &str) -> bool {
     }
     has_second_symbol
 }
-

@@ -665,9 +665,9 @@ fn find(name: &str) -> Option<&'static Topic> {
 /// `None`. Printed under the rejection by every command that reports one.
 pub fn rejection_hint(line: &str) -> Option<&'static str> {
     match rule_keyword(line)? {
-        "sol" | "soli" if line.split_whitespace().any(|tok| tok.starts_with('*')) => Some(
-            "Hint: *<variable> (a shrunk variable) is only allowed in solx — see :help solx.",
-        ),
+        "sol" | "soli" if line.split_whitespace().any(|tok| tok.starts_with('*')) => {
+            Some("Hint: *<variable> (a shrunk variable) is only allowed in solx — see :help solx.")
+        }
         _ => None,
     }
 }

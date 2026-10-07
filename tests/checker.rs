@@ -42,7 +42,8 @@ output NONE;
 conclusion UNSAT;
 end pseudo-Boolean proof;
 ";
-    let outcome = checker::check(formula.path(), proof, None).expect("check should not fail to invoke");
+    let outcome =
+        checker::check(formula.path(), proof, None).expect("check should not fail to invoke");
     assert!(outcome.is_accepted());
 }
 
@@ -61,7 +62,8 @@ pseudo-Boolean proof version 3.0
 f 3;
 rup 1 x2 >= 1 ;
 ";
-    let outcome = checker::check(formula.path(), proof, None).expect("check should not fail to invoke");
+    let outcome =
+        checker::check(formula.path(), proof, None).expect("check should not fail to invoke");
     assert!(outcome.is_accepted());
 }
 
@@ -78,7 +80,8 @@ pseudo-Boolean proof version 3.0
 f 3;
 rup 1 x2 >= 1 : 99;
 ";
-    let outcome = checker::check(formula.path(), proof, None).expect("check should not fail to invoke");
+    let outcome =
+        checker::check(formula.path(), proof, None).expect("check should not fail to invoke");
     match outcome {
         CheckOutcome::Rejected { line, .. } => assert_eq!(line, 3),
         CheckOutcome::Accepted { trace } => {
@@ -103,8 +106,8 @@ output NONE;
 conclusion UNSAT;
 end pseudo-Boolean proof;
 ";
-    let (outcome, database) =
-        checker::check_with_database(formula.path(), proof, None).expect("check should not fail to invoke");
+    let (outcome, database) = checker::check_with_database(formula.path(), proof, None)
+        .expect("check should not fail to invoke");
     assert!(outcome.is_accepted());
     assert_eq!(database.entries.len(), 5);
     assert_eq!(database.entries.iter().filter(|e| e.is_core).count(), 3);
@@ -125,8 +128,8 @@ pseudo-Boolean proof version 3.0
 f 3;
 rup 1 x2 >= 1 : 99;
 ";
-    let (outcome, database) =
-        checker::check_with_database(formula.path(), proof, None).expect("check should not fail to invoke");
+    let (outcome, database) = checker::check_with_database(formula.path(), proof, None)
+        .expect("check should not fail to invoke");
     assert!(!outcome.is_accepted());
     assert_eq!(database.entries.len(), 3);
 }
@@ -150,7 +153,8 @@ pseudo-Boolean proof version 3.0
 f 3;
 rup 1 x2 >= 1 ;
 ";
-    let outcome = checker::check(formula.path(), proof, Some((3, 3))).expect("check should not fail to invoke");
+    let outcome = checker::check(formula.path(), proof, Some((3, 3)))
+        .expect("check should not fail to invoke");
     match outcome {
         CheckOutcome::Accepted { trace } => {
             assert!(
@@ -191,7 +195,8 @@ rup 1 x1 1 x2 >= 1 ;
 ";
     // Traces both new lines (4 and 5) in one call, mirroring
     // `Session::verify_forward`'s own `--trace-lines` scoping.
-    let outcome = checker::check(formula.path(), proof, Some((3, 4))).expect("check should not fail to invoke");
+    let outcome = checker::check(formula.path(), proof, Some((3, 4)))
+        .expect("check should not fail to invoke");
     let CheckOutcome::Accepted { trace } = outcome else {
         panic!("expected an accepted outcome");
     };

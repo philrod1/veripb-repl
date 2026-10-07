@@ -978,8 +978,8 @@ impl App {
             n
         };
 
-        let assertion_text = session.buffer[session.buffer_index(line).expect("just found")]
-            .clone();
+        let assertion_text =
+            session.buffer[session.buffer_index(line).expect("just found")].clone();
         self.start_vim(line);
         if let Some(vim) = &mut self.vim {
             vim.deassert_source = Some(edit::assertion_constraint_text(&assertion_text));
@@ -1894,7 +1894,13 @@ impl App {
         session
             .formula_index(browse.cursor)
             .and_then(|idx| session.formula.get(idx))
-            .map(|c| c.trim_end().strip_suffix(';').unwrap_or(c).trim_end().to_string())
+            .map(|c| {
+                c.trim_end()
+                    .strip_suffix(';')
+                    .unwrap_or(c)
+                    .trim_end()
+                    .to_string()
+            })
             .unwrap_or_default()
     }
 
@@ -2194,11 +2200,10 @@ impl App {
                 // user to scroll and hunt for whatever `:list`/the error
                 // message already named.
                 if resolved == Some("verify")
-                    && let Some(line) = self.session.as_ref().and_then(|s| {
-                        s.known_bad
-                            .is_some()
-                            .then(|| s.display_line(s.checked_len))
-                    })
+                    && let Some(line) = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.known_bad.is_some().then(|| s.display_line(s.checked_len)))
                 {
                     self.snap_proof_to_line(line);
                 }
@@ -2309,9 +2314,7 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
                     KeyCode::Enter if app.vim_inserting() => app.vim_insert_newline(),
                     KeyCode::Up if app.vim_inserting() => app.vim_insert_move_vertical(true),
                     KeyCode::Down if app.vim_inserting() => app.vim_insert_move_vertical(false),
-                    KeyCode::Left
-                        if app.vim_inserting() && app.editor.cursor() == 0 =>
-                    {
+                    KeyCode::Left if app.vim_inserting() && app.editor.cursor() == 0 => {
                         app.vim_insert_move_horizontal(false);
                     }
                     KeyCode::Right
@@ -2480,9 +2483,7 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
                     // line still submits as usual. Both browse modes are
                     // already handled well above, so reaching here means
                     // neither is active.
-                    KeyCode::Enter
-                        if app.focus == Pane::Proof && app.editor.text().is_empty() =>
-                    {
+                    KeyCode::Enter if app.focus == Pane::Proof && app.editor.text().is_empty() => {
                         app.start_vim_focused_pane();
                     }
                     KeyCode::BackTab if app.vim.is_none() && app.formula_browse.is_none() => {

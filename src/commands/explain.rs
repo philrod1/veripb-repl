@@ -157,7 +157,10 @@ fn print_diagnosis(session: &Session, diagnosis: &RejectionDiagnosis, out: &mut 
 fn print_hint_list(session: &Session, hints: &[RupHint], indent: &str, out: &mut dyn Output) {
     match hints {
         [] => {
-            outln!(out, "{indent}(no hints — the constraint is trivially implied)");
+            outln!(
+                out,
+                "{indent}(no hints — the constraint is trivially implied)"
+            );
             return;
         }
         [RupHint::NegatedPremise] => {

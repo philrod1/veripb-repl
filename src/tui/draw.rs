@@ -499,10 +499,9 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     // Adjust `app.proof_hscroll` to keep the Vim cursor column visible;
     // must run before `pane_view`, which clamps only to content width.
     if let Some((_, col)) = app.vim_cursor() {
-        let num_w = app
-            .session
-            .as_ref()
-            .map_or(1, |s| number_width(s.preamble_lines().len() + s.buffer.len()));
+        let num_w = app.session.as_ref().map_or(1, |s| {
+            number_width(s.preamble_lines().len() + s.buffer.len())
+        });
         let target_col = proof_prefix_width(num_w) + col;
         // Reserve a column for a possible vertical scrollbar.
         let avail_w = proof_w.saturating_sub(1);
@@ -779,10 +778,9 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
         let (line, col) = app.vim_cursor()?;
         let proof_view = proof.as_ref()?;
         let x0 = layout.proof_content_x0() as usize;
-        let num_w = app
-            .session
-            .as_ref()
-            .map_or(1, |s| number_width(s.preamble_lines().len() + s.buffer.len()));
+        let num_w = app.session.as_ref().map_or(1, |s| {
+            number_width(s.preamble_lines().len() + s.buffer.len())
+        });
         let prefix_w = proof_prefix_width(num_w);
         let row_in_window = (line - 1).saturating_sub(app.proof_scroll);
         let y = 1 + row_in_window.min(proof_view.content_h.saturating_sub(1));

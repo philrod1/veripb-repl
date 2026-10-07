@@ -11,7 +11,10 @@ use super::types::{CheckOutcome, Database, DatabaseEntry, ObjectiveBounds, RupHi
 /// elaborated proof, or `None` if the text contains no `rup` line. The proof
 /// must end at the line being asked about.
 pub fn last_rup_hints(elaborated_proof: &str) -> Option<Vec<RupHint>> {
-    let last_rup_line = elaborated_proof.lines().rev().find(|line| is_rup_line(line))?;
+    let last_rup_line = elaborated_proof
+        .lines()
+        .rev()
+        .find(|line| is_rup_line(line))?;
     split_rup_hints(last_rup_line).1
 }
 
@@ -151,7 +154,8 @@ pub fn check_outcome(raw: &RawInvocation) -> anyhow::Result<CheckOutcome> {
         });
     }
 
-    let line = find_path_anchored_line(&combined, &raw.proof_file_path).or_else(|| find_line_number(&combined));
+    let line = find_path_anchored_line(&combined, &raw.proof_file_path)
+        .or_else(|| find_line_number(&combined));
 
     match line {
         Some(line) => Ok(CheckOutcome::Rejected {
@@ -226,7 +230,9 @@ pub fn rejection_reason(output: &str) -> String {
 /// to the path to avoid matching unrelated numbers.
 fn find_path_anchored_line(text: &str, proof_file_path: &Path) -> Option<usize> {
     let marker = format!("{}:", proof_file_path.display());
-    let after = text.find(marker.as_str()).map(|idx| &text[idx + marker.len()..])?;
+    let after = text
+        .find(marker.as_str())
+        .map(|idx| &text[idx + marker.len()..])?;
     let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse().ok()
 }
@@ -379,8 +385,11 @@ pub fn parse_objective_dump(dump: &str) -> anyhow::Result<ObjectiveBounds> {
 
     let objective = parse_objective_dump_field(&mut lines, "objective", ValueShape::Any)?;
     let best = parse_objective_dump_field(&mut lines, "best_objective_value", ValueShape::Integer)?;
-    let best_valid =
-        parse_objective_dump_field(&mut lines, "best_valid_objective_value", ValueShape::Integer)?;
+    let best_valid = parse_objective_dump_field(
+        &mut lines,
+        "best_valid_objective_value",
+        ValueShape::Integer,
+    )?;
 
     Ok(ObjectiveBounds {
         objective,
@@ -420,7 +429,11 @@ fn parse_objective_dump_field(
     match shape {
         ValueShape::Integer => anyhow::ensure!(
             value == "none"
-                || value.strip_prefix('-').unwrap_or(value).chars().all(|c| c.is_ascii_digit())
+                || value
+                    .strip_prefix('-')
+                    .unwrap_or(value)
+                    .chars()
+                    .all(|c| c.is_ascii_digit())
                     && !value.trim_start_matches('-').is_empty(),
             "malformed objective dump line (value {value:?} is not an integer or `none`): {line:?}",
         ),

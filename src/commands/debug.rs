@@ -106,7 +106,12 @@ fn with_undo<T>(
 
 /// Prints the captured checker output, then the rejection, the current
 /// position, or "fully checked". Used by every forward-moving command.
-fn report_position(session: &Session, captured: &str, rejection: Option<String>, out: &mut dyn Output) {
+fn report_position(
+    session: &Session,
+    captured: &str,
+    rejection: Option<String>,
+    out: &mut dyn Output,
+) {
     output::text(out, captured);
     if let Some(err) = rejection {
         output::error(out, &err);
@@ -301,9 +306,11 @@ fn resolve_debug_command(cmd: &str) -> Result<&'static str, String> {
     if let Some(name) = debug_command_names().find(|&n| n == cmd) {
         return Ok(name);
     }
-    debug_command_names().find(|n| n.starts_with(cmd)).ok_or_else(|| {
-        format!("Unknown command ':{cmd}' in debug mode — :help debug for the list.")
-    })
+    debug_command_names()
+        .find(|n| n.starts_with(cmd))
+        .ok_or_else(|| {
+            format!("Unknown command ':{cmd}' in debug mode — :help debug for the list.")
+        })
 }
 
 /// Routes one input line in debug mode; the frontend must not call

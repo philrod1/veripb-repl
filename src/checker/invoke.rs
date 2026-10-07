@@ -36,7 +36,11 @@ pub struct RawInvocation {
 /// spawned, or the temp file couldn't be written — never because the
 /// proof was rejected; that's a normal outcome captured in
 /// `RawInvocation` for `checker::parse` to interpret.
-pub fn run<I, S>(formula_path: &Path, proof_text: &str, extra_args: I) -> anyhow::Result<RawInvocation>
+pub fn run<I, S>(
+    formula_path: &Path,
+    proof_text: &str,
+    extra_args: I,
+) -> anyhow::Result<RawInvocation>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -82,7 +86,10 @@ pub struct ElaboratedInvocation {
 
 /// Runs [`run`] with `--elaborate`, and returns the elaborated proof
 /// text it wrote.
-pub fn run_with_elaboration(formula_path: &Path, proof_text: &str) -> anyhow::Result<ElaboratedInvocation> {
+pub fn run_with_elaboration(
+    formula_path: &Path,
+    proof_text: &str,
+) -> anyhow::Result<ElaboratedInvocation> {
     let scratch = tempfile::NamedTempFile::new()
         .context("failed to create a scratch file for elaboration output")?;
     let args: Vec<std::ffi::OsString> = vec!["--elaborate".into(), scratch.path().into()];
@@ -160,7 +167,10 @@ where
         return Err(missing_dump_error(&raw, "--dump-objective"));
     }
 
-    Ok(ObjectiveDumpInvocation { raw, objective_dump })
+    Ok(ObjectiveDumpInvocation {
+        raw,
+        objective_dump,
+    })
 }
 
 /// The error for a run that wrote no dump file (a real run of a supporting

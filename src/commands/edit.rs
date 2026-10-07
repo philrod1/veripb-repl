@@ -305,7 +305,11 @@ pub fn start_deassert(
 /// Prints up to 8 live database constraints sharing a variable with
 /// `assertion_text`, most shared variables first, then newest. Informational
 /// only.
-pub(crate) fn suggest_related_constraints(session: &Session, assertion_text: &str, out: &mut dyn Output) {
+pub(crate) fn suggest_related_constraints(
+    session: &Session,
+    assertion_text: &str,
+    out: &mut dyn Output,
+) {
     let vars = session.variables.mentioned(assertion_text);
     if vars.is_empty() {
         return;
@@ -340,7 +344,9 @@ pub(crate) fn suggest_related_constraints(session: &Session, assertion_text: &st
     const SHOWN: usize = 8;
     let labels_by_id = session.labels_by_id();
     for &(id, _) in matches.iter().take(SHOWN) {
-        let entry = database.get(id).expect("just matched above — still present");
+        let entry = database
+            .get(id)
+            .expect("just matched above — still present");
         let tag = if entry.is_core { "core" } else { "derived" };
         let labels = labels_by_id
             .get(&(id as isize))
@@ -360,12 +366,7 @@ pub(crate) fn suggest_related_constraints(session: &Session, assertion_text: &st
 
 /// Removes display lines `lo..=hi` immediately. Prints an error and returns
 /// `Ok` on an invalid line.
-fn delete(
-    session: &mut Session,
-    lo: usize,
-    hi: usize,
-    out: &mut dyn Output,
-) -> anyhow::Result<()> {
+fn delete(session: &mut Session, lo: usize, hi: usize, out: &mut dyn Output) -> anyhow::Result<()> {
     let Some(start_idx) = session.buffer_index(lo) else {
         outln!(
             out,
