@@ -65,7 +65,7 @@ pub fn startup(
     match formula_path {
         Some(path) => {
             let path = &expand_tilde(path);
-            let session = Session::load(path)?;
+            let session = Session::load_checked(path)?;
             outln!(
                 out,
                 "Loaded {} constraints from {path}",

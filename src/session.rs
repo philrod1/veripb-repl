@@ -124,7 +124,29 @@ pub enum AppendOutcome {
 }
 
 impl Session {
-    /// Loads an OPB formula and starts an empty session.
+    /// Loads an OPB formula, checks it with `veripb` (see
+    /// [`Self::check_formula`]), and starts an empty session. Fails, with
+    /// veripb's message, if the formula has an error.
+    pub fn load_checked(formula_path: &str) -> anyhow::Result<Self> {
+        let session = Self::load(formula_path)?;
+        session.check_formula()?;
+        Ok(session)
+    }
+
+    /// Runs `veripb` on the original formula file with an empty proof.
+    /// Errors (with line/column in that file) if veripb rejects the formula.
+    pub fn check_formula(&self) -> anyhow::Result<()> {
+        let empty_proof = "pseudo-Boolean proof version 3.0\n";
+        match checker::check(std::path::Path::new(&self.formula_path), empty_proof, None)? {
+            CheckOutcome::Accepted { .. } => Ok(()),
+            CheckOutcome::Rejected { message, .. } => {
+                anyhow::bail!("veripb rejected the formula: {message}")
+            }
+        }
+    }
+
+    /// Loads an OPB formula and starts an empty session, without checking
+    /// it; see [`Self::load_checked`].
     pub fn load(formula_path: &str) -> anyhow::Result<Self> {
         let (formula, objective, preserved) = read_formula_lines(formula_path)
             .with_context(|| format!("failed to read formula file {formula_path}"))?;

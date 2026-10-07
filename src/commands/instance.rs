@@ -57,7 +57,7 @@ pub fn run(session: &mut Option<Session>, args: &str, out: &mut dyn Output) -> a
         }
     }
 
-    match Session::load(&opb_path) {
+    match Session::load_checked(&opb_path) {
         Ok(new_session) => {
             outln!(
                 out,

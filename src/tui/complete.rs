@@ -28,30 +28,15 @@ pub struct Candidate {
     pub right: String,
 }
 
-/// `.opb`, optionally with one of the compressed-stream extensions
-/// `Encoding::from_path` (in `veripb-parser`) recognizes appended —
-/// `formula.opb.gz` and friends are genuinely loadable, so completion
-/// shouldn't hide them.
-const OPB_SUFFIXES: &[&str] = &[
-    ".opb",
-    ".opb.gz",
-    ".opb.gzip",
-    ".opb.zst",
-    ".opb.zstd",
-    ".opb.xz",
-];
+/// Formula files `:load` offers. Plain text only: formulas are read with
+/// `read_to_string`, so compressed `.opb.gz`/`.zst`/`.xz` files don't load.
+const OPB_SUFFIXES: &[&str] = &[".opb"];
 
-/// `:source`/`:save` only ever deal in plain `.pbp` text — neither reads
-/// nor writes a compressed stream (`:source` uses a plain `read_to_string`
-/// rather than the compression-aware reader `:load` gets for free).
+/// Proof files `:source`/`:save` offer; plain text only.
 const PBP_SUFFIXES: &[&str] = &[".pbp"];
 
 /// `:instance` takes either half of a formula/proof pair (or their bare
-/// stem, which completion can't offer — there's no file actually named
-/// that), so completion offers both plain file types rather than
-/// filtering to just one. Unlike `:load`, `:instance` doesn't pair a
-/// compressed formula's suffixes (see its own module docs), so there's no
-/// point suggesting them here either.
+/// stem, which isn't a file and so isn't offered).
 const INSTANCE_SUFFIXES: &[&str] = &[".opb", ".pbp"];
 
 /// Which filename suffixes count as a match for `cmd`'s file argument —

@@ -1,11 +1,7 @@
-//! `:load <file>` — load a new formula (OPB only, matching `Session::load`),
-//! resetting the whole session: buffer cleared, checker rebuilt from
-//! scratch. Also how the very first formula gets loaded if the REPL was
-//! started with no formula path on the command line — `session` is `None`
-//! until the first successful `:load`. A bad path or parse error leaves the
-//! current session (or lack of one) untouched rather than crashing the REPL
-//! or half-initializing — same "state unchanged on failure" guarantee as
-//! everything else here.
+//! `:load <file>` — replaces the session with a new one for an OPB formula
+//! (see `Session::load_checked`); `session` is `None` until the first
+//! successful load. An unreadable file, or a formula veripb rejects, leaves
+//! the current session unchanged.
 
 use crate::commands::expand_tilde;
 use crate::output::{Output, outln};
@@ -19,7 +15,7 @@ pub fn run(session: &mut Option<Session>, args: &str, out: &mut dyn Output) {
     }
     let path = &expand_tilde(path);
 
-    match Session::load(path) {
+    match Session::load_checked(path) {
         Ok(new_session) => {
             outln!(
                 out,

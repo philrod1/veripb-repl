@@ -139,6 +139,10 @@ pub fn check_outcome(raw: &RawInvocation) -> anyhow::Result<CheckOutcome> {
         });
     }
 
+    if let Some(message) = formula_error(raw) {
+        anyhow::bail!(message);
+    }
+
     let combined = format!("{}{}", raw.stdout, raw.stderr);
 
     if combined.contains(RAN_OUT_OF_INPUT_MARKER) {
@@ -164,6 +168,40 @@ pub fn check_outcome(raw: &RawInvocation) -> anyhow::Result<CheckOutcome> {
             raw.stderr,
         ),
     }
+}
+
+/// Returns a user-facing message if `raw` failed because of an error in
+/// the formula file (veripb's message names `raw.formula_file_path`, as
+/// `<path>:<line>:<column>`), with that location rewritten as
+/// `line L, column C`. `None` otherwise.
+pub fn formula_error(raw: &RawInvocation) -> Option<String> {
+    if raw.success {
+        return None;
+    }
+    let combined = format!("{}{}", raw.stdout, raw.stderr);
+    let path = raw.formula_file_path.display().to_string();
+    let error_line = combined.lines().find(|line| line.contains(&path))?;
+
+    let after_path = &error_line[error_line.find(&path)? + path.len()..];
+    let mut location = after_path.strip_prefix(':').unwrap_or("").splitn(3, ':');
+    let digits = |s: Option<&str>| -> Option<String> {
+        let d: String = s?.chars().take_while(char::is_ascii_digit).collect();
+        (!d.is_empty()).then_some(d)
+    };
+    let replaced = match (digits(location.next()), digits(location.next())) {
+        (Some(line), Some(column)) => error_line.replacen(
+            &format!("{path}:{line}:{column}"),
+            &format!("line {line}, column {column}"),
+            1,
+        ),
+        (Some(line), None) => {
+            error_line.replacen(&format!("{path}:{line}"), &format!("line {line}"), 1)
+        }
+        _ => error_line.replacen(&path, "the formula", 1),
+    };
+    let message = replaced.trim();
+    let message = message.strip_prefix("Error: ").unwrap_or(message);
+    Some(format!("the formula has an error: {message}"))
 }
 
 /// Returns the one-line reason from a rejection's raw output: the first

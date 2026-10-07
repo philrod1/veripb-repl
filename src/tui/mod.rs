@@ -1974,6 +1974,12 @@ impl App {
             self.exit_formula_browse("Left formula mode.");
             return;
         }
+        if trimmed.starts_with(':') && trimmed != ":formula cancel" {
+            self.scrollback.push(&format!("opb> {trimmed}"));
+            self.scrollback.push(formula::ONLY_DONE_OR_CANCEL);
+            self.refill_formula_browse_prompt();
+            return;
+        }
         let Some(session) = self.session.as_mut() else {
             return;
         };

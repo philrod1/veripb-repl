@@ -723,7 +723,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     let (input_view, cursor_offset) = app.editor.view(inner - prompt_label.len());
     if app.vim_active() {
         let status_text = if app.vim_inserting() {
-            "-- INSERT --  (Esc/Enter commits the line)"
+            "-- INSERT --  Esc commits the line · Enter splits it"
         } else {
             "-- NORMAL --  hjkl/arrows move · i/a/o/O insert · x del char · dd del line · \
              : command · Esc leave"

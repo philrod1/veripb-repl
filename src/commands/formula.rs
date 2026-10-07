@@ -275,6 +275,11 @@ pub(crate) fn cancel(session: &mut Session, out: &mut dyn Output) -> anyhow::Res
     Ok(())
 }
 
+/// Shown when a `:`-command other than `:done`/`:formula cancel` is typed
+/// in formula mode (plain frontend and TUI).
+pub(crate) const ONLY_DONE_OR_CANCEL: &str = "Only :done and :formula cancel work while \
+     editing the formula — type the replacement constraint, or one of those.";
+
 /// Route one input line while formula-editing mode is active — the sole
 /// entry point the plain frontend needs during one: `commands::dispatch`
 /// isn't consulted at all until `FormulaEditFlow::Ended` comes back
@@ -316,11 +321,7 @@ pub fn handle(
             }
         }
         other if other.starts_with(':') => {
-            outln!(
-                out,
-                "Only :done and :formula cancel work while editing the formula — type the \
-                 replacement constraint, or one of those."
-            );
+            outln!(out, "{ONLY_DONE_OR_CANCEL}");
             Ok(FormulaEditFlow::Continue)
         }
         _ => {
