@@ -4,6 +4,7 @@
 //! along with everything still unchecked after it — [`Session::drive_forward`]
 //! does all the real work here; this is just its dispatch-facing wrapper.
 
+use crate::commands::help;
 use crate::output::{self, Output, outln};
 use crate::session::Session;
 
@@ -21,6 +22,7 @@ pub fn run(session: &mut Session, out: &mut dyn Output) -> anyhow::Result<()> {
         None => outln!(out, "Verified {pending} line(s)."),
         Some(err) => {
             output::error(out, &err);
+            help::print_rejection_hint(out, &session.buffer[session.checked_len]);
             let display_line = session.display_line(session.checked_len);
             let remaining = session.buffer.len() - session.checked_len - 1;
             outln!(

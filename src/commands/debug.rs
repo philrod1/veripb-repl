@@ -11,7 +11,7 @@
 //! breakpoint changes are not undoable. An empty line is a no-op.
 
 use crate::commands::edit::{self, READONLY_DURING_EDIT};
-use crate::commands::help::Topic;
+use crate::commands::help::{self, Topic};
 use crate::output::{self, Output, outln};
 use crate::session::Session;
 
@@ -110,6 +110,7 @@ fn report_position(session: &Session, captured: &str, rejection: Option<String>,
     output::text(out, captured);
     if let Some(err) = rejection {
         output::error(out, &err);
+        help::print_rejection_hint(out, &session.buffer[session.checked_len]);
         let display_line = session.display_line(session.checked_len);
         outln!(out, "Stopped at line {display_line} — it fails.");
         return;

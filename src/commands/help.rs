@@ -2,6 +2,7 @@
 //! drives TUI Tab completion and the suggestion strip. Rule syntax must follow
 //! `proof_format_overview.md`, the authoritative grammar.
 
+use crate::checker::parse::rule_keyword;
 use crate::output::{Output, outln};
 
 pub struct Topic {
@@ -465,21 +466,81 @@ pub const RULES: &[Topic] = &[
     },
     Topic {
         name: "sol",
-        usage: "sol <literal> ... ;",
+        usage: "sol <literal> ... [: <objective value>] ;",
         summary: "log a solution",
-        details: &[],
+        details: &[
+            "Checks that unit propagation from the given literals (~x for",
+            "negated) leaves an assignment satisfying every core constraint.",
+            "With `: <objective value>`, also checks the assignment achieves",
+            "that value. Adds no constraint.",
+            "*x (a shrunk variable) is only allowed in solx.",
+        ],
     },
     Topic {
         name: "soli",
         usage: "soli <literal> ... [: <objective value>] ;",
         summary: "log a solution and add an objective-improving constraint",
-        details: &[],
+        details: &[
+            "Needs an objective (min:/max: in the formula). Same check as sol,",
+            "plus every objective variable must be assigned after propagation.",
+            "Adds f(x) <= f(solution) - 1 to the core set.",
+            "*x (a shrunk variable) is only allowed in solx.",
+        ],
+    },
+    Topic {
+        name: "obji",
+        usage: "obji <objective value> ;",
+        summary: "add an objective-improving constraint without a solution",
+        details: &["Adds f(x) <= <objective value> to the core set; no solution is checked."],
     },
     Topic {
         name: "solx",
-        usage: "solx <literal> ... ;",
+        usage: "solx <literal|*variable> ... ;",
         summary: "log a solution and add a solution-excluding constraint",
-        details: &[],
+        details: &[
+            "Needs a preserved: set in the formula and no objective; not",
+            "allowed after unchecked deletion. Same check as sol, plus every",
+            "preserved variable must be assigned after propagation. Adds the",
+            "clause excluding this assignment of the preserved variables.",
+            "*x marks x as shrunk: the solution holds for any value of x. A",
+            "shrunk variable must be preserved, must stay unassigned after",
+            "propagation, and is left out of the excluding clause — so one",
+            "solx excludes the whole cube. Example: solx *x1 x2 *x3 ;",
+        ],
+    },
+    Topic {
+        name: "preserved_add",
+        usage: "preserved_add <variable> : <constraint> ;",
+        summary: "add a variable to the preserved set",
+        details: &[
+            "Needs a preserved: set in the formula. The constraint C may only",
+            "use preserved variables, and x <=> C must be proven — by",
+            "autoproving, or in a subproof: proofgoal #1 is x => C, #2 is",
+            "x <= C. Example: preserved_add x5 : 1 x1 >= 1 ;",
+            ":preserved shows the current set.",
+        ],
+    },
+    Topic {
+        name: "preserved_rm",
+        usage: "preserved_rm <variable> : <constraint> ;",
+        summary: "remove a variable from the preserved set",
+        details: &[
+            "Needs a preserved: set in the formula. The constraint C may only",
+            "use preserved variables other than x itself, and x <=> C must be",
+            "proven — by autoproving, or in a subproof: proofgoal #1 is",
+            "x => C, #2 is x <= C. Example: preserved_rm x5 : 1 x1 >= 1 ;",
+            ":preserved shows the current set.",
+        ],
+    },
+    Topic {
+        name: "epreserved",
+        usage: "epreserved <variable> ... ;",
+        summary: "check that the preserved set is exactly these variables",
+        details: &[
+            "Fails unless the current preserved set equals the listed",
+            "variables (order doesn't matter). Adds no constraint.",
+            ":preserved shows the current set.",
+        ],
     },
     Topic {
         name: "f",
@@ -571,6 +632,25 @@ pub fn rule_matches(prefix: &str) -> Vec<&'static Topic> {
 /// Exact-name lookup across commands then rules.
 fn find(name: &str) -> Option<&'static Topic> {
     COMMANDS.iter().chain(RULES.iter()).find(|t| t.name == name)
+}
+
+/// A hint explaining a likely cause of the checker rejecting proof line
+/// `line`, for mistakes whose checker error doesn't name the rule, or
+/// `None`. Printed under the rejection by every command that reports one.
+pub fn rejection_hint(line: &str) -> Option<&'static str> {
+    match rule_keyword(line)? {
+        "sol" | "soli" if line.split_whitespace().any(|tok| tok.starts_with('*')) => Some(
+            "Hint: *<variable> (a shrunk variable) is only allowed in solx — see :help solx.",
+        ),
+        _ => None,
+    }
+}
+
+/// Prints [`rejection_hint`] for `line`, if there is one.
+pub(crate) fn print_rejection_hint(out: &mut dyn Output, line: &str) {
+    if let Some(hint) = rejection_hint(line) {
+        outln!(out, "{hint}");
+    }
 }
 
 pub fn run(args: &str, out: &mut dyn Output) {

@@ -9,6 +9,7 @@
 
 use crate::checker::RupHint;
 use crate::checker::parse::is_rup_line;
+use crate::commands::help;
 use crate::output::{self, Output, outln};
 use crate::session::{RejectionDiagnosis, Session};
 
@@ -101,6 +102,7 @@ fn explain_checked(session: &Session, n: usize, out: &mut dyn Output) {
 fn print_rejection(session: &Session, n: usize, out: &mut dyn Output) {
     let reason = session.known_bad.as_deref().unwrap_or_default();
     outln!(out, "Line {n}{REJECTED_INFIX}{reason}");
+    help::print_rejection_hint(out, &session.buffer[session.checked_len]);
 
     match session.diagnose_rejected_rup() {
         Ok(Some(diagnosis)) => print_diagnosis(session, &diagnosis, out),

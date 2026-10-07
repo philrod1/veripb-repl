@@ -41,7 +41,7 @@ pub fn split_rup_hints(line: &str) -> (&str, Option<Vec<RupHint>>) {
 
 /// Returns a proof line's rule keyword — its first token, or its second
 /// if the first is an `@label`.
-fn rule_keyword(line: &str) -> Option<&str> {
+pub fn rule_keyword(line: &str) -> Option<&str> {
     let mut tokens = line.split_whitespace();
     match tokens.next()? {
         t if t.starts_with('@') => tokens.next(),
