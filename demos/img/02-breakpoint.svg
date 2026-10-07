@@ -1,0 +1,362 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="576" viewBox="0 0 1080 576">
+<rect width="100%" height="100%" fill="#282c34"/>
+<g font-family="Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="15" xml:space="preserve">
+<rect x="0.0" y="0.0" width="18.0" height="18.0" fill="#282c34"/>
+<rect x="18.0" y="0.0" width="270.0" height="18.0" fill="#282c34"/>
+<text x="18.0" y="13.5" fill="#abb2bf" textLength="270.0" lengthAdjust="spacingAndGlyphs"> Formula: two-of-three.opb (4)</text>
+<rect x="288.0" y="0.0" width="81.0" height="18.0" fill="#282c34"/>
+<rect x="307.5" y="6.0" width="6.0" height="6" fill="none" stroke="#5c6370" stroke-width="1.2"/>
+<path d="M334.5,7.5V5.0H337.0 M338.0,5.0H340.5V7.5 M340.5,10.5V13.0H338.0 M337.0,13.0H334.5V10.5" fill="none" stroke="#5c6370" stroke-width="1.2"/>
+<text x="288.0" y="13.5" fill="#5c6370" textLength="81.0" lengthAdjust="spacingAndGlyphs"> [ ][ ]  </text>
+<rect x="369.0" y="0.0" width="126.0" height="18.0" fill="#282c34"/>
+<text x="369.0" y="13.5" fill="#abb2bf" textLength="126.0" lengthAdjust="spacingAndGlyphs"> Database (6) </text>
+<rect x="495.0" y="0.0" width="225.0" height="18.0" fill="#282c34"/>
+<rect x="658.5" y="6.0" width="6.0" height="6" fill="none" stroke="#5c6370" stroke-width="1.2"/>
+<path d="M685.5,7.5V5.0H688.0 M689.0,5.0H691.5V7.5 M691.5,10.5V13.0H689.0 M688.0,13.0H685.5V10.5" fill="none" stroke="#5c6370" stroke-width="1.2"/>
+<text x="495.0" y="13.5" fill="#5c6370" textLength="225.0" lengthAdjust="spacingAndGlyphs">                 [ ][ ]  </text>
+<rect x="720.0" y="0.0" width="225.0" height="18.0" fill="#282c34"/>
+<text x="720.0" y="13.5" fill="#abb2bf" textLength="225.0" lengthAdjust="spacingAndGlyphs"> Proof (4) (2 unchecked) </text>
+<rect x="945.0" y="0.0" width="135.0" height="18.0" fill="#282c34"/>
+<rect x="1027.5" y="6.0" width="6.0" height="6" fill="none" stroke="#5c6370" stroke-width="1.2"/>
+<path d="M1054.5,7.5V5.0H1057.0 M1058.0,5.0H1060.5V7.5 M1060.5,10.5V13.0H1058.0 M1057.0,13.0H1054.5V10.5" fill="none" stroke="#5c6370" stroke-width="1.2"/>
+<text x="945.0" y="13.5" fill="#5c6370" textLength="135.0" lengthAdjust="spacingAndGlyphs">        [ ][ ] </text>
+<rect x="0.0" y="18.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="18.0" width="45.0" height="18.0" fill="#282c34"/>
+<text x="9.0" y="31.5" fill="#abb2bf" textLength="45.0" lengthAdjust="spacingAndGlyphs">1: 1 </text>
+<rect x="54.0" y="18.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="54.0" y="31.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x1</text>
+<rect x="72.0" y="18.0" width="27.0" height="18.0" fill="#282c34"/>
+<text x="72.0" y="31.5" fill="#abb2bf" textLength="27.0" lengthAdjust="spacingAndGlyphs"> 1 </text>
+<rect x="99.0" y="18.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="99.0" y="31.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x2</text>
+<rect x="117.0" y="18.0" width="27.0" height="18.0" fill="#282c34"/>
+<text x="117.0" y="31.5" fill="#abb2bf" textLength="27.0" lengthAdjust="spacingAndGlyphs"> 1 </text>
+<rect x="144.0" y="18.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="144.0" y="31.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x3</text>
+<rect x="162.0" y="18.0" width="189.0" height="18.0" fill="#282c34"/>
+<text x="162.0" y="31.5" fill="#abb2bf" textLength="189.0" lengthAdjust="spacingAndGlyphs"> &gt;= 2                </text>
+<rect x="351.0" y="18.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="18.0" width="45.0" height="18.0" fill="#253d28"/>
+<text x="360.0" y="31.5" fill="#abb2bf" textLength="45.0" lengthAdjust="spacingAndGlyphs">1: 1 </text>
+<rect x="405.0" y="18.0" width="18.0" height="18.0" fill="#253d28"/>
+<text x="405.0" y="31.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x1</text>
+<rect x="423.0" y="18.0" width="27.0" height="18.0" fill="#253d28"/>
+<text x="423.0" y="31.5" fill="#abb2bf" textLength="27.0" lengthAdjust="spacingAndGlyphs"> 1 </text>
+<rect x="450.0" y="18.0" width="18.0" height="18.0" fill="#253d28"/>
+<text x="450.0" y="31.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x2</text>
+<rect x="468.0" y="18.0" width="27.0" height="18.0" fill="#253d28"/>
+<text x="468.0" y="31.5" fill="#abb2bf" textLength="27.0" lengthAdjust="spacingAndGlyphs"> 1 </text>
+<rect x="495.0" y="18.0" width="18.0" height="18.0" fill="#253d28"/>
+<text x="495.0" y="31.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x3</text>
+<rect x="513.0" y="18.0" width="189.0" height="18.0" fill="#253d28"/>
+<text x="513.0" y="31.5" fill="#abb2bf" textLength="189.0" lengthAdjust="spacingAndGlyphs"> &gt;= 2                </text>
+<rect x="702.0" y="18.0" width="378.0" height="18.0" fill="#282c34"/>
+<text x="702.0" y="31.5" fill="#5c6370" textLength="378.0" lengthAdjust="spacingAndGlyphs">   1: pseudo-Boolean proof version 3.0    </text>
+<rect x="0.0" y="36.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="36.0" width="54.0" height="18.0" fill="#282c34"/>
+<text x="9.0" y="49.5" fill="#abb2bf" textLength="54.0" lengthAdjust="spacingAndGlyphs">2: 1 ~</text>
+<rect x="63.0" y="36.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="63.0" y="49.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x1</text>
+<rect x="81.0" y="36.0" width="36.0" height="18.0" fill="#282c34"/>
+<text x="81.0" y="49.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 1 ~</text>
+<rect x="117.0" y="36.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="117.0" y="49.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x2</text>
+<rect x="135.0" y="36.0" width="216.0" height="18.0" fill="#282c34"/>
+<text x="135.0" y="49.5" fill="#abb2bf" textLength="216.0" lengthAdjust="spacingAndGlyphs"> &gt;= 1                   </text>
+<rect x="351.0" y="36.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="36.0" width="54.0" height="18.0" fill="#253d28"/>
+<text x="360.0" y="49.5" fill="#abb2bf" textLength="54.0" lengthAdjust="spacingAndGlyphs">2: 1 ~</text>
+<rect x="414.0" y="36.0" width="18.0" height="18.0" fill="#253d28"/>
+<text x="414.0" y="49.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x1</text>
+<rect x="432.0" y="36.0" width="36.0" height="18.0" fill="#253d28"/>
+<text x="432.0" y="49.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 1 ~</text>
+<rect x="468.0" y="36.0" width="18.0" height="18.0" fill="#253d28"/>
+<text x="468.0" y="49.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x2</text>
+<rect x="486.0" y="36.0" width="216.0" height="18.0" fill="#253d28"/>
+<text x="486.0" y="49.5" fill="#abb2bf" textLength="216.0" lengthAdjust="spacingAndGlyphs"> &gt;= 1                   </text>
+<rect x="702.0" y="36.0" width="378.0" height="18.0" fill="#282c34"/>
+<text x="702.0" y="49.5" fill="#5c6370" textLength="378.0" lengthAdjust="spacingAndGlyphs">   2: f 4;                                </text>
+<rect x="0.0" y="54.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="54.0" width="54.0" height="18.0" fill="#282c34"/>
+<text x="9.0" y="67.5" fill="#abb2bf" textLength="54.0" lengthAdjust="spacingAndGlyphs">3: 1 ~</text>
+<rect x="63.0" y="54.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="63.0" y="67.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x1</text>
+<rect x="81.0" y="54.0" width="36.0" height="18.0" fill="#282c34"/>
+<text x="81.0" y="67.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 1 ~</text>
+<rect x="117.0" y="54.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="117.0" y="67.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x3</text>
+<rect x="135.0" y="54.0" width="216.0" height="18.0" fill="#282c34"/>
+<text x="135.0" y="67.5" fill="#abb2bf" textLength="216.0" lengthAdjust="spacingAndGlyphs"> &gt;= 1                   </text>
+<rect x="351.0" y="54.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="54.0" width="54.0" height="18.0" fill="#253d28"/>
+<text x="360.0" y="67.5" fill="#abb2bf" textLength="54.0" lengthAdjust="spacingAndGlyphs">3: 1 ~</text>
+<rect x="414.0" y="54.0" width="18.0" height="18.0" fill="#253d28"/>
+<text x="414.0" y="67.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x1</text>
+<rect x="432.0" y="54.0" width="36.0" height="18.0" fill="#253d28"/>
+<text x="432.0" y="67.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 1 ~</text>
+<rect x="468.0" y="54.0" width="18.0" height="18.0" fill="#253d28"/>
+<text x="468.0" y="67.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x3</text>
+<rect x="486.0" y="54.0" width="216.0" height="18.0" fill="#253d28"/>
+<text x="486.0" y="67.5" fill="#abb2bf" textLength="216.0" lengthAdjust="spacingAndGlyphs"> &gt;= 1                   </text>
+<rect x="702.0" y="54.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="54.0" width="360.0" height="18.0" fill="#282c34"/>
+<text x="711.0" y="67.5" fill="#abb2bf" textLength="360.0" lengthAdjust="spacingAndGlyphs">  3: pol 2 3 + ;                        </text>
+<rect x="1071.0" y="54.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="72.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="72.0" width="54.0" height="18.0" fill="#282c34"/>
+<text x="9.0" y="85.5" fill="#abb2bf" textLength="54.0" lengthAdjust="spacingAndGlyphs">4: 1 ~</text>
+<rect x="63.0" y="72.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="63.0" y="85.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x2</text>
+<rect x="81.0" y="72.0" width="36.0" height="18.0" fill="#282c34"/>
+<text x="81.0" y="85.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 1 ~</text>
+<rect x="117.0" y="72.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="117.0" y="85.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x3</text>
+<rect x="135.0" y="72.0" width="216.0" height="18.0" fill="#282c34"/>
+<text x="135.0" y="85.5" fill="#abb2bf" textLength="216.0" lengthAdjust="spacingAndGlyphs"> &gt;= 1                   </text>
+<rect x="351.0" y="72.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="72.0" width="54.0" height="18.0" fill="#253d28"/>
+<text x="360.0" y="85.5" fill="#abb2bf" textLength="54.0" lengthAdjust="spacingAndGlyphs">4: 1 ~</text>
+<rect x="414.0" y="72.0" width="18.0" height="18.0" fill="#253d28"/>
+<text x="414.0" y="85.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x2</text>
+<rect x="432.0" y="72.0" width="36.0" height="18.0" fill="#253d28"/>
+<text x="432.0" y="85.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 1 ~</text>
+<rect x="468.0" y="72.0" width="18.0" height="18.0" fill="#253d28"/>
+<text x="468.0" y="85.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x3</text>
+<rect x="486.0" y="72.0" width="216.0" height="18.0" fill="#253d28"/>
+<text x="486.0" y="85.5" fill="#abb2bf" textLength="216.0" lengthAdjust="spacingAndGlyphs"> &gt;= 1                   </text>
+<rect x="702.0" y="72.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="72.0" width="360.0" height="18.0" fill="#282c34"/>
+<text x="711.0" y="85.5" fill="#abb2bf" textLength="360.0" lengthAdjust="spacingAndGlyphs">  4: pol 5 3 + ;                        </text>
+<rect x="1071.0" y="72.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="90.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="90.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="351.0" y="90.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="90.0" width="54.0" height="18.0" fill="#4a3e10"/>
+<text x="360.0" y="103.5" fill="#abb2bf" textLength="54.0" lengthAdjust="spacingAndGlyphs">5: 2 ~</text>
+<rect x="414.0" y="90.0" width="18.0" height="18.0" fill="#4a3e10"/>
+<text x="414.0" y="103.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x1</text>
+<rect x="432.0" y="90.0" width="36.0" height="18.0" fill="#4a3e10"/>
+<text x="432.0" y="103.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 1 ~</text>
+<rect x="468.0" y="90.0" width="18.0" height="18.0" fill="#4a3e10"/>
+<text x="468.0" y="103.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x2</text>
+<rect x="486.0" y="90.0" width="36.0" height="18.0" fill="#4a3e10"/>
+<text x="486.0" y="103.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 1 ~</text>
+<rect x="522.0" y="90.0" width="18.0" height="18.0" fill="#4a3e10"/>
+<text x="522.0" y="103.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x3</text>
+<rect x="540.0" y="90.0" width="162.0" height="18.0" fill="#4a3e10"/>
+<text x="540.0" y="103.5" fill="#abb2bf" textLength="162.0" lengthAdjust="spacingAndGlyphs"> &gt;= 2             </text>
+<rect x="702.0" y="90.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="90.0" width="9.0" height="18.0" fill="#3b2c42"/>
+<circle cx="715.5" cy="99.0" r="3.5" fill="#e06c75"/>
+<rect x="720.0" y="90.0" width="351.0" height="18.0" fill="#3b2c42"/>
+<text x="720.0" y="103.5" fill="#abb2bf" textLength="351.0" lengthAdjust="spacingAndGlyphs"> 5: pol 6 2 d ;                        </text>
+<rect x="1071.0" y="90.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="108.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="108.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="351.0" y="108.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="108.0" width="54.0" height="18.0" fill="#3b2c42"/>
+<text x="360.0" y="121.5" fill="#abb2bf" textLength="54.0" lengthAdjust="spacingAndGlyphs">6: 3 ~</text>
+<rect x="414.0" y="108.0" width="18.0" height="18.0" fill="#3b2c42"/>
+<text x="414.0" y="121.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x1</text>
+<rect x="432.0" y="108.0" width="36.0" height="18.0" fill="#3b2c42"/>
+<text x="432.0" y="121.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 1 ~</text>
+<rect x="468.0" y="108.0" width="18.0" height="18.0" fill="#3b2c42"/>
+<text x="468.0" y="121.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x2</text>
+<rect x="486.0" y="108.0" width="36.0" height="18.0" fill="#3b2c42"/>
+<text x="486.0" y="121.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 2 ~</text>
+<rect x="522.0" y="108.0" width="18.0" height="18.0" fill="#3b2c42"/>
+<text x="522.0" y="121.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x3</text>
+<rect x="540.0" y="108.0" width="162.0" height="18.0" fill="#3b2c42"/>
+<text x="540.0" y="121.5" fill="#abb2bf" textLength="162.0" lengthAdjust="spacingAndGlyphs"> &gt;= 3             </text>
+<rect x="702.0" y="108.0" width="378.0" height="18.0" fill="#282c34"/>
+<text x="702.0" y="121.5" fill="#5c6370" textLength="378.0" lengthAdjust="spacingAndGlyphs">   6: pol 1 7 + ;                         </text>
+<rect x="0.0" y="126.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="126.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="351.0" y="126.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="126.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="702.0" y="126.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="126.0" width="360.0" height="18.0" fill="#282c34"/>
+<rect x="1071.0" y="126.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="144.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="144.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="351.0" y="144.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="144.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="702.0" y="144.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="144.0" width="360.0" height="18.0" fill="#282c34"/>
+<rect x="1071.0" y="144.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="162.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="162.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="351.0" y="162.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="162.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="702.0" y="162.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="162.0" width="360.0" height="18.0" fill="#282c34"/>
+<rect x="1071.0" y="162.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="180.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="180.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="351.0" y="180.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="180.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="702.0" y="180.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="180.0" width="360.0" height="18.0" fill="#282c34"/>
+<rect x="1071.0" y="180.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="198.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="198.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="351.0" y="198.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="198.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="702.0" y="198.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="198.0" width="360.0" height="18.0" fill="#282c34"/>
+<rect x="1071.0" y="198.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="216.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="216.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="351.0" y="216.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="216.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="702.0" y="216.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="216.0" width="360.0" height="18.0" fill="#282c34"/>
+<rect x="1071.0" y="216.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="234.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="234.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="351.0" y="234.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="234.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="702.0" y="234.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="234.0" width="360.0" height="18.0" fill="#282c34"/>
+<rect x="1071.0" y="234.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="252.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="252.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="351.0" y="252.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="252.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="702.0" y="252.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="252.0" width="360.0" height="18.0" fill="#282c34"/>
+<rect x="1071.0" y="252.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="270.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="270.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="351.0" y="270.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="270.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="702.0" y="270.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="270.0" width="360.0" height="18.0" fill="#282c34"/>
+<rect x="1071.0" y="270.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="288.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="288.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="351.0" y="288.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="288.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="702.0" y="288.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="288.0" width="360.0" height="18.0" fill="#282c34"/>
+<rect x="1071.0" y="288.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="306.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="306.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="351.0" y="306.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="306.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="702.0" y="306.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="306.0" width="360.0" height="18.0" fill="#282c34"/>
+<rect x="1071.0" y="306.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="324.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="324.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="351.0" y="324.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="360.0" y="324.0" width="342.0" height="18.0" fill="#282c34"/>
+<rect x="702.0" y="324.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="711.0" y="324.0" width="360.0" height="18.0" fill="#282c34"/>
+<rect x="1071.0" y="324.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="342.0" width="18.0" height="18.0" fill="#282c34"/>
+<rect x="18.0" y="342.0" width="72.0" height="18.0" fill="#282c34"/>
+<text x="18.0" y="355.5" fill="#abb2bf" textLength="72.0" lengthAdjust="spacingAndGlyphs"> Output </text>
+<rect x="90.0" y="342.0" width="990.0" height="18.0" fill="#282c34"/>
+<rect x="1027.5" y="348.0" width="6.0" height="6" fill="none" stroke="#5c6370" stroke-width="1.2"/>
+<path d="M1054.5,349.5V347.0H1057.0 M1058.0,347.0H1060.5V349.5 M1060.5,352.5V355.0H1058.0 M1057.0,355.0H1054.5V352.5" fill="none" stroke="#5c6370" stroke-width="1.2"/>
+<text x="90.0" y="355.5" fill="#5c6370" textLength="990.0" lengthAdjust="spacingAndGlyphs">                                                                                                       [ ][ ] </text>
+<rect x="0.0" y="360.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="360.0" width="1053.0" height="18.0" fill="#282c34"/>
+<text x="9.0" y="373.5" fill="#abb2bf" textLength="1053.0" lengthAdjust="spacingAndGlyphs">debug&gt; :break 5                                                                                                      </text>
+<rect x="1062.0" y="360.0" width="18.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="378.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="378.0" width="1053.0" height="18.0" fill="#282c34"/>
+<text x="9.0" y="391.5" fill="#abb2bf" textLength="1053.0" lengthAdjust="spacingAndGlyphs">Breakpoint set at line 5.                                                                                            </text>
+<rect x="1062.0" y="378.0" width="18.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="396.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="396.0" width="1053.0" height="18.0" fill="#282c34"/>
+<text x="9.0" y="409.5" fill="#abb2bf" textLength="1053.0" lengthAdjust="spacingAndGlyphs">debug&gt; :continue                                                                                                     </text>
+<rect x="1062.0" y="396.0" width="18.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="414.0" width="261.0" height="18.0" fill="#282c34"/>
+<text x="0.0" y="427.5" fill="#5c6370" textLength="261.0" lengthAdjust="spacingAndGlyphs"> Running VeriPB version 3.0.2</text>
+<rect x="261.0" y="414.0" width="801.0" height="18.0" fill="#282c34"/>
+<rect x="1062.0" y="414.0" width="18.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="432.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="432.0" width="90.0" height="18.0" fill="#282c34"/>
+<text x="9.0" y="445.5" fill="#abb2bf" font-weight="bold" textLength="90.0" lengthAdjust="spacingAndGlyphs">line    3:</text>
+<rect x="99.0" y="432.0" width="963.0" height="18.0" fill="#282c34"/>
+<text x="99.0" y="445.5" fill="#abb2bf" textLength="963.0" lengthAdjust="spacingAndGlyphs"> pol 2 3 + ;                                                                                               </text>
+<rect x="1062.0" y="432.0" width="18.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="450.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="450.0" width="18.0" height="18.0" fill="#282c34"/>
+<rect x="27.0" y="450.0" width="135.0" height="18.0" fill="#282c34"/>
+<text x="27.0" y="463.5" fill="#5c6370" textLength="135.0" lengthAdjust="spacingAndGlyphs">ConstraintId 5:</text>
+<rect x="162.0" y="450.0" width="36.0" height="18.0" fill="#282c34"/>
+<text x="162.0" y="463.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 2 ~</text>
+<rect x="198.0" y="450.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="198.0" y="463.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x1</text>
+<rect x="216.0" y="450.0" width="36.0" height="18.0" fill="#282c34"/>
+<text x="216.0" y="463.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 1 ~</text>
+<rect x="252.0" y="450.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="252.0" y="463.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x2</text>
+<rect x="270.0" y="450.0" width="36.0" height="18.0" fill="#282c34"/>
+<text x="270.0" y="463.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 1 ~</text>
+<rect x="306.0" y="450.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="306.0" y="463.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x3</text>
+<rect x="324.0" y="450.0" width="738.0" height="18.0" fill="#282c34"/>
+<text x="324.0" y="463.5" fill="#abb2bf" textLength="738.0" lengthAdjust="spacingAndGlyphs"> &gt;= 2                                                                             </text>
+<rect x="1062.0" y="450.0" width="18.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="468.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="468.0" width="90.0" height="18.0" fill="#282c34"/>
+<text x="9.0" y="481.5" fill="#abb2bf" font-weight="bold" textLength="90.0" lengthAdjust="spacingAndGlyphs">line    4:</text>
+<rect x="99.0" y="468.0" width="963.0" height="18.0" fill="#282c34"/>
+<text x="99.0" y="481.5" fill="#abb2bf" textLength="963.0" lengthAdjust="spacingAndGlyphs"> pol 5 3 + ;                                                                                               </text>
+<rect x="1062.0" y="468.0" width="18.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="486.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="486.0" width="18.0" height="18.0" fill="#282c34"/>
+<rect x="27.0" y="486.0" width="135.0" height="18.0" fill="#282c34"/>
+<text x="27.0" y="499.5" fill="#5c6370" textLength="135.0" lengthAdjust="spacingAndGlyphs">ConstraintId 6:</text>
+<rect x="162.0" y="486.0" width="36.0" height="18.0" fill="#282c34"/>
+<text x="162.0" y="499.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 3 ~</text>
+<rect x="198.0" y="486.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="198.0" y="499.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x1</text>
+<rect x="216.0" y="486.0" width="36.0" height="18.0" fill="#282c34"/>
+<text x="216.0" y="499.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 1 ~</text>
+<rect x="252.0" y="486.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="252.0" y="499.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x2</text>
+<rect x="270.0" y="486.0" width="36.0" height="18.0" fill="#282c34"/>
+<text x="270.0" y="499.5" fill="#abb2bf" textLength="36.0" lengthAdjust="spacingAndGlyphs"> 2 ~</text>
+<rect x="306.0" y="486.0" width="18.0" height="18.0" fill="#282c34"/>
+<text x="306.0" y="499.5" fill="#56b6c2" textLength="18.0" lengthAdjust="spacingAndGlyphs">x3</text>
+<rect x="324.0" y="486.0" width="747.0" height="18.0" fill="#282c34"/>
+<text x="324.0" y="499.5" fill="#abb2bf" textLength="747.0" lengthAdjust="spacingAndGlyphs"> &gt;= 3                                                                              </text>
+<rect x="1071.0" y="486.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="504.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="504.0" width="1062.0" height="18.0" fill="#282c34"/>
+<text x="9.0" y="517.5" fill="#abb2bf" textLength="1062.0" lengthAdjust="spacingAndGlyphs">Now at line 5 (not yet checked).                                                                                      </text>
+<rect x="1071.0" y="504.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="522.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="522.0" width="513.0" height="18.0" fill="#282c34"/>
+<rect x="522.0" y="522.0" width="558.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="540.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="9.0" y="540.0" width="63.0" height="18.0" fill="#282c34"/>
+<text x="9.0" y="553.5" fill="#c678dd" textLength="63.0" lengthAdjust="spacingAndGlyphs">debug&gt; </text>
+<rect x="72.0" y="540.0" width="999.0" height="18.0" fill="#282c34"/>
+<rect x="1071.0" y="540.0" width="9.0" height="18.0" fill="#282c34"/>
+<rect x="0.0" y="558.0" width="1080.0" height="18.0" fill="#282c34"/>
+<line x1="4.5" y1="9.0" x2="18.0" y2="9.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="351.0" y1="9.0" x2="369.0" y2="9.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="495.0" y1="9.0" x2="639.0" y2="9.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="702.0" y1="9.0" x2="720.0" y2="9.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="945.0" y1="9.0" x2="1008.0" y2="9.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="1071.0" y1="9.0" x2="1075.5" y2="9.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="4.5" y1="9.0" x2="4.5" y2="567.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="355.5" y1="9.0" x2="355.5" y2="342.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="706.5" y1="9.0" x2="706.5" y2="342.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="1075.5" y1="9.0" x2="1075.5" y2="567.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="4.5" y1="351.0" x2="18.0" y2="351.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="90.0" y1="351.0" x2="1008.0" y2="351.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="1071.0" y1="351.0" x2="1075.5" y2="351.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="1066.5" y1="360.0" x2="1066.5" y2="486.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="1066.5" y1="486.0" x2="1066.5" y2="522.0" stroke="#abb2bf" stroke-width="3.0"/>
+<line x1="9.0" y1="531.0" x2="522.0" y2="531.0" stroke="#abb2bf" stroke-width="3.0"/>
+<line x1="522.0" y1="531.0" x2="1071.0" y2="531.0" stroke="#5c6370" stroke-width="1.2"/>
+<line x1="4.5" y1="567.0" x2="1075.5" y2="567.0" stroke="#5c6370" stroke-width="1.2"/>
+<rect x="72.0" y="540.0" width="9.0" height="18.0" fill="#abb2bf"/>
+</g></svg>
