@@ -1,0 +1,8 @@
+pseudo-Boolean proof version 3.0
+f 5;
+rup 1 x3 >= 1 : 1 2 ;
+rup 1 ~x3 >= 1 : 4 5 ;
+rup >= 1 : 6 7 ;
+output NONE;
+conclusion UNSAT : 8;
+end pseudo-Boolean proof;

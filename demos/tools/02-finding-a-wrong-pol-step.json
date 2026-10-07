@@ -1,0 +1,85 @@
+{
+ "cmd": [
+  "target/debug/veripb-repl",
+  "demos/files/two-of-three.opb"
+ ],
+ "copy": [
+  "demos/files"
+ ],
+ "cols": 120,
+ "rows": 32,
+ "steps": [
+  {
+   "keys": ":source demos/files/two-of-three.pbp\r"
+  },
+  {
+   "keys": ":verify\r",
+   "settle": 1.5
+  },
+  {
+   "keys": ":check\r",
+   "settle": 1.5
+  },
+  {
+   "snap": "demos/img/02-not-concluded.svg"
+  },
+  {
+   "keys": ":debug\r"
+  },
+  {
+   "keys": ":restart\r"
+  },
+  {
+   "keys": ":break 5\r"
+  },
+  {
+   "keys": ":continue\r",
+   "settle": 1.5
+  },
+  {
+   "snap": "demos/img/02-breakpoint.svg"
+  },
+  {
+   "keys": ":explain 4\r",
+   "settle": 1.5
+  },
+  {
+   "snap": "demos/img/02-explain-pol.svg"
+  },
+  {
+   "keys": ":break clear\r"
+  },
+  {
+   "keys": ":done\r"
+  },
+  {
+   "keys": ":edit 4\r"
+  },
+  {
+   "keys": "llllll"
+  },
+  {
+   "keys": "x"
+  },
+  {
+   "keys": "i4"
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "keys": ":verify\r",
+   "settle": 1.5
+  },
+  {
+   "keys": ":check\r",
+   "settle": 1.5
+  },
+  {
+   "snap": "demos/img/02-fixed.svg"
+  }
+ ]
+}

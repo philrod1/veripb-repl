@@ -12,6 +12,21 @@ Tests that run `veripb` are skipped when `VERIPB_REPL_VERIPB_BIN` is
 unset. Parser tests (`tests/*_parse.rs`, `tests/trace_parse.rs`,
 `tests/objective_dump.rs`, …) need no binary.
 
+## Demo screenshots
+
+The SVG screenshots in `demos/img/` are generated from the TUI by
+`demos/tools/tuishot.py`, which replays a demo's keystrokes
+(`demos/tools/<demo>.json`) in a pseudo-terminal. Regenerate them after
+changing the TUI:
+
+```sh
+cargo build
+VERIPB_REPL_VERIPB_BIN=/absolute/path/to/veripb python3 demos/tools/tuishot.py demos/tools/<demo>.json
+```
+
+`--text` also writes each snapshot's screen text to a `.txt` file, for
+checking content without an SVG viewer.
+
 ## Code layout
 
 - `src/session.rs` — `Session`: formula text, the proof buffer and how

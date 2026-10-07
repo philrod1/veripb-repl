@@ -1,0 +1,75 @@
+{
+ "cmd": [
+  "target/debug/veripb-repl",
+  "demos/files/chain.opb"
+ ],
+ "copy": [
+  "demos/files"
+ ],
+ "cols": 120,
+ "rows": 32,
+ "steps": [
+  {
+   "keys": ":source demos/files/chain.pbp\r"
+  },
+  {
+   "keys": ":verify\r",
+   "settle": 1.5
+  },
+  {
+   "snap": "demos/img/01-verify.svg"
+  },
+  {
+   "keys": ":explain\r",
+   "settle": 2.0
+  },
+  {
+   "click": [
+    "\u2500 Output",
+    "\u25ad"
+   ]
+  },
+  {
+   "snap": "demos/img/01-explain.svg"
+  },
+  {
+   "click": [
+    "\u2500 Output",
+    "\u25ad"
+   ]
+  },
+  {
+   "keys": ":edit 3\r"
+  },
+  {
+   "keys": "llllllllllllllllllll"
+  },
+  {
+   "keys": "i3 "
+  },
+  {
+   "snap": "demos/img/01-edit.svg"
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "keys": ":verify\r",
+   "settle": 1.5
+  },
+  {
+   "keys": ":check\r",
+   "settle": 1.5
+  },
+  {
+   "keys": ":save chain-fixed.pbp\r",
+   "settle": 1.5
+  },
+  {
+   "snap": "demos/img/01-saved.svg"
+  }
+ ]
+}
