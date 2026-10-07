@@ -1,73 +1,27 @@
-//! `:debug` — an interactive stepping/breakpoint mode on top of the same
-//! `checked_len` boundary the ordinary prompt and `:verify` already
-//! drive: `:step`/`:back` move it one line at a time (forward re-checks
-//! the next line for real; backward just retracts — nothing is ever
-//! re-verified going backward, there's nothing to check, only to
-//! forget), `:continue` runs it forward to the next breakpoint or a
-//! rejection, `:until <n>` does the same but to a one-off line instead
-//! of a standing breakpoint, `:break` manages which lines are marked,
-//! and `:restart` retracts all the way back to the top without touching
-//! the buffer at all — the non-destructive sibling of `:reset`. Every
-//! read-only inspection command (`:show`/`:list`/`:objective`/`:check`/
-//! `:explain`) keeps working exactly as it does at the ordinary
-//! prompt, since they only ever read `checked_len`/the checker's current
-//! state, never caring who moved it there — see
-//! `edit::READONLY_DURING_EDIT`, reused as-is.
+//! `:debug` — stepping/breakpoint mode over the session's `checked_len`
+//! boundary. `:step`/`:back` move it one line (forward re-checks, backward
+//! only retracts), `:continue`/`:until <n>` run forward to a breakpoint, line
+//! or rejection, `:break` manages breakpoints, and `:restart` retracts to the
+//! start keeping the buffer. The `edit::READONLY_DURING_EDIT` commands also
+//! work.
 //!
-//! Shaped like `commands::formula`'s mode (`start`/`handle`,
-//! [`DebugState`]/[`DebugFlow`]), but with no queue at all: nothing here
-//! is "the next thing to visit" the way a formula constraint or a
-//! retyped line is — every debug-mode fact (`checked_len`,
-//! `breakpoints`, `known_bad`) already lives on [`Session`] itself, so
-//! [`DebugState`] exists only as the mode's on/off marker `plain.rs`/
-//! `tui::App` hold, mirroring `edit::EditState`/
-//! `formula::FormulaEditState`'s own shape.
-//!
-//! Every line-moving command here does its own undo-stack push (see
-//! [`with_undo`]), the same manual bookkeeping the TUI's Vim-mode
-//! mutators (`vim_delete_char`, etc.) already do for the identical
-//! reason: `commands::dispatch`'s own undo wrapping never runs for
-//! anything typed inside a mode (`edit`/`formula`'s own docs explain
-//! why) — mirrored here rather than left silently un-undoable, since
-//! stepping through a proof and wanting to back out of the last few
-//! steps is exactly the kind of thing `:undo` is for. Breakpoints
-//! themselves are the one exception, deliberately: see
-//! `Session::breakpoints`'s own docs for why.
-//!
-//! An empty line here is a deliberate no-op, same as at the ordinary
-//! prompt — it used to step forward, but that made Enter behave
-//! differently on an empty `debug>` line than everywhere else empty
-//! Enter is a no-op. In the TUI specifically, Shift+Down/Shift+Up step
-//! forward/backward instead — see `tui::run`'s own comment at those key
-//! arms — so stepping still doesn't require typing the command out every
-//! time; the plain frontend has no equivalent single-keypress shortcut,
-//! only the typed `:step`/`:back` commands themselves.
+//! All debug state lives on [`Session`]; [`DebugState`] is only the mode's
+//! on/off marker. Line-moving commands push their own undo snapshots (see
+//! `with_undo`) because `commands::dispatch` does not run inside a mode;
+//! breakpoint changes are not undoable. An empty line is a no-op.
 
 use crate::commands::edit::{self, READONLY_DURING_EDIT};
 use crate::commands::help::Topic;
 use crate::output::{self, Output, outln};
 use crate::session::Session;
 
-/// `:debug` mode's entire state — see the module docs for why there's
-/// nothing to actually hold.
+/// Marker for an active `:debug` mode; all state lives on [`Session`].
 pub struct DebugState;
 
-/// The `:`-commands debug mode recognizes beyond the shared read-only
-/// set (`READONLY_DURING_EDIT` — `:show`/`:list`/`:objective`/`:check`/
-/// `:explain`, chained on separately by
-/// `tui::App::refresh_candidates` rather than duplicated here, so that
-/// allowlist stays the one place deciding which read-only commands work
-/// mid-mode). None of these are real dispatchable commands outside
-/// `:debug` (`:step`/`:back`/`:continue`/`:until`/`:restart`/`:break`
-/// only mean anything while stepping; `:done` only while some mode is
-/// active at all), so none are registered in `help::COMMANDS` either —
-/// same `Topic` shape as that registry purely so the TUI's Tab
-/// completion and suggestion strip can build candidates for these the
-/// way they already do for everything else (see
-/// `formula::MODE_VOCABULARY`, the direct precedent this mirrors).
-/// Ordered to match this module's own doc comment and `:help debug`'s
-/// own listing: the line-moving commands first, `:break`/`:restart`
-/// after, `:done` last.
+/// Debug-only commands, in addition to `READONLY_DURING_EDIT` (which callers
+/// chain on separately). Not registered in `help::COMMANDS`; uses [`Topic`]
+/// for TUI completion. Order sets abbreviation priority (see
+/// [`resolve_debug_command`]) and should match `:help debug`.
 pub(crate) const MODE_VOCABULARY: &[Topic] = &[
     Topic {
         name: "step",
@@ -121,9 +75,7 @@ pub enum DebugFlow {
     Ended,
 }
 
-/// `:debug` — enter debug mode. Refuses only if there's no proof buffer
-/// yet to step through at all (an empty buffer has nothing for
-/// `checked_len` to even mean).
+/// `:debug` — enters debug mode. Returns `None` if the buffer is empty.
 pub fn start(session: &Session, out: &mut dyn Output) -> Option<DebugState> {
     if session.buffer.is_empty() {
         outln!(out, "Error: no proof lines yet to debug.");
@@ -133,15 +85,13 @@ pub fn start(session: &Session, out: &mut dyn Output) -> Option<DebugState> {
         out,
         "Debugging (prompt becomes debug>) — :step/:back move one line, :continue runs to \
          the next breakpoint or a rejection, :break <n> toggles one. :show/:list/:explain/\
-         :objective/:check still work. :done (or Esc in the TUI) to leave."
+         :objective/:preserved/:check still work. :done (or Esc in the TUI) to leave."
     );
     Some(DebugState)
 }
 
-/// Push an undo snapshot iff `f` actually changed something —
-/// `commands::dispatch`'s own generation-diff bookkeeping, done by hand
-/// here since dispatch never runs for anything typed inside this mode
-/// (see the module docs).
+/// Runs `f` and pushes an undo snapshot iff it bumped `session.generation`
+/// (the same check `commands::dispatch` does).
 fn with_undo<T>(
     session: &mut Session,
     f: impl FnOnce(&mut Session) -> anyhow::Result<T>,
@@ -154,11 +104,8 @@ fn with_undo<T>(
     Ok(result)
 }
 
-/// Report where `:step`/`:continue`/`:until` left off: the checker's own
-/// captured trace, then either the rejection `:verify` would show, or a
-/// plain "now at line N" position report, or "fully checked" once
-/// nothing is left. Shared by every forward-moving command below so they
-/// all describe their outcome the same way.
+/// Prints the captured checker output, then the rejection, the current
+/// position, or "fully checked". Used by every forward-moving command.
 fn report_position(session: &Session, captured: &str, rejection: Option<String>, out: &mut dyn Output) {
     output::text(out, captured);
     if let Some(err) = rejection {
@@ -175,11 +122,8 @@ fn report_position(session: &Session, captured: &str, rejection: Option<String>,
     }
 }
 
-/// Parse `:step`/`:back`'s optional count argument — a positive integer,
-/// defaulting to 1 when nothing's given. Prints its own usage error and
-/// returns `None` on anything else, so callers can just bail on `None`
-/// rather than threading a `Result` through for what's always a REPL-
-/// native message, never a real error.
+/// Parses an optional positive count (default 1). Prints a usage error and
+/// returns `None` on invalid input.
 fn parse_count(cmd: &str, args: &str, out: &mut dyn Output) -> Option<usize> {
     if args.is_empty() {
         return Some(1);
@@ -193,10 +137,8 @@ fn parse_count(cmd: &str, args: &str, out: &mut dyn Output) -> Option<usize> {
     }
 }
 
-/// `:step [n]` (default 1): advance the checked prefix by re-checking
-/// the next `n` unchecked lines in turn, the same one-line-at-a-time
-/// engine `:verify` uses — stopping early at the first rejection, same
-/// as it does, or once nothing is left to step onto.
+/// `:step [n]` — checks up to `n` more lines, stopping at the first rejection
+/// or the end of the buffer.
 fn step_forward(session: &mut Session, n: usize, out: &mut dyn Output) -> anyhow::Result<()> {
     with_undo(session, |session| {
         let mut captured_all = String::new();
@@ -215,10 +157,8 @@ fn step_forward(session: &mut Session, n: usize, out: &mut dyn Output) -> anyhow
     })
 }
 
-/// `:back [n]` (default 1): retract the checked prefix by `n` lines —
-/// nothing is re-verified going backward, only forgotten (see
-/// `Session::step_back`) — stopping early once nothing is left to step
-/// back from (the very start of the buffer).
+/// `:back [n]` — retracts the checked prefix by up to `n` lines without
+/// re-verification (see `Session::step_back`).
 fn step_backward(session: &mut Session, n: usize, out: &mut dyn Output) -> anyhow::Result<()> {
     with_undo(session, |session| {
         let mut moved = 0;
@@ -250,12 +190,8 @@ fn step_backward(session: &mut Session, n: usize, out: &mut dyn Output) -> anyho
     })
 }
 
-/// `:continue`: run forward to the next breakpoint or the first
-/// rejection, whichever comes first — `Session::continue_run` with no
-/// target, so only a real breakpoint or the buffer's own end stops it.
-/// Reachable by any abbreviation too, including a bare `:c` (which
-/// `resolve_debug_command` prefers over `:check`) — see that function's
-/// own docs.
+/// `:continue` — runs forward to the next breakpoint, the first rejection, or
+/// the end of the buffer.
 fn continue_cmd(session: &mut Session, out: &mut dyn Output) -> anyhow::Result<()> {
     with_undo(session, |session| {
         let (captured, rejection) = session.continue_run(None)?;
@@ -264,9 +200,7 @@ fn continue_cmd(session: &mut Session, out: &mut dyn Output) -> anyhow::Result<(
     })
 }
 
-/// `:until <n>`: run forward to display line `n` — a one-off
-/// destination, not a permanent breakpoint — same early-stop-at-a-real-
-/// breakpoint behavior as `:continue` along the way.
+/// `:until <n>` — like `:continue`, but also stops at display line `n`.
 fn until_cmd(session: &mut Session, args: &str, out: &mut dyn Output) -> anyhow::Result<()> {
     let n: usize = match args.trim().parse() {
         Ok(n) => n,
@@ -289,9 +223,8 @@ fn until_cmd(session: &mut Session, args: &str, out: &mut dyn Output) -> anyhow:
     })
 }
 
-/// `:restart`: retract the checked prefix all the way back to the
-/// start, keeping every buffer line exactly as it is — the non-
-/// destructive sibling of `:reset` (which also clears the buffer).
+/// `:restart` — retracts the checked prefix to zero, keeping the buffer
+/// (unlike `:reset`).
 fn restart_cmd(session: &mut Session, out: &mut dyn Output) -> anyhow::Result<()> {
     with_undo(session, |session| {
         session.restart()?;
@@ -304,11 +237,8 @@ fn restart_cmd(session: &mut Session, out: &mut dyn Output) -> anyhow::Result<()
     })
 }
 
-/// `:break` (list every breakpoint), `:break <n>` (toggle one at display
-/// line `n`), `:break clear` (drop every breakpoint at once). Never
-/// touches `checked_len`/`undo_stack` — a breakpoint isn't proof state
-/// (see `Session::breakpoints`'s own docs), so there's nothing here for
-/// `:undo` to need to know about.
+/// `:break` lists breakpoints, `:break <n>` toggles one at display line `n`,
+/// `:break clear` removes all. Not undoable (breakpoints are not proof state).
 fn break_cmd(session: &mut Session, args: &str, out: &mut dyn Output) {
     let args = args.trim();
     if args.is_empty() {
@@ -352,16 +282,9 @@ fn break_cmd(session: &mut Session, args: &str, out: &mut dyn Output) {
     }
 }
 
-/// Every name debug mode recognizes, in priority order — `MODE_VOCABULARY`'s
-/// own line-moving/mode commands first (in that const's own order), then
-/// the shared `READONLY_DURING_EDIT` inspection set — for
-/// [`resolve_debug_command`] to resolve abbreviations against, and for
-/// `tui::App::refresh_candidates`' suggestion strip to list in the same
-/// order (see its call site), so the two can never disagree about either
-/// what's recognized or what's "first". That shared order is exactly
-/// what makes `resolve_debug_command`'s tie-break below correspond to
-/// "whatever the suggestion strip already shows on top" rather than an
-/// arbitrary pick.
+/// Every command name debug mode recognizes, in priority order:
+/// `MODE_VOCABULARY` then `READONLY_DURING_EDIT`. The TUI suggestion strip
+/// must list them in this same order.
 fn debug_command_names() -> impl Iterator<Item = &'static str> {
     MODE_VOCABULARY
         .iter()
@@ -369,23 +292,10 @@ fn debug_command_names() -> impl Iterator<Item = &'static str> {
         .chain(READONLY_DURING_EDIT.iter().copied())
 }
 
-/// Resolve a possibly-abbreviated command name against everything
-/// `:debug` mode recognizes: an exact name always wins; otherwise the
-/// *first* name in [`debug_command_names`]'s own order that the prefix
-/// matches. Unlike `commands::resolve_command` at the ordinary prompt
-/// (which errors on an ambiguous prefix rather than guessing), a
-/// stepping session is a tight, repetitive loop — `:c` for `:continue`
-/// over and over — where a keystroke saved matters more than a
-/// vanishingly unlikely wrong guess, and the "guess" is never arbitrary:
-/// it's always the line-moving/mode command the prefix could mean, over
-/// a read-only inspection one, exactly the priority `MODE_VOCABULARY`
-/// coming first in `debug_command_names` already encodes (so `:c` →
-/// `:continue`, not `:check`; `:b` → `:back`, not `:break`) — the same
-/// preference the suggestion strip's own ordering already shows, so
-/// there's no surprise about *which* command a short prefix lands on,
-/// just no error stopping it from landing on one at all. Subsumes the
-/// old bare `"cont"` alias for `:continue`: `"cont"` is itself just a
-/// prefix of it under this same logic, nothing special-cased.
+/// Resolves a possibly-abbreviated debug-mode command: an exact match wins,
+/// otherwise the first prefix match in [`debug_command_names`] order (so `:c`
+/// is `:continue`, `:b` is `:back`). Unlike `commands::resolve_command`,
+/// ambiguity is not an error. Errors only if nothing matches.
 fn resolve_debug_command(cmd: &str) -> Result<&'static str, String> {
     if let Some(name) = debug_command_names().find(|&n| n == cmd) {
         return Ok(name);
@@ -395,10 +305,8 @@ fn resolve_debug_command(cmd: &str) -> Result<&'static str, String> {
     })
 }
 
-/// Route one input line while debug mode is active — the sole entry
-/// point either frontend needs during one: `commands::dispatch` isn't
-/// consulted at all until `DebugFlow::Ended` comes back (mirrors
-/// `formula::handle` exactly).
+/// Routes one input line in debug mode; the frontend must not call
+/// `commands::dispatch` until this returns `DebugFlow::Ended`.
 pub fn handle(
     session: &mut Session,
     _state: &mut DebugState,
@@ -406,13 +314,7 @@ pub fn handle(
     out: &mut dyn Output,
 ) -> anyhow::Result<DebugFlow> {
     let line = line.trim();
-    // A blank line is a deliberate no-op — same as at the ordinary
-    // prompt, and unlike `:edit`/`:formula`'s own blank-line handling
-    // (see `plain.rs`'s debug-mode branch). It used to step forward
-    // instead, but that made Enter behave differently on an empty
-    // `debug>` line than everywhere else in the app; the TUI's
-    // Shift+Down/Shift+Up (see `tui::run`) are the dedicated shortcuts
-    // now, typing `:step`/`:back` out for anyone/anywhere else.
+    // Blank line is a no-op, as at the ordinary prompt.
     if line.is_empty() {
         return Ok(DebugFlow::Continue);
     }

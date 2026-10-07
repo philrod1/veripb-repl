@@ -1,16 +1,13 @@
-//! `:help [<topic>]` — the command list, or details on one command or
-//! proof rule — plus the topic registry behind it. The registry is also
-//! what drives the TUI's Tab completion and the live suggestion strip
-//! under the prompt, so "what can I type here?" is answered in exactly
-//! one place. Rule syntax follows `proof_format_overview.md` at the repo
-//! root, which stays the authority on full grammar and semantics.
+//! `:help [<topic>]` and the command/rule topic registry. The registry also
+//! drives TUI Tab completion and the suggestion strip. Rule syntax must follow
+//! `proof_format_overview.md`, the authoritative grammar.
 
 use crate::output::{Output, outln};
 
 pub struct Topic {
     /// Bare name — no leading `:`, even for commands: "check", "rup".
     pub name: &'static str,
-    /// One-line syntax, as typed: ":check [<conclusion>]", "rup <constraint> ;".
+    /// One-line syntax, as typed: `:check [<conclusion>]`, `rup <constraint> ;`.
     pub usage: &'static str,
     /// One-line description, shown in lists and prompt suggestions.
     pub summary: &'static str,
@@ -88,6 +85,19 @@ pub const COMMANDS: &[Topic] = &[
             "Prints the current objective (reflecting any obju updates), the best",
             "value logged by any sol-family rule, and the best value with",
             "checked-deletion guarantees (what conclusion BOUNDS relies on).",
+        ],
+    },
+    Topic {
+        name: "preserved",
+        usage: ":preserved",
+        summary: "show the current preserved variable set",
+        details: &[
+            "The formula's preserved: set, as changed by any checked",
+            "preserved_add/preserved_rm steps — plus which line last changed",
+            "it and what the formula originally declared. Read from veripb's",
+            "own trace after the last preserved_add/preserved_rm, so it",
+            "replays the proof up to that line (no replay if nothing has",
+            "changed the set). Read-only; works mid-:edit and in :debug.",
         ],
     },
     Topic {
@@ -176,7 +186,7 @@ pub const COMMANDS: &[Topic] = &[
             "on the cursor line in Vim mode does the same toggle. :restart",
             "retracts all the way back to the start, keeping every line (the",
             "non-destructive sibling of :reset).",
-            ":show, :list, :objective, :check, and :explain all still work",
+            ":show, :list, :objective, :preserved, :check, and :explain all still work",
             "without leaving the mode. :done (or Esc, in the TUI) leaves. Every",
             "command name here abbreviates to its shortest unambiguous prefix",
             "(:co for :continue), same as at the ordinary prompt; a genuinely",
@@ -290,7 +300,7 @@ pub const COMMANDS: &[Topic] = &[
             "to drop one, deleting it); :done leaves the mode, leaving",
             "anything still queued exactly as it is; :cancel restores the",
             "whole buffer exactly as it was before the edit began. :show,",
-            ":list, :objective, :check, and :explain also work mid-edit",
+            ":list, :objective, :preserved, :check, and :explain also work mid-edit",
             "(nothing else does) — they're read-only, so they can't disturb",
             "what's queued.",
             "TUI: enters an interactive browse mode instead (cursor starts on",
@@ -539,18 +549,10 @@ pub fn command_matches(prefix: &str) -> Vec<&'static Topic> {
         .collect()
 }
 
-/// Tab-completion priority for the five commands that do anything useful
-/// before a session exists — mirrors the literal `cmd == "..."` arms
-/// `dispatch_inner` handles ahead of its "no formula loaded" check.
-/// `:instance` ranks first (loads a formula and proof together — the
-/// single most useful next command with nothing loaded yet), `:load`
-/// second (formula alone), then the rest in the order they'd sort
-/// naturally anyway. Anything else gets `usize::MAX`, sorting after all
-/// five — a stable sort keeps that tail in `COMMANDS`' own order. Used by
-/// `tui::complete::first_token` to order the command list while there's no
-/// session yet; once one exists, `first_token` falls back to bumping just
-/// `:instance` to the front on its own (see that function's docs) rather
-/// than consulting this list further.
+/// Tab-completion rank used by `tui::complete::first_token` when no session
+/// exists: the commands usable without one, `:instance` first; `usize::MAX`
+/// for all others. Keep in sync with the session-free arms in
+/// `dispatch_inner`.
 pub(crate) fn no_session_tab_rank(name: &str) -> usize {
     ["instance", "load", "help", "theme", "quit"]
         .iter()

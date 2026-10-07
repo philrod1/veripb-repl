@@ -1,5 +1,5 @@
-//! Tests for `veripb_repl::checker::parse::rejection_reason` against real
-//! `veripb` rejection output shapes, no `veripb` binary needed.
+//! Tests `checker::parse::rejection_reason` on sample `veripb` rejection
+//! output; no `veripb` binary needed.
 
 use veripb_repl::checker::parse::rejection_reason;
 
@@ -43,5 +43,8 @@ fn without_a_cause_falls_back_to_the_error_line() {
 
 #[test]
 fn unrecognized_output_is_kept_whole() {
-    assert_eq!(rejection_reason("  odd failure at line 3\n"), "odd failure at line 3");
+    assert_eq!(
+        rejection_reason("  odd failure at line 3\n"),
+        "odd failure at line 3"
+    );
 }

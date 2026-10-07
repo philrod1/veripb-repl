@@ -1,6 +1,5 @@
-//! Tests for `veripb_repl::checker::parse`'s `rup`-line helpers —
-//! `last_rup_hints`, `split_rup_hints` and `is_rup_line` — against
-//! hand-written `--elaborate` output, no `veripb` binary needed.
+//! Tests `checker::parse`'s `rup`-line helpers (`last_rup_hints`,
+//! `split_rup_hints`, `is_rup_line`) on hand-written `--elaborate` output.
 
 use veripb_repl::checker::RupHint::{ConstraintId, NegatedPremise};
 use veripb_repl::checker::parse::{is_rup_line, last_rup_hints, split_rup_hints};
@@ -15,7 +14,10 @@ fn constraint_ids_only() {
 
 #[test]
 fn negated_premise_only() {
-    assert_eq!(last_rup_hints("rup 1 x2 >= 1 : ~;\n"), Some(vec![NegatedPremise]));
+    assert_eq!(
+        last_rup_hints("rup 1 x2 >= 1 : ~;\n"),
+        Some(vec![NegatedPremise])
+    );
 }
 
 #[test]
@@ -41,7 +43,10 @@ fn rup_line_without_hints_yields_none() {
 
 #[test]
 fn no_rup_line_at_all_yields_none() {
-    assert_eq!(last_rup_hints("pseudo-Boolean proof version 3.0\nf 3;\npol 1 2 + ;\n"), None);
+    assert_eq!(
+        last_rup_hints("pseudo-Boolean proof version 3.0\nf 3;\npol 1 2 + ;\n"),
+        None
+    );
 }
 
 #[test]
@@ -61,7 +66,10 @@ rup 1 x2 >= 1 : 1 2 ;
 pol 4 3 + ;
 rup >= 1 : 4 ~ ;
 ";
-    assert_eq!(last_rup_hints(proof), Some(vec![ConstraintId(4), NegatedPremise]));
+    assert_eq!(
+        last_rup_hints(proof),
+        Some(vec![ConstraintId(4), NegatedPremise])
+    );
 }
 
 #[test]

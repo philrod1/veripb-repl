@@ -1,15 +1,12 @@
-//! Subprocess boundary: the only module that knows a `veripb` binary
-//! exists. `session`, `commands::*`, and `tui::*` reach a formula/proof
-//! exclusively through the functions below.
+//! The `veripb` subprocess boundary. Only this module invokes `veripb`;
+//! everything else goes through the functions below.
 //!
-//! - [`types`]: plain result/data types crossing the boundary.
-//! - [`invoke`]: subprocess plumbing — spawns `veripb`, captures raw
-//!   stdout/stderr/exit status.
-//! - [`parse`]: parses `invoke`'s raw output into `types`'s shapes.
+//! - [`types`]: result/data types crossing the boundary.
+//! - [`invoke`]: spawns `veripb` and captures stdout/stderr/exit status.
+//! - [`parse`]: parses `invoke`'s raw output into [`types`].
 //!
-//! `proof_text` arguments are the complete candidate text, preamble
-//! included. Line numbers reported by these functions match this REPL's
-//! own display numbering as long as that preamble is always present.
+//! `proof_text` arguments are the complete proof text, preamble included, so
+//! reported line numbers match the REPL's display numbering.
 
 pub mod invoke;
 pub mod parse;
@@ -40,10 +37,8 @@ pub fn check(
     parse::check_outcome(&raw)
 }
 
-/// Checks `proof_text` against `formula_path` and returns the resulting
-/// database state from the same subprocess call. The database reflects
-/// its final state whether or not the proof was fully accepted.
-/// `trace_range` is as in [`check`].
+/// Like [`check`], also returning the final database from the same call,
+/// whether or not the proof was accepted.
 pub fn check_with_database(
     formula_path: &Path,
     proof_text: &str,
@@ -69,11 +64,8 @@ pub fn explain_line(formula_path: &Path, proof_text: &str) -> anyhow::Result<Che
 }
 
 /// Returns the minimized RUP-hint list for the last `rup` line in
-/// `proof_text`, or `None` if that line isn't a `rup` step. `proof_text`
-/// must end exactly at the step being asked about. The inner `Err` is the
-/// checker's rejection message if `proof_text` doesn't check — an
-/// internal error for an already-checked prefix, but the expected answer
-/// when probing a candidate line (see `Session::diagnose_rejected_rup`).
+/// `proof_text`, or `None` if it has none. `proof_text` must end at the step
+/// being asked about. The inner `Err` is the checker's rejection message.
 pub fn elaborate_rup(
     formula_path: &Path,
     proof_text: &str,

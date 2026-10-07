@@ -8,21 +8,17 @@ use super::invoke::RawInvocation;
 use super::types::{CheckOutcome, Database, DatabaseEntry, ObjectiveBounds, RupHint};
 
 /// Returns the minimized hint list from the last `rup` step in an
-/// elaborated proof, or `None` if the text contains no `rup` line.
-///
-/// Callers must elaborate a proof truncated to end exactly at the line
-/// being asked about, so the last `rup` line in the output is
-/// unambiguously the one being asked about.
+/// elaborated proof, or `None` if the text contains no `rup` line. The proof
+/// must end at the line being asked about.
 pub fn last_rup_hints(elaborated_proof: &str) -> Option<Vec<RupHint>> {
     let last_rup_line = elaborated_proof.lines().rev().find(|line| is_rup_line(line))?;
     split_rup_hints(last_rup_line).1
 }
 
-/// Splits one `rup` line into everything before its hint list (label,
-/// rule keyword and constraint, trimmed) and the parsed hints after its
-/// `:`, or `None` for the hints if the line has no `:` at all (a bare
-/// `rup <constraint> ;`, whose prefix then has its `;` stripped too).
-/// Doesn't check that `line` is a `rup` line — see [`is_rup_line`].
+/// Splits a `rup` line into its trimmed prefix (label, keyword, constraint)
+/// and the hints after `:`. With no `:`, returns `None` hints and strips the
+/// prefix's `;`. Unparsable hint tokens are dropped. Doesn't check that
+/// `line` is a `rup` line; see [`is_rup_line`].
 pub fn split_rup_hints(line: &str) -> (&str, Option<Vec<RupHint>>) {
     let Some((prefix, hints)) = line.split_once(':') else {
         let prefix = line.trim();
@@ -36,7 +32,6 @@ pub fn split_rup_hints(line: &str) -> (&str, Option<Vec<RupHint>>) {
             if tok == "~" {
                 Some(RupHint::NegatedPremise)
             } else {
-                // An unparsable token is dropped rather than aborting
                 tok.parse::<usize>().ok().map(RupHint::ConstraintId)
             }
         })
@@ -44,42 +39,99 @@ pub fn split_rup_hints(line: &str) -> (&str, Option<Vec<RupHint>>) {
     (prefix.trim(), Some(hints))
 }
 
-/// Returns whether `line` is a `rup` rule line, optionally preceded by
-/// an `@label`. An exact token match, not a prefix check.
-pub fn is_rup_line(line: &str) -> bool {
+/// Returns a proof line's rule keyword — its first token, or its second
+/// if the first is an `@label`.
+fn rule_keyword(line: &str) -> Option<&str> {
     let mut tokens = line.split_whitespace();
-    match tokens.next() {
-        Some(t) if t.starts_with('@') => tokens.next() == Some("rup"),
-        Some(t) => t == "rup",
-        None => false,
+    match tokens.next()? {
+        t if t.starts_with('@') => tokens.next(),
+        t => Some(t),
     }
 }
 
-/// A proof ending before its closing `output`/`conclusion`/`end` lines
-/// fails with a parse error containing this phrase — every line actually
-/// supplied still checked out fine, so this means "wants more input,"
-/// not a real rejection. Confirmed against real `veripb` output.
+/// Returns whether `line`'s rule keyword (after an optional `@label`) is
+/// exactly `rup`.
+pub fn is_rup_line(line: &str) -> bool {
+    rule_keyword(line) == Some("rup")
+}
+
+/// Returns whether `line` is a `preserved_add` or `preserved_rm` rule (the
+/// only rules that change the preserved set).
+pub fn is_preserved_change_line(line: &str) -> bool {
+    matches!(rule_keyword(line), Some("preserved_add" | "preserved_rm"))
+}
+
+/// Prefix of the line listing the preserved set, which veripb prints when
+/// tracing a `preserved_add`/`preserved_rm` step.
+const PRESERVED_SET_TRACE_PREFIX: &str = "Preserved set:";
+
+/// Returns the preserved set from the last `Preserved set: <names>` line in
+/// a trace, naturally sorted (veripb prints hash order), or
+/// `None` if there is none. ANSI colour codes are stripped first.
+///
+/// TODO: replace with veripb `--dump-preserved` once it exists; this trace
+/// line is not a stable format.
+pub fn last_preserved_set(trace: &str) -> Option<Vec<String>> {
+    trace.lines().rev().find_map(|line| {
+        let line = strip_ansi(line);
+        let names = line.trim().strip_prefix(PRESERVED_SET_TRACE_PREFIX)?;
+        Some(sort_var_names(names.split_whitespace()))
+    })
+}
+
+/// Returns the variable names in a formula's `preserved: x1 x3 ;` line,
+/// naturally sorted (`x2` before `x10`).
+pub fn preserved_declaration(line: &str) -> Vec<String> {
+    let names = line.trim().strip_prefix("preserved:").unwrap_or(line);
+    let names = names.trim().strip_suffix(';').unwrap_or(names);
+    sort_var_names(names.split_whitespace())
+}
+
+/// Sorts variable names by stem, then trailing number (`x2` before `x10`).
+fn sort_var_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut names: Vec<String> = names.map(str::to_string).collect();
+    names.sort_by_key(|name| {
+        let stem = name.trim_end_matches(|c: char| c.is_ascii_digit());
+        let number: Option<u128> = name[stem.len()..].parse().ok();
+        (stem.to_string(), number, name.clone())
+    });
+    names
+}
+
+/// Removes `ESC [ ... <letter>` terminal escape sequences from `text`.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.next() == Some('[') {
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// veripb exits non-zero with this phrase for a proof with no closing
+/// `output`/`conclusion`/`end` lines; every supplied line was accepted, so
+/// treat it as accepted.
 const RAN_OUT_OF_INPUT_MARKER: &str = "found end of file (EOF)";
 
-/// Returns whether checking succeeded, and if not, which line it
-/// stopped at.
+/// Classifies a `veripb` run as accepted or rejected at a line.
 ///
-/// An accepted outcome's `trace` is `raw.stdout` alone. Verified against
-/// real `veripb` output: on any acceptance path — a clean exit, or the
-/// "ran out of input" EOF case (see [`RAN_OUT_OF_INPUT_MARKER`]) — stdout
-/// carries every genuinely useful trace line, and stderr is either empty
-/// or, for the EOF case, entirely the generic "Error: Syntax error while
-/// parsing proof file! ... found end of file (EOF) ..." wrapper: real
-/// text veripb prints, but noise here, since every per-line check feeds
-/// it a proof with no closing tail and so hits this every time. Dropping
-/// stderr on acceptance avoids that block reappearing on every accepted
-/// line during `:verify`.
+/// Accepted on a clean exit or `RAN_OUT_OF_INPUT_MARKER`; `trace` is then
+/// stdout only (on acceptance stderr holds only the EOF syntax-error
+/// wrapper).
 ///
-/// On rejection, the line number is read from a `Checking error at
-/// <path>:<line>` or `Verification error at <path>:<line>`-style message,
-/// falling back to a bare `at line <N>` for a syntax error that names a
-/// line without the path. Fails loudly, with the full raw output, if
-/// neither shape is found.
+/// On rejection the line comes from `<proof path>:<line>` (as in `Checking
+/// error at ...`/`Verification error at ...`), else from `line <N>`. Errors
+/// with the full raw output if neither is found.
 pub fn check_outcome(raw: &RawInvocation) -> anyhow::Result<CheckOutcome> {
     if raw.success {
         return Ok(CheckOutcome::Accepted {
@@ -114,14 +166,9 @@ pub fn check_outcome(raw: &RawInvocation) -> anyhow::Result<CheckOutcome> {
     }
 }
 
-/// Returns just the reason from a rejection's raw output — the first
-/// non-blank line under its `Caused by:` header, e.g. `"Accessing the
-/// database out of bound with index 99. ..."`, without the version banner,
-/// the `Error: Checking error at <path>:<line>` wrapper (a scratch path,
-/// meaningless to the user), or a syntax error's source excerpt and `^^^`
-/// marker lines. Falls back to the `Error: ` line's own text, then to the
-/// whole output trimmed, if the shape isn't recognized. The raw output
-/// stays available as the outcome's `trace`.
+/// Returns the one-line reason from a rejection's raw output: the first
+/// non-blank line after `Caused by:`, else the text after `Error: `, else
+/// the whole output trimmed.
 pub fn rejection_reason(output: &str) -> String {
     let mut lines = output.lines();
     if lines.by_ref().any(|line| line.trim() == "Caused by:")
@@ -137,10 +184,8 @@ pub fn rejection_reason(output: &str) -> String {
         .to_string()
 }
 
-/// Returns the line number in a `"<proof_file_path>:<line>"` message —
-/// the shape a `Checking error at ...`/`Verification error at ...`
-/// carries. Anchored to the invocation's own proof file path so it can't
-/// false-match unrelated numeric content elsewhere in the message.
+/// Returns the line number after `"<proof_file_path>:"` in `text`. Anchored
+/// to the path to avoid matching unrelated numbers.
 fn find_path_anchored_line(text: &str, proof_file_path: &Path) -> Option<usize> {
     let marker = format!("{}:", proof_file_path.display());
     let after = text.find(marker.as_str()).map(|idx| &text[idx + marker.len()..])?;
@@ -148,24 +193,18 @@ fn find_path_anchored_line(text: &str, proof_file_path: &Path) -> Option<usize> 
     digits.parse().ok()
 }
 
-/// Returns the line number in a message shaped like `"... at line N
-/// ..."` — the fallback for a syntax error that names a line without
-/// the file's own path (unlike [`find_path_anchored_line`]'s target
-/// messages).
+/// Returns the number after the first `line ` in `text` (syntax errors that
+/// omit the path).
 fn find_line_number(text: &str) -> Option<usize> {
     let after = text.find("line ").map(|idx| &text[idx + "line ".len()..])?;
     let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse().ok()
 }
 
-/// Returns the constraint IDs a trace attributes to the *last* proof
-/// line it traced — every `ConstraintId N: ...` confirmation after the
-/// trace's final `line <N>: ...` marker (or, if it never printed one,
-/// every occurrence in the whole trace — already scoped to one line in
-/// that case, e.g. `explain_line`'s own single-line trace). Multiple ids
-/// come back if that one line's rule derived more than one constraint;
-/// none if it derived none (e.g. a `del` line). Only meaningful for an
-/// accepted trace — a rejection's trace names no useful "last line".
+/// Returns the IDs of every `ConstraintId N: ...` line after the trace's
+/// last `line <N>:` marker (or in the whole trace if there is none): the
+/// constraints the last traced line derived, possibly none. Only meaningful
+/// for an accepted trace.
 pub fn last_line_constraint_ids(trace: &str) -> Vec<usize> {
     let lines: Vec<&str> = trace.lines().collect();
     let after_marker = lines
@@ -178,9 +217,7 @@ pub fn last_line_constraint_ids(trace: &str) -> Vec<usize> {
         .collect()
 }
 
-/// Returns whether `line` is a checker `line <N>: ...` trace marker
-/// (unindented, unlike the `ConstraintId` confirmations printed under
-/// it).
+/// Returns whether `line` is a `line <N>: ...` trace marker.
 fn is_line_marker(line: &str) -> bool {
     let Some(rest) = line.trim_start().strip_prefix("line") else {
         return false;
@@ -209,11 +246,8 @@ fn strip_terminator<'a>(text: &'a str, line: &str) -> anyhow::Result<&'a str> {
 const EXPECTED_DATABASE_DUMP_HEADER: &str = "pseudo-Boolean database dump version 1";
 const EXPECTED_DATABASE_DUMP_FOOTER: &str = "end pseudo-Boolean database dump;";
 
-/// Parses a `--dump-database` file's contents into a [`Database`].
-///
-/// Fails on any unrecognized header or malformed entry line, rather than
-/// skipping it — a dropped entry would misreport the database's actual
-/// contents.
+/// Parses a `--dump-database` file's contents into a [`Database`]. Errors on
+/// a bad header/footer or any malformed entry; never skips entries.
 pub fn parse_database_dump(dump: &str) -> anyhow::Result<Database> {
     let mut lines = dump.lines();
 
@@ -322,10 +356,7 @@ pub fn parse_objective_dump(dump: &str) -> anyhow::Result<ObjectiveBounds> {
 enum ValueShape {
     /// An arbitrary-precision integer (optionally `-`-prefixed).
     Integer,
-    /// Any non-empty text — the objective function's pretty-printed
-    /// expression is opaque to this parser, same as every other
-    /// pretty-printed expression this format carries (e.g. database dump
-    /// constraint text).
+    /// Any non-empty text, kept opaque.
     Any,
 }
 

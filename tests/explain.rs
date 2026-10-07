@@ -1,6 +1,5 @@
-//! End-to-end tests for `:explain` against a real `veripb` binary. Requires
-//! `$VERIPB_REPL_VERIPB_BIN` to point at one; skipped (not failed)
-//! otherwise, same as `tests/checker.rs`.
+//! End-to-end tests for `:explain`. Requires `$VERIPB_REPL_VERIPB_BIN`; tests
+//! skip otherwise.
 
 use std::io::Write;
 
@@ -49,7 +48,10 @@ fn load_formula(formula: &str) -> Session {
 }
 
 fn append_ok(session: &mut Session, line: &str) {
-    match session.append_line(line).expect("append should not fail to invoke") {
+    match session
+        .append_line(line)
+        .expect("append should not fail to invoke")
+    {
         AppendOutcome::Verified { .. } => {}
         AppendOutcome::Rejected { error, .. } => panic!("{line:?} was rejected: {error}"),
         AppendOutcome::Deferred => panic!("{line:?} was deferred"),
@@ -71,22 +73,27 @@ macro_rules! require_veripb {
     };
 }
 
-/// Queues `line` unchecked at the end of the buffer and steps onto it,
-/// leaving it rejected and pending (`known_bad` set) — unlike
-/// `append_line`, which drops a rejected line.
+/// Appends `line` unchecked and steps onto it, leaving it as the pending
+/// rejection (`known_bad` set) rather than dropping it.
 fn reject_pending(session: &mut Session, line: &str) {
     session
         .insert_line(session.buffer.len(), line)
         .expect("insert should not fail");
     session.step().expect("step should not fail to invoke");
-    assert!(session.known_bad.is_some(), "{line:?} was unexpectedly accepted");
+    assert!(
+        session.known_bad.is_some(),
+        "{line:?} was unexpectedly accepted"
+    );
 }
 
 #[test]
 fn bare_explain_with_nothing_checked() {
     require_veripb!();
     let session = load();
-    assert_eq!(explain(&session, ""), "Nothing checked yet — nothing to explain.");
+    assert_eq!(
+        explain(&session, ""),
+        "Nothing checked yet — nothing to explain."
+    );
 }
 
 #[test]
@@ -131,9 +138,12 @@ fn rejected_line_with_a_bad_hint_checks_without_it() {
     );
     assert!(!text.contains("Running VeriPB"), "{text}");
     assert!(text.contains("Typed hints: 99"), "{text}");
-    assert!(text.contains("ConstraintId 99 is not in the database"), "{text}");
+    assert!(
+        text.contains("ConstraintId 99 is not in the database"),
+        "{text}"
+    );
     assert!(text.contains("Without hints it DOES check"), "{text}");
-    // `:explain 3` names the rejected line explicitly — same diagnosis.
+    // Explicitly naming the rejected line gives the same diagnosis.
     assert_eq!(explain(&session, "3"), text);
 }
 

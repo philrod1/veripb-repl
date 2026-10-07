@@ -1,18 +1,14 @@
-//! Structural highlighting for the scrollback pane. Lines are stored as
-//! plain text (see `tui::Scrollback`); each visible one is tokenized here
-//! at draw time by recognizing a handful of fixed shapes — veripb's own
-//! trace lines (`line N: ...`, `ConstraintId N: ...`, its version banner),
-//! `:explain`'s headers and verdicts (keyed off the phrases it exports, so
-//! the two can't drift apart), and `Error:` lines from any command.
-//! Anything unrecognized stays one plain span, exactly as before.
+//! Draw-time highlighting for scrollback lines (stored as plain text in
+//! `tui::Scrollback`). Recognizes veripb trace lines (`line N: ...`,
+//! `ConstraintId N: ...`, the version banner), `:explain` headers and
+//! verdicts (matched on the phrases `commands::explain` exports), and
+//! `Error:` lines. Anything else is one plain span.
 //!
-//! Every result is **character-for-character the same width as its
-//! input**: the scrollback's horizontal scroll and longest-line math run
-//! on the raw strings, so a tokenization that changed a line's width
-//! would misalign it. Constraint and rule text goes through
-//! `tokenize_proof_line` (width-exact, lookup-based variable/label
-//! colouring) rather than `tokenize_constraint`, which rebuilds the text
-//! with single spaces.
+//! Rule: output must be character-for-character the same width as the
+//! input, because horizontal scroll and longest-line math use the raw
+//! strings. Constraint/rule text therefore goes through
+//! `tokenize_proof_line`, never `tokenize_constraint` (which collapses
+//! whitespace).
 
 use super::{Span, TokenStyle, plain, styled, tokenize_proof_line};
 use crate::commands::explain::{
@@ -193,7 +189,10 @@ mod tests {
         );
         assert_eq!(
             styles("  ConstraintId 7 — no longer in the database"),
-            vec![s("ConstraintId 7", Dim), s("— no longer in the database", Error)]
+            vec![
+                s("ConstraintId 7", Dim),
+                s("— no longer in the database", Error)
+            ]
         );
     }
 
@@ -221,13 +220,19 @@ mod tests {
     fn verdicts_and_errors() {
         assert_eq!(
             styles("  Without hints it DOES check — the hint list is the problem."),
-            vec![s("Without hints it DOES check — the hint list is the problem.", Ok)]
+            vec![s(
+                "Without hints it DOES check — the hint list is the problem.",
+                Ok
+            )]
         );
         assert_eq!(
             styles("  Without hints it still fails: nope."),
             vec![s("Without hints it still fails: nope.", Error)]
         );
-        assert_eq!(styles("Error: bad thing"), vec![s("Error: bad thing", Error)]);
+        assert_eq!(
+            styles("Error: bad thing"),
+            vec![s("Error: bad thing", Error)]
+        );
     }
 
     #[test]

@@ -1,70 +1,23 @@
-//! Rendering: turn the current `App` state into one full frame of text and
-//! queue it to the terminal. No diffing — the frame is small, so every draw
-//! rewrites every cell (which also makes resize handling trivial: each
-//! frame re-reads the terminal size and covers it completely).
+//! Rendering: turns the current `App` state into one full frame and queues
+//! it to the terminal. Every draw rewrites every cell (no diffing) at the
+//! current terminal size.
 //!
-//! Character counts are treated as display columns. That's exact for the
-//! ASCII-ish constraint/rule text this REPL renders and the box-drawing
-//! borders; if wide glyphs ever show up in variable names, this is the
-//! assumption to revisit. Styling (the dimmed preamble lines and such) is
-//! applied only after a line is fitted to its column, so the zero-width
-//! escape codes never enter the width math.
-//!
-//! Scrollbars live *inside* their pane — a `┃` (or `━`) thumb on a dimmed
-//! `│` (or `─`) track in the last column (vertical) or last row
-//! (horizontal), appearing only when that pane's content overflows — so
-//! there's never a question of which pane a bar belongs to, and the dim
-//! track can't be confused with the bright pane border beside it. The
-//! bars are also the only overflow signal: no `… (+N)` marker rows, no
-//! ellipses; content is simply clipped at the pane edge and the bars say
-//! where you are.
-//!
-//! Pedagogical highlighting is deliberately restrained: variable names get
-//! one accent color, `@labels` another, and nothing else — no full syntax
-//! highlighting of keywords/operators/numbers, which would compete with
-//! reading the actual constraint math rather than help it. Formula and
-//! database constraints are tokenized *exactly*, by exploiting the fact
-//! that every `ToPrettyString` impl in `veripb-formula` (`Clause`,
-//! `Cardinality`, `GeneralPBConstraint`) emits the same deterministic
-//! `"<coeff> <lit> <coeff> <lit> ... >= <degree>"` layout — see
-//! `tokenize_constraint`. Raw proof-rule text has no such fixed grammar
-//! (rup/pol/red/... all differ), so it's colored by a safer method
-//! instead: any whitespace token that resolves to a real variable name is
-//! colored, everything else stays plain — a lookup can never mislabel a
-//! keyword or a constraint-ID hint as a variable, unlike guessing from
-//! position.
-//!
-//! The scrollback adds a few *structural* roles on top of those two
-//! accents — section headers bold, `ConstraintId N:` dimmed, errors and
-//! verdicts in `error_fg`/`ok_fg` — by recognizing fixed line shapes (see
-//! `scrollback`). Still no keyword/operator/number colouring there either;
-//! constraint and rule text inside those lines gets the same
-//! variables-and-labels treatment as the panes.
-//!
-//! The Proof pane's Vim-mode cursor gets its own signal on top of all
-//! that: the line it sits on renders on a background color (token
-//! foreground colors still apply on top of it), tying it visually to the
-//! `-- NORMAL --`/`-- INSERT --` status, which uses the matching accent.
-//! An `a`-rule (unchecked assertion) line gets its own background the
-//! same way, flagging it as scaffolding still owed a real derivation —
-//! see `is_assertion_line`. The Database pane's rows get a background
-//! too, core or derived — `row_on_bg` is the one place that logic lives,
-//! shared by all three.
-//!
-//! Every color used anywhere in this module, dimming included, comes from
-//! `theme::Theme` — explicit RGB, not one of crossterm's named ANSI
-//! colors, since those are indices into a palette the terminal (and its
-//! user) defines for itself and render unpredictably from machine to
-//! machine; see the module docs on `theme` for why that actually bit this
-//! project three times before it was worth fixing. This extends to every
-//! character in the frame, not just the accents/highlights above: plain
-//! content goes through `base` (theme fg-on-bg), borders and scrollbar
-//! chrome go through `chrome` (theme dim-on-bg), and both are threaded
-//! down to wherever text actually gets assembled instead of leaving
-//! "unstyled" text to fall back on the terminal's own default colors —
-//! otherwise switching to `light` would only recolor the accents while
-//! everything else stayed whatever the terminal's own background already
-//! was.
+//! Rules:
+//! - Character counts are display columns (assumes no wide glyphs).
+//!   Styling is applied only after text is fitted to its width, so escape
+//!   codes never enter width math.
+//! - Scrollbars sit inside their pane (last column / last row), appear only
+//!   on overflow, and are the only overflow indicator; content is clipped.
+//! - Highlighting is limited to variable names and `@labels`. Formula and
+//!   database constraints are tokenized by layout (`tokenize_constraint`);
+//!   raw proof-rule text by name lookup (`tokenize_proof_line`). The
+//!   scrollback adds structural roles (headings, dim, error/ok) in
+//!   `scrollback`.
+//! - Row backgrounds (cursor, assertion, core/derived, hint, error) are
+//!   chosen only in `panel_cell` and applied via `style_span_on_bg`.
+//! - Every colour comes from `theme::Theme`. Plain text goes through `base`
+//!   and borders/scrollbar chrome through `chrome`; nothing is printed
+//!   with the terminal's default colours.
 
 use std::io::Write;
 use std::ops::Range;
@@ -88,9 +41,9 @@ const DEBUG_PROMPT: &str = "debug> ";
 /// prompt only ever sits at two positions: strip hidden, or strip shown.
 const SUGGESTION_ROWS: usize = 6;
 
-/// What color, if any, a run of text carries. The top panes only ever use
-/// `Plain`/`Variable`/`Label` — see the module docs for why; the rest are
-/// the scrollback's structural roles (see `scrollback::tokenize`).
+/// The colour role of a run of text. The top panes use only
+/// `Plain`/`Variable`/`Label`; the rest are scrollback roles (see
+/// `scrollback::tokenize`).
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum TokenStyle {
     Plain,
@@ -155,38 +108,26 @@ fn style_fg(style: TokenStyle, theme: Theme) -> (Color, bool) {
     }
 }
 
-/// Plain content text on the theme's base background — the "nothing
-/// special going on here" style. Everywhere text isn't part of an accent,
-/// a row highlight, or border/scrollbar chrome (see `chrome`) goes
-/// through this, which is what makes theming genuinely app-wide: `light`
-/// renders light everywhere, not just in the bits this app chooses to
-/// accent.
+/// `text` in `theme.fg` on `theme.bg`: the style for all text that is not
+/// an accent, a row highlight, or chrome.
 fn base(text: &str, theme: Theme) -> String {
     text.with(theme.fg).on(theme.bg).to_string()
 }
 
-/// Border lines, scrollbar tracks, and other structural "chrome" that
-/// isn't content: `theme.dim` on the base background, so it recedes
-/// relative to actual content without ever falling back to the
-/// terminal's own (unpredictable) default colors.
+/// `text` in `theme.dim` on `theme.bg`: borders, scrollbar tracks and
+/// other non-content chrome.
 fn chrome(text: &str, theme: Theme) -> String {
     text.with(theme.dim).on(theme.bg).to_string()
 }
 
-/// Apply a span's style, producing text ready to print (ANSI embedded, if
-/// styled). Only ever called on a span already sliced to its final
-/// visible width — never on text that might still get char-sliced
-/// afterward, since slicing an ANSI-embedded string would corrupt it.
+/// `span` styled on `theme.bg`, ANSI embedded. Call only on text already
+/// sliced to its final width; slicing styled text corrupts the escapes.
 fn style_span(span: &Span, theme: Theme) -> String {
     style_span_on_bg(span, theme.bg, theme)
 }
 
-/// Same per-token foreground coloring as `style_span`, plus a solid
-/// background — the two channels (foreground hue, background highlight)
-/// don't compete, so labels/variables stay legible on top of it. Shared
-/// by every row-level highlight (`:edit` browse cursor, an `a`-rule
-/// assertion, a Database-pane row's core/derived status): they only ever
-/// differ in which `theme` background they pass in.
+/// `span`'s foreground style on background `bg`. Used by every row-level
+/// highlight.
 fn style_span_on_bg(span: &Span, bg: Color, theme: Theme) -> String {
     let (fg, bold) = style_fg(span.style, theme);
     let text = span.text.clone().with(fg).on(bg);
@@ -197,10 +138,8 @@ fn spans_char_len(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.text.chars().count()).sum()
 }
 
-/// Drop the first `n` characters across `spans` (splitting a span if the
-/// boundary falls inside it), keeping each surviving run's style. Used
-/// for horizontal scrolling — the character-level equivalent of
-/// `window_scrolled`'s line-level skip.
+/// Drops the first `n` characters across `spans`, splitting the span that
+/// straddles the boundary and keeping styles. Used for horizontal scroll.
 fn spans_skip(spans: &[Span], n: usize) -> Vec<Span> {
     let mut remaining = n;
     let mut out = Vec::new();
@@ -219,8 +158,8 @@ fn spans_skip(spans: &[Span], n: usize) -> Vec<Span> {
     out
 }
 
-/// Keep only the first `n` characters across `spans`, splitting the span
-/// that straddles the boundary. The clipping counterpart to `spans_skip`.
+/// Keeps only the first `n` characters across `spans`, splitting the span
+/// that straddles the boundary.
 fn spans_take(spans: &[Span], n: usize) -> Vec<Span> {
     let mut remaining = n;
     let mut out = Vec::new();
@@ -243,60 +182,35 @@ fn spans_take(spans: &[Span], n: usize) -> Vec<Span> {
     out
 }
 
-/// One display line of a top panel, in two parts: `prefix` stays pinned
-/// at the left edge under horizontal scrolling (the fixed-width line
-/// numbering) and never carries accent color — just the theme base, so it
-/// stays a stable visual anchor — while `text` is the (possibly
-/// multi-styled) content that shifts. `dim` lines render in the active
-/// theme's `dim` color regardless of any span styling: the synthesized
-/// preamble in the proof panel, placeholders, and other text that's
-/// context rather than content.
-/// `cursor` marks the one line (if any) under the Vim-mode editing
-/// cursor in the Proof panel, or `:formula`'s browse cursor in the
-/// Formula panel — mutually exclusive with `dim` in practice, since only
-/// real buffer/formula lines can ever be the cursor. `assertion` marks an
-/// `a`-rule (unchecked assertion) in the Proof panel, flagged with a
-/// background as scaffolding still owed a real derivation — cursor wins if
-/// both apply (see `panel_cell`), an active edit being the more urgent
-/// signal. `core` is the Database panel's equivalent: `Some(true)`/
-/// `Some(false)` for a core/derived constraint's row, `None` everywhere
-/// else. `hint` is *also* Database-panel-only, and can coincide with
-/// `core`: while `:deassert` is active, it marks every live constraint
-/// sharing a variable with the assertion being replaced (see
-/// `database_lines`) — reusing the browse cursor's own color, since the
-/// Database panel never has an actual browse cursor of its own to
-/// collide with, and wins over the plain core/derived background when
-/// both apply (see `panel_cell`), the same "more urgent signal" logic
-/// `cursor` already gets over `assertion`. `error` marks the one buffer
-/// line `:verify` most recently rejected (`Session::known_bad`), waiting
-/// to be fixed (see `proof_lines`) — wins over everything else
-/// (see `panel_cell`), since nothing else marks a line as actively broken
-/// the way this does. Never coincides with `assertion` in practice (an
-/// `a`-rule is never itself rejected — it's unchecked), but would win
-/// regardless if it somehow did. `marker_color`, when set, overrides
-/// just the *first character* of `prefix` — the Proof pane's
-/// breakpoint-marker glyph — with its own color regardless of any of
-/// the above; see `render_prefix`. `None` everywhere but the Proof
-/// pane's own buffer/preamble lines (the only ones a marker glyph ever
-/// occupies at all), reproducing the plain single-color-prefix behavior
-/// every line had before this field existed. `debug_current` marks the
-/// one Proof-panel line `:debug` mode is currently stopped at — the
-/// same `theme.cursor_bg` highlight `cursor` gets, since it's the same
-/// idea ("this is the line you're looking at right now"), just driven
-/// by `checked_len` during stepping instead of the Vim cursor; loses to
-/// `error` (see `panel_cell`) since a rejection at that exact line is
-/// the more urgent signal, but otherwise takes the same priority
-/// `cursor` does.
+/// One display line of a top panel. Styling priority (resolved in
+/// `panel_cell`): `error` > `debug_current` > `dim` > `cursor` >
+/// `assertion` > `hint` > `core`.
 struct PanelLine {
+    /// Line numbering, pinned at the left edge under horizontal scroll;
+    /// drawn in the base colours (or the row background).
     prefix: String,
+    /// Content, shifted by horizontal scroll.
     text: Vec<Span>,
+    /// Render all text in `theme.dim`, ignoring span styles (preamble,
+    /// placeholders).
     dim: bool,
+    /// Under the Proof pane's Vim cursor or the Formula pane's browse cursor.
     cursor: bool,
+    /// An `a`-rule (unchecked assertion) in the Proof pane.
     assertion: bool,
+    /// Database pane only: `Some(true)` core, `Some(false)` derived.
     core: Option<bool>,
+    /// Database pane only: during `:deassert`, a live constraint sharing a
+    /// variable with the assertion being replaced (see `database_lines`).
+    /// Drawn on `cursor_bg`.
     hint: bool,
+    /// The buffer line `:verify` most recently rejected
+    /// (`Session::known_bad`).
     error: bool,
+    /// The Proof-pane line `:debug` is stopped at; drawn like `cursor`.
     debug_current: bool,
+    /// Colour for the first `prefix` char (the breakpoint marker) only; see
+    /// `render_prefix`. `None` outside the Proof pane's buffer/preamble.
     marker_color: Option<Color>,
 }
 
@@ -342,10 +256,9 @@ struct Window {
     total: usize,
 }
 
-/// A fully prepared top pane, ready to render row by row: its visible
-/// content plus scrollbar geometry. The bars borrow from the pane itself
-/// — a column for the vertical one, a row for the horizontal one — so
-/// content dimensions and bar presence are resolved together here.
+/// A top pane ready to render row by row: visible content plus scrollbar
+/// geometry. Scrollbars take space from the pane itself (last column /
+/// last row).
 struct PaneView {
     lines: Vec<PanelLine>,
     /// Vertical thumb over the content rows; `None` = no bar column.
@@ -360,11 +273,10 @@ struct PaneView {
     h_offset: usize,
 }
 
-/// Resolve one top pane: clamp its offsets, window its lines, and decide
-/// both scrollbars. The circular dependency (a bar steals space, which
-/// can change whether the other bar is needed) is broken with one
-/// pre-pass: assume the vertical bar from the raw height, decide the
-/// horizontal bar against the reduced width, then finalize.
+/// Resolves one top pane: clamps both offsets (written back), windows the
+/// lines, and decides both scrollbars. The bars' mutual dependency is
+/// broken by assuming the vertical bar from the raw height, deciding the
+/// horizontal bar against the reduced width, then finalizing.
 fn pane_view(
     lines: Vec<PanelLine>,
     w: usize,
@@ -375,11 +287,8 @@ fn pane_view(
     let total = lines.len();
     let longest = longest_line(&lines);
     let vbar_expected = total > h;
-    // The real `eff_w` isn't known until the vertical bar is finalized
-    // below — this is the same "assume the vertical bar from the raw
-    // height" pre-pass the module doc above already relies on to break
-    // the circular dependency, reused here so the clamp bound and the
-    // horizontal bar's own on/off decision never disagree with each other.
+    // Pre-pass width (vertical bar assumed from raw height); the clamp and
+    // the horizontal-bar decision must both use it so they agree.
     let avail_w = w.saturating_sub(vbar_expected as usize);
     *h_offset = clamp_hscroll(*h_offset, longest, avail_w);
 
@@ -401,10 +310,8 @@ fn pane_view(
     }
 }
 
-/// Render row `i` (of the pane's full height) as a string of exactly the
-/// pane's width: a content row plus its slice of the vertical bar, or —
-/// on the last row when present — the horizontal bar with a track-filled
-/// corner under the vertical one.
+/// Row `i` of the pane at exactly the pane's width: a content row plus its
+/// vertical-bar cell, or, past `content_h`, the horizontal bar.
 fn pane_row(view: &PaneView, i: usize, theme: Theme) -> String {
     if i >= view.content_h {
         let Some(thumb) = &view.hbar else {
@@ -424,8 +331,7 @@ fn pane_row(view: &PaneView, i: usize, theme: Theme) -> String {
         );
         row.push_str(&chrome(&"─".repeat(view.eff_w - thumb.end), theme));
         if view.vbar.is_some() {
-            // Corner under the vertical track: the horizontal track
-            // continues through it, dimmed like the rest.
+            // Corner under the vertical track.
             row.push_str(&chrome("─", theme));
         }
         return row;
@@ -440,12 +346,8 @@ fn pane_row(view: &PaneView, i: usize, theme: Theme) -> String {
 
 pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     let theme = app.theme.theme();
-    // Recomputed fresh every frame (not just on a mouse-move event) so
-    // it's never stale after something *other* than the mouse changed
-    // what's actually under it — a keyboard-driven scroll, a resize —
-    // against `self.last_layout`, i.e. one frame behind, the same
-    // "as of the last frame drawn" tradeoff `App::pane_at` already
-    // documents and accepts. See `App::recompute_bp_hover`.
+    // Every frame, so scrolls and resizes also update the hover (computed
+    // against the previous frame's layout).
     app.recompute_bp_hover();
     let (width, height) = terminal::size()?;
     queue!(w, cursor::Hide)?;
@@ -475,24 +377,18 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
         layout.cols[1] as usize,
         layout.cols[2] as usize,
     );
-    // Also a solo-zoomed pane's full width: no internal column separators
-    // to give up space to, same as the bottom Output pane never has any.
+    // Full inner width: the Output pane's, and a solo-zoomed top pane's.
     let inner = (width - 2) as usize;
     let top_h = layout.top_h as usize;
-    // `None` both when nothing's zoomed and when `Output` is (semi- or
-    // full-maximised alike) — a semi-maximised `Output` still shows all
-    // three columns, just shrunk, and a fully-maximised one shows none of
-    // them, but neither is "one of the three columns took over the row"
-    // the way a solo-zoomed top pane is. See `Layout::zoomed_top_pane`.
+    // `Some` only when a top pane is solo-zoomed; `None` when nothing or
+    // `Output` is zoomed. See `Layout::zoomed_top_pane`.
     let zoomed_pane = layout.zoomed_top_pane().map(|(pane, _)| pane);
     let output_zoom = match layout.zoomed {
         Some((Pane::Output, level)) => Some(level),
         _ => None,
     };
-    // `Output` full-maximised: no top area at all (`top_h == 0`), so
-    // Formula/Database/Proof get no `PaneView` built this frame — a
-    // zero-height one would underflow `pane_view`'s own math, which
-    // assumes at least a sliver of real space to work with.
+    // `Output` full-maximised: `top_h == 0` and no top `PaneView` is built
+    // (`pane_view` underflows on zero height).
     let output_fullscreen = layout.output_fullscreen();
 
     // Panel content and titles.
@@ -510,15 +406,10 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             vec![pinned("(no formula loaded)".to_string())],
         ),
     };
-    // What `:deassert` is currently replacing, if anything — shared by
-    // every place that needs to say so: the Output heading, the Database
-    // heading (so a highlighted subset there doesn't read as "this is
-    // the whole database"), and the highlighting itself.
+    // The assertion `:deassert` is replacing, if any; named in the Output
+    // and Database headings and drives the Database hint highlighting.
     let deassert_target = app.vim_deassert_source();
-    // While `:deassert` is active, every live constraint sharing a
-    // variable with the assertion being replaced gets highlighted in this
-    // pane — kept current every frame, unlike the one-time hint list
-    // `:deassert` also prints (see `PanelLine::hint`'s own docs).
+    // Variables of the assertion being replaced; see `PanelLine::hint`.
     let hint_vars = match (&app.session, deassert_target) {
         (Some(session), Some(source)) => session.variables.mentioned(source),
         _ => Vec::new(),
@@ -529,16 +420,12 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
         .as_ref()
         .map_or_else(Vec::new, |s| database_lines(s, &hint_vars, debug_ids));
     let database_title = match deassert_target {
-        // Only some rows are highlighted below — say so right in the
-        // heading, the same phrasing Output's own heading uses, so the
-        // two read as one signal rather than needing to be puzzled out
-        // separately.
+        // Same phrasing as the Output heading.
         Some(source) => format!("Database ({}) (deasserting {source})", database.len()),
         None => format!("Database ({})", database.len()),
     };
-    // While Vim mode's `Insert` sub-mode is active, the line under the
-    // cursor renders `App::editor`'s live text instead of the buffer's
-    // own (not-yet-committed) content — see `proof_lines`'s own docs.
+    // In Vim `Insert` mode, the cursor line shows `App::editor`'s
+    // uncommitted text; see `proof_lines`.
     let vim_live_text: Option<(usize, String)> = app
         .vim_inserting()
         .then(|| app.vim_cursor_line().map(|line| (line, app.editor.text())))
@@ -565,24 +452,14 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
         }
         None => "Proof (0)".to_string(),
     };
-    // While `:deassert` is active, the assertion it's replacing stays
-    // named in the Output heading itself — the only thing on screen
-    // that's still visible once you've started typing the real derivation
-    // steps replacing it, since by then the intro message that first
-    // announced it has scrolled off and the prompt is showing whatever
-    // you're currently typing instead. Plain `:edit`/`:insert` (and no
-    // edit at all) leave the heading as plain "Output".
+    // Names the assertion being replaced while `:deassert` is active.
     let output_title = match deassert_target {
         Some(source) => format!("Output (deasserting {source})"),
         None => "Output".to_string(),
     };
 
-    // A pane zoomed to something else is hidden outright — no `PaneView`
-    // built for it at all. The zoomed pane itself gets `single_width`
-    // instead of its normal column share, since there are no column
-    // separators to give up space to when it's the only thing on the top
-    // row. When `Output` is full-maximised, none of the three get a
-    // `PaneView` at all — see `output_fullscreen` above.
+    // A solo-zoomed top pane gets `inner` width; the other two get no
+    // `PaneView`. None of the three are built when `output_fullscreen`.
     let formula_w = if zoomed_pane == Some(Pane::Formula) {
         inner
     } else {
@@ -619,20 +496,15 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
                 &mut app.database_hscroll,
             )
         });
-    // Auto-scroll the Proof pane horizontally to keep Vim mode's cursor
-    // column in view — the same "keep the cursor visible" idea
-    // `LineEditor::view` already applies to the bottom prompt, applied
-    // here to `app.proof_hscroll` instead, ahead of `pane_view`'s own
-    // clamp below (which only knows about the *content*'s width, not
-    // where the cursor happens to sit within it).
+    // Adjust `app.proof_hscroll` to keep the Vim cursor column visible;
+    // must run before `pane_view`, which clamps only to content width.
     if let Some((_, col)) = app.vim_cursor() {
         let num_w = app
             .session
             .as_ref()
             .map_or(1, |s| number_width(s.preamble_lines().len() + s.buffer.len()));
         let target_col = proof_prefix_width(num_w) + col;
-        // Reserve a column for a vertical scrollbar that might appear —
-        // `pane_view`'s own clamp (right after) settles the exact value.
+        // Reserve a column for a possible vertical scrollbar.
         let avail_w = proof_w.saturating_sub(1);
         if target_col < app.proof_hscroll {
             app.proof_hscroll = target_col;
@@ -651,15 +523,9 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             )
         });
 
-    // Scrollback view: the tail, scrolled up by `scroll_up` (clamped now
-    // that we know the pane height) — plus, same as the three top panes,
-    // a horizontal offset and its own scrollbar when the widest line in
-    // the whole scrollback (not just what's vertically visible right now,
-    // matching `pane_view`'s own scope) overruns the pane. Resolved in
-    // the same order `pane_view` uses, for the same reason: the two bars
-    // are circularly dependent (one steals space the other's decision
-    // depends on), so decide the horizontal bar against the raw height
-    // first, then window vertically against whatever's left.
+    // Scrollback view: the tail scrolled up by `scroll_up`, with horizontal
+    // offset and scrollbars resolved in the same order as `pane_view`.
+    // Horizontal extent is the longest line in the whole scrollback.
     let sb_h = layout.scrollback_h as usize;
     let sb = app.scrollback.lines();
     let sb_total = sb.len();
@@ -670,13 +536,9 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     let sb_hbar_on = sb_longest > sb_avail_w;
     let sb_content_h = if sb_hbar_on { sb_h - 1 } else { sb_h };
 
-    // Remember this frame's geometry — mouse hit-testing, PgUp/PgDn
-    // paging, and the browse cursor's row math all interpret the next
-    // events against what's actually on screen now. `content_h` (not
-    // `top_h`) is what the Proof pane really shows — a horizontal
-    // scrollbar row, decided only here in `pane_view`, can claim one. `0`
-    // when the pane's hidden behind a different zoom this frame — nothing
-    // to scroll a cursor within if it isn't shown.
+    // Store this frame's geometry for the next events' hit-testing, paging
+    // and cursor row math. `*_content_h` excludes a horizontal-bar row and
+    // is `0` for a hidden pane.
     app.last_layout = Some(layout);
     app.proof_content_h = proof.as_ref().map_or(0, |v| v.content_h);
     app.formula_content_h = formula.as_ref().map_or(0, |v| v.content_h);
@@ -689,17 +551,12 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     let sb_eff_w = inner - (output_vbar.is_some() as usize);
     let output_hbar = sb_hbar_on.then(|| hbar_range(sb_eff_w, app.output_hscroll, sb_longest));
 
-    // Build every row of the frame, top to bottom. Every literal
-    // box-drawing character goes through `chrome` (theme.dim on
-    // theme.bg) rather than being printed bare — that's what makes the
-    // frame's background genuinely app-wide instead of just its content.
+    // Build every row of the frame, top to bottom. Box-drawing characters
+    // always go through `chrome`.
     let mut rows: Vec<String> = Vec::with_capacity(height as usize);
     let bar = chrome("│", theme);
     if output_fullscreen {
-        // No top area at all: Output's own top border is the very first
-        // row of the frame — see `Layout::output_fullscreen`. `top_h == 0`
-        // means no content-row loop and no separator row either; nothing
-        // to separate Output from up here.
+        // No top area: Output's top border is the first row.
         rows.push(format!(
             "{}{}{}",
             chrome("┌", theme),
@@ -758,15 +615,9 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
                         pane_row(proof_view, i, theme)
                     ));
                 }
-                // One title segment spanning the full row, not split at
-                // the column boundaries above it, so `output_title` gets
-                // the whole width to render in. Same shape
-                // `output_fullscreen`'s own border row above and the
-                // solo-zoomed-top-pane row below use. Its buttons land at
-                // the same absolute columns `Layout::header_button_at`'s
-                // three-column case expects: `title_segment` right-aligns
-                // them against whatever width it's given, and `inner`
-                // reaches the same right edge `cols[2]` does.
+                // One full-width title segment. Its right-aligned buttons
+                // must land where `Layout::header_button_at` expects
+                // (`inner` ends at the same column as `cols[2]`).
                 rows.push(format!(
                     "{}{}{}",
                     chrome("├", theme),
@@ -824,9 +675,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
         }
     }
     for i in 0..sb_h {
-        // The horizontal scrollbar's own row, if it exists, is always the
-        // last one — same "steals the bottom row" convention `pane_row`
-        // uses for the top panes.
+        // The horizontal scrollbar, when present, is the last row.
         if i >= sb_content_h {
             let thumb = output_hbar
                 .clone()
@@ -842,8 +691,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             );
             row.push_str(&chrome(&"─".repeat(sb_eff_w - thumb.end), theme));
             if output_vbar.is_some() {
-                // Corner under the vertical track, dimmed like the rest —
-                // same as `pane_row`'s equivalent corner.
+                // Corner under the vertical track.
                 row.push_str(&chrome("─", theme));
             }
             rows.push(format!("{bar}{row}{bar}"));
@@ -860,19 +708,9 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             None => format!("{bar}{cell}{bar}"),
         });
     }
-    // While `:formula`'s browse mode (or `:debug` mode) is active, the
-    // prompt label itself is the "what mode am I in?" cue — a distinct
-    // label text (matching the plain frontend, which has no color to lean
-    // on) plus the same accent color Vim mode's cursor row uses
-    // (`theme.cursor_accent`, paired with `theme.cursor_bg`), so it can't
-    // be confused with the focus-reverse already used elsewhere (including
-    // on this very prompt, for "Output has focus"). Vim mode replaces this
-    // row entirely with its own `-- NORMAL --`/`-- INSERT --` status
-    // instead (below) — its own cursor lives in the Proof pane, not here;
-    // `:debug` has no such replacement, since (unlike Vim/formula-browse)
-    // it's not a custom TUI UI — it's the same `debug>` prompt the plain
-    // frontend shows, just with this one label swap and a couple of extra
-    // keyboard shortcuts (see `App::execute`/`run`).
+    // Prompt label indicates the mode: `debug>` / `opb>` (formula browse)
+    // drawn in `theme.cursor_accent`, else `pbp>`. Vim mode replaces the
+    // whole row with its `-- NORMAL --`/`-- INSERT --` status.
     let editing = app.formula_editing();
     let debugging = app.debug_active();
     let prompt_label = if debugging {
@@ -934,13 +772,9 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     for (y, row) in rows.iter().enumerate() {
         queue!(w, cursor::MoveTo(0, y as u16), Print(row))?;
     }
-    // Vim mode's real terminal cursor renders directly in the Proof pane,
-    // at the exact (line, column) `VimState` tracks — not at the bottom
-    // prompt row, which shows a status line instead while it's active
-    // (above). Falls back to the ordinary prompt position if the Proof
-    // pane isn't actually on screen this frame (a different pane is
-    // solo-zoomed, or Output is full-maximised): better a visible cursor
-    // in the wrong-but-sensible place than one silently vanishing.
+    // In Vim mode the terminal cursor is placed in the Proof pane at the
+    // Vim (line, column); otherwise, or if the Proof pane is hidden, at
+    // the prompt.
     let vim_pane_cursor = (|| {
         let (line, col) = app.vim_cursor()?;
         let proof_view = proof.as_ref()?;
@@ -968,10 +802,9 @@ fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// The vertical scrollbar thumb for a pane: which of its `h` content rows
-/// the thumb covers, or `None` when everything fits (no bar at all).
-/// Thumb length is proportional to the visible fraction, position to how
-/// far down the content the window sits.
+/// The vertical thumb: the rows (of `h`) it covers, or `None` when the
+/// content fits. Length is proportional to the visible fraction, position
+/// to `top`.
 fn vbar(top: usize, total: usize, h: usize) -> Option<Range<usize>> {
     if total <= h || h == 0 {
         return None;
@@ -983,9 +816,8 @@ fn vbar(top: usize, total: usize, h: usize) -> Option<Range<usize>> {
     Some(start..start + thumb)
 }
 
-/// The horizontal thumb over `width` bar cells: proportional to how much
-/// of the pane's widest line (`content` columns) is visible, positioned
-/// by the current offset. Full-width if everything somehow fits.
+/// The horizontal thumb over `width` bar cells for `content` columns of
+/// content at `offset`. Full-width if the content fits.
 fn hbar_range(width: usize, offset: usize, content: usize) -> Range<usize> {
     if content <= width || width == 0 {
         return 0..width;
@@ -997,8 +829,7 @@ fn hbar_range(width: usize, offset: usize, content: usize) -> Range<usize> {
     start..start + thumb
 }
 
-/// The widest line of a pane, pinned prefix included — what the
-/// horizontal scrollbar measures against.
+/// Width of the widest line, prefix included.
 fn longest_line(lines: &[PanelLine]) -> usize {
     lines
         .iter()
@@ -1007,14 +838,11 @@ fn longest_line(lines: &[PanelLine]) -> usize {
         .unwrap_or(0)
 }
 
-/// The suggestion strip's rows: left column (usage or file name, aligned)
-/// plus right column (summary, empty for files), each flagged with
-/// whether it's the highlighted selection. Always exactly `rows` entries
-/// (blank-padded), so the strip — and with it the prompt — never changes
-/// height while visible. With no selection, an overflowing list spends
-/// its last row on a `… (+N more)` marker; once ↑/↓ browsing starts, the
-/// window slides to keep the highlight in view and the highlight itself
-/// shows position.
+/// The suggestion strip: exactly `rows` `(text, is_selected)` entries,
+/// blank-padded, each an aligned left column (usage or file name) plus
+/// summary. With no selection an overflowing list ends in a
+/// `… (+N more)` row; with a selection the window scrolls to keep it
+/// visible.
 fn suggestion_rows(
     candidates: &[crate::tui::complete::Candidate],
     selected: Option<usize>,
@@ -1057,17 +885,9 @@ fn suggestion_rows(
     out
 }
 
-/// Render `prefix` in `default_fg` on `bg` — except its very first
-/// character, which renders in `marker_color` instead when set,
-/// regardless of what row-level styling is asking for everywhere else
-/// (`default_fg`/`bg` included). The one place a `PanelLine`'s
-/// otherwise-uncolored `prefix` (see its own docs) gets to carry a
-/// color of its own: the Proof pane's breakpoint-marker glyph at
-/// column 0, which needs to stay a consistent, recognizable color
-/// (active-red or hover-dimmed — see `breakpoint_marker`) whatever the
-/// row underneath it is doing. `None` reproduces the plain,
-/// single-color-for-the-whole-prefix rendering every other panel line
-/// (and a marker-less Proof line) still gets.
+/// `prefix` in `default_fg` on `bg`, except that its first character (the
+/// breakpoint marker, see `breakpoint_marker`) uses `marker_color` when
+/// set.
 fn render_prefix(
     prefix: &str,
     marker_color: Option<Color>,
@@ -1089,11 +909,8 @@ fn render_prefix(
     )
 }
 
-/// A whole row — prefix (see `render_prefix`), each already-clipped
-/// span, and the trailing padding — on a solid background, prefix and
-/// padding included so the highlight fills the entire cell rather than
-/// just the text. Shared by every row-level highlight `panel_cell` can
-/// produce.
+/// A whole row (prefix, already-clipped spans, padding) on background
+/// `bg`, so the highlight fills the entire cell.
 fn row_on_bg(
     prefix: &str,
     clipped: &[Span],
@@ -1110,16 +927,9 @@ fn row_on_bg(
     cell
 }
 
-/// One content cell: the panel's line `i` clipped hard to `width` (the
-/// scrollbars signal continuation now — no ellipses), blank-padded past
-/// the end of the panel's lines. The prefix stays pinned at the left edge
-/// under horizontal scrolling and never carries accent/highlight color
-/// of its own (just the theme base, or whatever row-level background
-/// applies) — except its very first character when `marker_color` is
-/// set (see `render_prefix`) — while the text after it shifts left by
-/// `h_offset` columns and, for a non-dim line, keeps each token's own
-/// color — styling is applied per-span only after slicing/padding, so
-/// the embedded ANSI never has a chance to get cut mid-sequence.
+/// Line `i` of `lines` rendered at exactly `width` columns (blank if past
+/// the end): pinned prefix, then text shifted by `h_offset`, clipped and
+/// padded, then styled per [`PanelLine`]'s priority.
 fn panel_cell(
     lines: &[PanelLine],
     i: usize,
@@ -1130,8 +940,7 @@ fn panel_cell(
     let Some(line) = lines.get(i) else {
         return base(&" ".repeat(width), theme);
     };
-    // Truncate the prefix itself first (only relevant on a pathologically
-    // narrow pane) so the rest of the math can assume it always fits.
+    // Truncate the prefix so the rest of the math can assume it fits.
     let prefix: String = line.prefix.chars().take(width).collect();
     let avail = width - prefix.chars().count();
 
@@ -1225,63 +1034,30 @@ fn panel_cell(
     }
 }
 
-/// Largest useful horizontal offset for a pane `avail_w` columns wide
-/// whose longest line is `longest`: exactly far enough that the content's
-/// own right edge lands on the pane's right edge, no further — scrolling
-/// past that would only show blank padding, since everything the line
-/// has left already fits. Matches the bound `hbar_range` already assumes
-/// for the thumb's own rightmost position (`max_off = content - width`);
-/// previously this clamped to `longest - 1` instead, which let scrolling
-/// continue well past a fully-revealed line, all the way to pinning its
-/// very last character at the pane's *left* edge.
+/// Clamps `offset` to `longest - avail_w` (saturating), the offset at which
+/// the longest line's right edge meets the pane's. Same bound as
+/// `hbar_range`'s `max_off`.
 fn clamp_hscroll(offset: usize, longest: usize, avail_w: usize) -> usize {
     offset.min(longest.saturating_sub(avail_w))
 }
 
-/// Digits needed to print `n` — the fixed width panes pad their line
-/// numbers to, so the numbering column doesn't wobble: `  9: `, ` 10: `.
+/// Digits needed to print `n`; the width line numbers are padded to.
 fn number_width(n: usize) -> usize {
     n.to_string().len()
 }
 
-/// Width, in columns, of everything in the Proof panel's numbering
-/// column before a line's own text starts: the breakpoint-marker slot
-/// (`●`/` `, always exactly one column either way — see
-/// `breakpoint_marker`) plus a separating space, then `num_w` digits of
-/// line number, then `": "`. `proof_lines` builds exactly this many
-/// characters of prefix per line; `vim_pane_cursor` and the Proof pane's
-/// horizontal auto-scroll (both in `draw`) need the identical number
-/// without actually rendering a line, so this is the one formula both
-/// read rather than each guessing their own — the same "one shared
-/// source of truth" reason `tokenize_proof_line`'s char-for-char width
-/// guarantee exists at all.
+/// Width in columns of a Proof-pane line prefix: marker, space, `num_w`
+/// digits, `": "`. Must match the prefix `proof_lines` builds; `draw`'s
+/// Vim cursor placement and auto-scroll rely on it.
 fn proof_prefix_width(num_w: usize) -> usize {
     2 + num_w + 2
 }
 
-/// The breakpoint-marker glyph for one Proof-panel line, and — unlike
-/// every other character in `prefix` — the color to force it to
-/// regardless of the row's own styling (`None` meaning "no marker here,
-/// render the plain space like any other prefix character"; see
-/// `render_prefix`). Three states, `buffer_idx` naming a real buffer
-/// line (never the two synthesized preamble lines, which can't carry
-/// a breakpoint or a hover preview either): already in
-/// `session.breakpoints` renders `●` in `theme.breakpoint` (a
-/// consistent, always-legible "stop here" red/orange, active whether
-/// or not the mouse happens to be over it right now); not set but
-/// `hovered` — the mouse resting exactly on this line's marker column,
-/// see `tui::App::proof_marker_at` — previews the same glyph, dimmed
-/// (`theme.dim`, the same "this is context, not committed yet" token
-/// every other preview/placeholder in this app already uses), so a
-/// click's effect is visible before it's taken; neither set nor
-/// hovered is a plain space with no color override, exactly what every
-/// line had before mouse-settable breakpoints existed. Always exactly
-/// one column wide either way — `●` renders single-width in every
-/// terminal this pane already assumes that of, the same class of
-/// glyph as the `▭`/`⛶` zoom buttons already in the pane headers — so
-/// which lines have (or might get) a breakpoint never changes the
-/// numbering column's width, only what's drawn inside one fixed slot
-/// of it.
+/// The breakpoint-marker glyph and its colour override (see
+/// `render_prefix`) for a Proof-pane line. `buffer_idx` is `None` for
+/// preamble lines. Set breakpoint: `●` in `theme.breakpoint`; not set but
+/// `hovered` (see `tui::App::proof_marker_at`): `●` in `theme.dim`;
+/// otherwise a space with no override. Always one column wide.
 fn breakpoint_marker(
     session: &Session,
     buffer_idx: Option<usize>,
@@ -1295,8 +1071,8 @@ fn breakpoint_marker(
     }
 }
 
-/// Styled `"@label @other "` spans for constraint `id`, empty when it has
-/// no labels — meant to be prepended ahead of the constraint's own spans.
+/// Styled `"@label @other "` spans for constraint `id` (empty if it has no
+/// labels), to prepend to the constraint's spans.
 fn label_spans(labels_by_id: &ahash::AHashMap<isize, Vec<String>>, id: isize) -> Vec<Span> {
     let Some(names) = labels_by_id.get(&id) else {
         return Vec::new();
@@ -1309,14 +1085,11 @@ fn label_spans(labels_by_id: &ahash::AHashMap<isize, Vec<String>>, id: isize) ->
     spans
 }
 
-/// Tokenize one `ToPrettyString`-formatted constraint into styled spans:
-/// coefficients, the relation, and the degree stay plain; each literal's
-/// variable name is colored, its optional leading `~` negation marker
-/// stays plain. Exact by construction (see the module docs) — falls back
-/// to a single plain span, rather than guessing, if the text doesn't
-/// match the expected `"<coeff> <lit> ... >= <degree>"` shape, so a
-/// future formatting change degrades to "no highlighting" instead of
-/// silently dropping or garbling text.
+/// Tokenizes a `ToPrettyString`-formatted constraint
+/// (`"<coeff> <lit> ... >= <degree>"`, as emitted by `veripb-formula`):
+/// variable names coloured, everything else plain. Returns one plain span
+/// if the text doesn't match that shape. Collapses whitespace to single
+/// spaces.
 fn tokenize_constraint(text: &str) -> Vec<Span> {
     let tokens: Vec<&str> = text.split_whitespace().collect();
     let terms_len = tokens.len().saturating_sub(2);
@@ -1330,8 +1103,7 @@ fn tokenize_constraint(text: &str) -> Vec<Span> {
         if i > 0 {
             spans.push(plain(" ".to_string()));
         }
-        // `terms_len` was checked even above, so every chunk here has
-        // exactly 2 elements — no partial last chunk to guard against.
+        // `terms_len` is even, so every chunk has exactly 2 elements.
         spans.push(plain(pair[0].to_string()));
         spans.push(plain(" ".to_string()));
         spans.extend(tokenize_literal(pair[1]));
@@ -1345,9 +1117,8 @@ fn tokenize_constraint(text: &str) -> Vec<Span> {
     spans
 }
 
-/// A literal token (`"~name"` or `"name"`, `Lit::to_pretty_string`'s only
-/// two forms) split into its plain `~` marker, if negated, and its
-/// colored variable name.
+/// Splits a literal (`"~name"` or `"name"`) into a plain `~` (if negated)
+/// and a coloured variable name.
 fn tokenize_literal(lit: &str) -> Vec<Span> {
     match lit.strip_prefix('~') {
         Some(var) => vec![plain("~".to_string()), variable(var.to_string())],
@@ -1355,41 +1126,18 @@ fn tokenize_literal(lit: &str) -> Vec<Span> {
     }
 }
 
-/// Tokenize one raw, as-typed proof-rule line: each whitespace token that
-/// — after stripping an optional leading `~` — names a real variable in
-/// `var_names` is colored; a token starting with `@` is a label (always,
-/// per the v3 lexer grammar, regardless of whether it resolves in the
-/// current label map); everything else (keywords, constraint-ID hints,
-/// punctuation, numbers) stays plain. A lookup-based approach rather than
-/// positional parsing, since proof-rule syntax has no single fixed
-/// grammar the way a formatted constraint does (`rup`, `pol`, `red`, ...
-/// all differ) — this can under-highlight (e.g. a variable name with
-/// punctuation glued directly to it, with no separating space) but can
-/// never mislabel a keyword or ID as a variable.
+/// Tokenizes a raw proof-rule line by lookup: a whitespace-separated token
+/// starting with `@` is a label; one naming a variable in `var_names`
+/// (after an optional `~`) is coloured; everything else is plain.
 ///
-/// Crucially, the result is **character-for-character the same width as
-/// `line`**: whitespace runs are preserved, not collapsed, so the Nth
-/// character of `line` is always drawn in the Nth column of the pane.
-/// That one-to-one mapping is load-bearing rather than cosmetic. Vim
-/// mode's column (`App::vim_cursor`) is a character index into this very
-/// string, and `draw` positions the real terminal cursor at that column,
-/// so any rendering that changed a line's width would silently draw the
-/// cursor on the wrong character. Rebuilding the line from
-/// `split_whitespace` did exactly that: deleting the `1` from
-/// `rup 1 ~x1 ...` leaves two spaces in the buffer but drew only one, so
-/// the caret appeared to land on the `~` and the surviving space looked
-/// as though it had been deleted along with the `1`; leading whitespace
-/// vanished outright, sliding a whole line left underneath the cursor.
-///
-/// Whitespace is normalized to one space *per character* rather than
-/// passed through verbatim: that keeps the width identical either way,
-/// while stopping a stray tab from jumping to the terminal's next tab
-/// stop and tearing the pane's own border off the right-hand side.
+/// Output is char-for-char the same width as `line` (each whitespace char
+/// becomes one space): the Vim cursor column (`App::vim_cursor`) indexes
+/// into it, and tabs would break the pane border.
 fn tokenize_proof_line(line: &str, var_names: &VarNames) -> Vec<Span> {
     let mut spans = Vec::new();
     let mut rest = line;
     while !rest.is_empty() {
-        // A run of whitespace: exactly one space out per character in.
+        // Whitespace run: one space per input char.
         let ws_end = rest
             .find(|c: char| !c.is_whitespace())
             .unwrap_or(rest.len());
@@ -1398,9 +1146,7 @@ fn tokenize_proof_line(line: &str, var_names: &VarNames) -> Vec<Span> {
             rest = &rest[ws_end..];
             continue;
         }
-        // Otherwise a run of non-whitespace: one token, styled by what it
-        // turns out to name. `ws_end == 0` guarantees this is non-empty,
-        // so the loop always consumes something.
+        // Non-whitespace token; non-empty since `ws_end == 0`.
         let tok_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
         let (token, tail) = rest.split_at(tok_end);
         rest = tail;
@@ -1424,11 +1170,9 @@ fn tokenize_proof_line(line: &str, var_names: &VarNames) -> Vec<Span> {
     spans
 }
 
-/// Numbered pretty-printed formula constraints, 1-based to match the
-/// constraint IDs the checker assigns them, labels shown ahead of the
-/// constraint they name. `cursor`, when `Some`, highlights that
-/// constraint's row — the Formula-pane equivalent of `proof_lines`'s own
-/// `cursor` parameter, for `:formula`'s browse mode.
+/// Formula constraints numbered 1-based (matching checker constraint
+/// IDs), labels first. `cursor` (1-based) marks `:formula` browse mode's
+/// row.
 fn formula_lines(session: &Session, cursor: Option<usize>) -> Vec<PanelLine> {
     let labels_by_id = session.labels_by_id();
     let num_w = number_width(session.formula.len());
@@ -1453,16 +1197,10 @@ fn formula_lines(session: &Session, cursor: Option<usize>) -> Vec<PanelLine> {
     lines
 }
 
-/// Returns the live constraint database, same iteration as `:show` with no
-/// filters: core/derived tagged, labels shown ahead of the constraint they
-/// name. `hint_vars` — non-empty only while `:deassert` is active, from
-/// `App::vim_deassert_source` via `Session::variables::mentioned` — marks
-/// every row sharing any of those variables. Recomputed every frame; see
-/// `PanelLine::hint`'s own docs. `debug_ids` — non-empty only while
-/// `:debug` mode is active, from `App::debug_current_constraint_ids` via
-/// `Session::last_step_constraint_ids` — marks every row the most
-/// recently checked line produced, the same `debug_current` highlight
-/// `proof_lines` gives the Proof pane's own current line.
+/// The live constraint database (as `:show` with no filters): core/derived
+/// tagged, labels first. Rows mentioning any of `hint_vars` are marked
+/// `hint`; rows whose ID is in `debug_ids` (produced by the last `:debug`
+/// step) are marked `debug_current`. On error, one pinned error line.
 fn database_lines(session: &Session, hint_vars: &[String], debug_ids: &[usize]) -> Vec<PanelLine> {
     let database = match session.database() {
         Ok(database) => database,
@@ -1489,45 +1227,21 @@ fn database_lines(session: &Session, hint_vars: &[String], debug_ids: &[usize]) 
         .collect()
 }
 
-/// The synthesized preamble (dimmed, left untokenized — it's boilerplate,
-/// not content worth highlighting) followed by every buffer line
-/// (tokenized per-line), numbered as one sequence so the numbers here
-/// match the `line N:` numbers in the checker's trace output exactly.
-/// `cursor` is Vim mode's current display line, if active — marked on
-/// the matching entry for `panel_cell` to highlight. Every `a`-rule
-/// (unchecked assertion) line is marked too, the same way `:deassert`
-/// recognizes one — flagged red as scaffolding still owed a real
-/// derivation.
+/// The dimmed, untokenized preamble followed by the tokenized buffer lines,
+/// numbered as one sequence matching the checker's `line N:` trace.
 ///
-/// `editing` is `Some((display_line, live_text))` while Vim mode's
-/// `Insert` sub-mode is active (see `App::vim_inserting`): the named
-/// line renders `live_text` — `App::editor`'s current, not-yet-committed
-/// content — instead of `session.buffer`'s own text, so typing shows up
-/// directly in the pane exactly where the cursor sits, not just once
-/// Esc/Enter commits it. Checked/error status still reflects the
-/// buffer's last-committed state regardless — genuinely reverifying on
-/// every keystroke is `:verify`'s job, not this render.
+/// - `cursor`: Vim mode's display line (1-based), marked `cursor`.
+/// - `editing`: `(display_line, live_text)` in Vim `Insert` mode; that
+///   line shows `live_text`. Checked/error status still reflects the
+///   committed buffer.
+/// - `hover`: buffer index under the mouse in the marker column; affects
+///   only `breakpoint_marker`.
+/// - `debug_current`: buffer index `:debug` is stopped at; marked
+///   `debug_current` and not dimmed.
 ///
-/// Lines past `session.checked_len` are dimmed exactly like the preamble
-/// — "not yet real" describes an unchecked line just as well as a
-/// boilerplate one — except the one `session.known_bad` names, if any
-/// (always the line right at `checked_len`: nothing beyond a rejection
-/// is ever attempted), which gets `error` instead: the only thing in the
-/// buffer that's actively broken, not just not-yet-tried.
-///
-/// `hover` is the buffer index (if any) the mouse currently sits over in
-/// the marker column — see `App::proof_marker_at`, recomputed fresh every
-/// frame from the last known mouse position, so it can never go stale
-/// the way an event-driven-only update could after a keyboard scroll
-/// moves what's actually under a stationary mouse. Only ever changes
-/// `breakpoint_marker`'s glyph/color for the one named line.
-///
-/// `debug_current` is the buffer index `:debug` mode is currently
-/// stopped at (see `App::debug_current_line`), or `None` when it isn't
-/// active — marks that one line `debug_current` (see `PanelLine`'s own
-/// docs) so `panel_cell` highlights it the same way the Vim cursor
-/// highlights its line, and clears the "unchecked tail" dimming it
-/// would otherwise get from sitting at or past `checked_len`.
+/// Checked `a`-rule lines are marked `assertion`. Lines at or past
+/// `session.checked_len` are dimmed, except the `session.known_bad` line
+/// (always at `checked_len`), which is marked `error`.
 fn proof_lines(
     session: &Session,
     cursor: Option<usize>,
@@ -1586,15 +1300,9 @@ fn proof_lines(
     lines
 }
 
-/// The visible window of a pane's lines, `h` rows of them — top-anchored:
-/// `offset` lines down from the top, 0 meaning "line one is at the top."
-/// All three top panes work this way, so newly-appended content (a
-/// `:source`'d file, a fresh proof line, a new formula constraint) never
-/// yanks the view down to follow it; only Output's own scrollback stays
-/// tail-anchored (see the `draw` function's inline scrollback handling
-/// below, which doesn't go through this at all). Clamps the offset
-/// against the content, writing it back so stale offsets self-heal.
-/// Overflow is the scrollbar's to report — the window is a plain slice.
+/// The `h`-row window of `lines` starting `offset` lines from the top
+/// (top-anchored, so appended content doesn't move the view). Clamps
+/// `offset` to the content and writes it back.
 fn window_scrolled(lines: Vec<PanelLine>, h: usize, offset: &mut usize) -> Window {
     let n = lines.len();
     if n <= h {
@@ -1615,10 +1323,9 @@ fn window_scrolled(lines: Vec<PanelLine>, h: usize, offset: &mut usize) -> Windo
     }
 }
 
-/// Pad or truncate `s` to exactly `width` columns, marking truncation
-/// with a trailing `…`. Used by the prompt's own input line and the
-/// suggestion strip — both single-line fields with no scrollbar of their
-/// own to signal continuation, unlike the scrollback (see [`windowed`]).
+/// Pads or truncates `s` to exactly `width` columns, marking truncation
+/// with a trailing `…`. For fields without scrollbars (prompt, suggestion
+/// strip, status line).
 fn fit(s: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
@@ -1637,9 +1344,7 @@ fn fit(s: &str, width: usize) -> String {
 }
 
 /// One scrollback row: `line` tokenized (see `scrollback::tokenize`),
-/// `offset` characters skipped for horizontal scrolling, then clipped and
-/// padded to exactly `width` — the scrollback's equivalent of
-/// `panel_cell`, without the pinned prefix.
+/// shifted by `offset` chars, clipped and padded to exactly `width`.
 fn scrollback_cell(
     line: &str,
     vars: Option<&VarNames>,
@@ -1655,26 +1360,13 @@ fn scrollback_cell(
     cell
 }
 
-/// A border segment carrying a pane title: `─ Title ────`, truncated
-/// outright if the pane is too narrow for it, or (`title: None`) no label
-/// at all — just dashes — for a segment that exists purely to host zoom
-/// buttons at its right edge, matching wherever the pane's own title
-/// segment happens to render its label (`Output`'s label and its buttons
-/// can land in different segments of the same header row — see the
-/// callers in `draw`). The focused pane's title renders in reverse
-/// video — styling applied only after the width math, so the zero-width
-/// escapes can't skew the border.
+/// A `width`-column border segment `─ Title ────` (title truncated to fit;
+/// dashes only when `title` is `None`), reverse video when `focused`.
 ///
-/// `levels` are the zoom buttons this segment offers, left to right —
-/// empty for none, `&[Wide, Full]` for every zoomable pane (see
-/// `layout::zoom_levels`); every caller passes its own levels whether or
-/// not the pane is *currently* zoomed. When non-empty and the segment's
-/// wide enough to fit them (see `layout::button_offsets`), `active` marks
-/// which button (if any) reflects this pane's *current* zoom state — that
-/// one renders in reverse video the same way a focused title does,
-/// doubling as a status indicator, not just a control. Clicking is
-/// handled entirely by `Layout::header_button_at`/`App::toggle_zoom`, not
-/// here; this only draws.
+/// `levels` are the zoom buttons drawn right-aligned, if they fit (see
+/// `layout::button_offsets`); the one equal to `active` (the pane's current
+/// zoom) is drawn in reverse video. Clicks are handled by
+/// `Layout::header_button_at`.
 fn title_segment(
     title: Option<&str>,
     width: usize,
@@ -1736,9 +1428,7 @@ fn title_segment(
     out
 }
 
-/// One `[X]` zoom button: reverse video (like a focused title) when
-/// `active` — this pane's current zoom level matches this specific
-/// button — dimmed chrome like the rest of the border otherwise.
+/// One `[X]` zoom button: reverse video when `active`, else chrome.
 fn zoom_button(glyph: char, active: bool, theme: Theme) -> String {
     let text = format!("[{glyph}]");
     if active {
