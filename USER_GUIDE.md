@@ -110,8 +110,8 @@ scrolled. Running any command resets every pane to its default view.
 
 **Zoom.** Formula, Database, and Proof each have two header buttons:
 `[▭]` widens the pane to fill the top row (the Output area keeps its
-size); `[⛶]` also shrinks the Output area to its minimum. Output has only
-`[⛶]`, which shrinks the top row to a few lines. One pane is zoomed at a
+size); `[⛶]` also shrinks the Output area to its minimum. On Output,
+`[▭]` shrinks the top row to three lines and `[⛶]` hides it. One pane is zoomed at a
 time. Click the button again, or press Esc, to un-zoom. Esc goes first to
 Vim mode, a `:formula` browse, or `:debug` if one is active; otherwise it
 un-zooms before it clears a completion highlight. Entering Vim mode or a

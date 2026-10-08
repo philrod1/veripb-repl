@@ -1,0 +1,83 @@
+{
+ "cmd": [
+  "target/debug/veripb-repl",
+  "demos/files/pigeons.opb"
+ ],
+ "copy": [
+  "demos/files"
+ ],
+ "cols": 120,
+ "rows": 32,
+ "steps": [
+  {
+   "keys": "a 1 ~p11 1 ~p21 1 ~p31 >= 2 ;\r",
+   "settle": 1.2
+  },
+  {
+   "keys": "a 1 ~p12 1 ~p22 1 ~p32 >= 2 ;\r",
+   "settle": 1.2
+  },
+  {
+   "keys": "pol 1 2 + 3 + 10 + 11 + ;\r",
+   "settle": 1.2
+  },
+  {
+   "keys": ":check\r",
+   "settle": 1.5
+  },
+  {
+   "snap": "demos/img/03-sketch.svg"
+  },
+  {
+   "keys": ":deassert\r"
+  },
+  {
+   "snap": "demos/img/03-deassert.svg"
+  },
+  {
+   "keys": "pol 4 5 + 6 + 2 d ;\r"
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "keys": "dd"
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "keys": ":verify\r",
+   "settle": 1.5
+  },
+  {
+   "snap": "demos/img/03-one-left.svg"
+  },
+  {
+   "keys": ":deassert\r"
+  },
+  {
+   "keys": "pol 7 8 + 9 + 2 d ;\r"
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "keys": "dd"
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "keys": ":verify\r",
+   "settle": 1.5
+  },
+  {
+   "keys": ":check\r",
+   "settle": 1.5
+  },
+  {
+   "snap": "demos/img/03-proved.svg"
+  }
+ ]
+}

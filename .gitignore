@@ -9,6 +9,9 @@ veripb-amd64
 *.svg
 profile.json.gz
 
+# Demo screenshots (exception to *.svg above)
+!demos/img/*.svg
+
 # Temporary files
 *.out
 out.pbp

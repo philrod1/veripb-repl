@@ -1,0 +1,65 @@
+{
+ "cmd": [
+  "target/debug/veripb-repl",
+  "demos/files/two-or-more.opb"
+ ],
+ "copy": [
+  "demos/files"
+ ],
+ "cols": 120,
+ "rows": 32,
+ "steps": [
+  {
+   "keys": ":preserved\r"
+  },
+  {
+   "keys": "sol x1 x2 *x3 ;\r",
+   "settle": 1.2
+  },
+  {
+   "click": [
+    "\u2500 Output",
+    "\u25ad"
+   ]
+  },
+  {
+   "snap": "demos/img/04-hint.svg"
+  },
+  {
+   "click": [
+    "\u2500 Output",
+    "\u25ad"
+   ]
+  },
+  {
+   "keys": "solx x1 x2 *x3 ;\r",
+   "settle": 1.2
+  },
+  {
+   "keys": "solx x1 ~x2 x3 ;\r",
+   "settle": 1.2
+  },
+  {
+   "keys": "solx ~x1 x2 x3 ;\r",
+   "settle": 1.2
+  },
+  {
+   "snap": "demos/img/04-solx.svg"
+  },
+  {
+   "keys": "rup 1 ~x1 >= 1 ;\r",
+   "settle": 1.2
+  },
+  {
+   "keys": "rup >= 1 ;\r",
+   "settle": 1.2
+  },
+  {
+   "keys": ":check ENUMERATION_COMPLETE 4 : 6\r",
+   "settle": 1.5
+  },
+  {
+   "snap": "demos/img/04-complete.svg"
+  }
+ ]
+}
