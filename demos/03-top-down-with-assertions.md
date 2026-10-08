@@ -16,22 +16,22 @@ relevant to each assertion as you replace it.
 
 ```
 * every pigeon is in a hole
-1 p11 1 p12 >= 1 ;
-1 p21 1 p22 >= 1 ;
-1 p31 1 p32 >= 1 ;
+@p1_placed 1 p11 1 p12 >= 1 ;
+@p2_placed 1 p21 1 p22 >= 1 ;
+@p3_placed 1 p31 1 p32 >= 1 ;
 * no two pigeons share hole 1
-1 ~p11 1 ~p21 >= 1 ;
-1 ~p11 1 ~p31 >= 1 ;
-1 ~p21 1 ~p31 >= 1 ;
+@h1_not_12 1 ~p11 1 ~p21 >= 1 ;
+@h1_not_13 1 ~p11 1 ~p31 >= 1 ;
+@h1_not_23 1 ~p21 1 ~p31 >= 1 ;
 * no two pigeons share hole 2
-1 ~p12 1 ~p22 >= 1 ;
-1 ~p12 1 ~p32 >= 1 ;
-1 ~p22 1 ~p32 >= 1 ;
+@h2_not_12 1 ~p12 1 ~p22 >= 1 ;
+@h2_not_13 1 ~p12 1 ~p32 >= 1 ;
+@h2_not_23 1 ~p22 1 ~p32 >= 1 ;
 ```
 
 Plan: show that each hole holds at most one pigeon
-(`~p1j + ~p2j + ~p3j >= 2`); adding those two facts to the three "every
-pigeon is in a hole" constraints gives `0 >= 1`.
+(`~p1j + ~p2j + ~p3j >= 2`); adding those two facts to the three
+`@p<i>_placed` constraints gives `0 >= 1`.
 
 ## 1. Sketch the proof
 
@@ -39,19 +39,19 @@ pigeon is in a hole" constraints gives `0 >= 1`.
 cargo run -- demos/files/pigeons.opb
 ```
 
-Type the two lemmas as assertions, then the final step that uses them
-(constraints 10 and 11):
+Type the two lemmas as labelled assertions, then the final step that
+uses them:
 
 ```
-a 1 ~p11 1 ~p21 1 ~p31 >= 2 ;
-a 1 ~p12 1 ~p22 1 ~p32 >= 2 ;
-pol 1 2 + 3 + 10 + 11 + ;
+@h1_amo a 1 ~p11 1 ~p21 1 ~p31 >= 2 ;
+@h2_amo a 1 ~p12 1 ~p22 1 ~p32 >= 2 ;
+@contradiction pol @p1_placed @p2_placed + @p3_placed + @h1_amo + @h2_amo + ;
 :check
 ```
 
 Each line is checked as you type it; an `a` line is accepted without a
 derivation. The assertions are shown on a red background in the Proof
-pane. Constraint 12 is the contradiction `>= 1`, and `:check` reports
+pane. `@contradiction` is `>= 1`, and `:check` reports
 `s UNDER ASSERTIONS UNSATISFIABLE`: the conclusion follows, provided the
 assertions hold.
 
@@ -66,25 +66,26 @@ assertions hold.
 `:deassert` opens Vim Insert mode at the start of the first `a` line. It
 lists the database constraints that share variables with the assertion,
 most shared variables first, and highlights them in the Database pane.
-Here constraints 4, 5 and 6 (the hole-1 pairs) are the ingredients:
-summing them gives `2 ~p11 2 ~p21 2 ~p31 >= 3`, and dividing by 2
-rounds up to `>= 2`.
+Here `@h1_not_12`, `@h1_not_13` and `@h1_not_23` are the ingredients:
+summing them gives `2 ~p11 2 ~p21 2 ~p31 >= 3`, and dividing by 2 rounds
+up to `>= 2`.
 
 ![:deassert on the first assertion](img/03-deassert.svg)
 
-Type the derivation and press Enter, which splits the line: the new
-text stays on line 3 and the old assertion moves to line 4. Press Esc,
-then `dd` to delete the old assertion, then Esc to leave Vim mode:
+Type the derivation, keeping the label `@h1_amo` so the final step still
+finds it, and press Enter, which splits the line: the new text stays on
+line 3 and the old assertion moves to line 4. Press Esc, then `dd` to
+delete the old assertion, then Esc to leave Vim mode:
 
 ```
-pol 4 5 + 6 + 2 d ;
+@h1_amo pol @h1_not_12 @h1_not_13 + @h1_not_23 + 2 d ;
 ```
 
 ```
 :verify
 ```
 
-The new line derives the same constraint 10 as the assertion did, so the
+The new line derives the same constraint as the assertion did, so the
 later lines still check. One assertion remains:
 
 ![One assertion left](img/03-one-left.svg)
@@ -96,10 +97,10 @@ later lines still check. One assertion remains:
 ```
 
 `:deassert` now opens the remaining `a` line. Replace it the same way
-with the hole-2 pairs (constraints 7, 8, 9):
+with the hole-2 constraints:
 
 ```
-pol 7 8 + 9 + 2 d ;
+@h2_amo pol @h2_not_12 @h2_not_13 + @h2_not_23 + 2 d ;
 ```
 
 ```
