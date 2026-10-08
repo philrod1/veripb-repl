@@ -1,0 +1,68 @@
+{
+ "cmd": [
+  "target/debug/veripb-repl",
+  "demos/files/clique.opb"
+ ],
+ "copy": [
+  "demos/files"
+ ],
+ "cols": 120,
+ "rows": 32,
+ "steps": [
+  {
+   "keys": ":objective\r"
+  },
+  {
+   "keys": "soli x1 x2 x3 x4 ~x5 ;\r",
+   "settle": 1.5
+  },
+  {
+   "click": [
+    "\u2500 Output",
+    "\u25ad"
+   ]
+  },
+  {
+   "snap": "demos/img/04-rejected.svg"
+  },
+  {
+   "click": [
+    "\u2500 Output",
+    "\u25ad"
+   ]
+  },
+  {
+   "keys": "@better soli x1 x2 x3 ~x4 ~x5 ;\r",
+   "settle": 1.5
+  },
+  {
+   "keys": ":objective\r"
+  },
+  {
+   "keys": ":check\r",
+   "settle": 1.5
+  },
+  {
+   "snap": "demos/img/04-logged.svg"
+  },
+  {
+   "keys": "@colour_bound pol @better @no_15 + @no_34 + ;\r",
+   "settle": 1.2
+  },
+  {
+   "keys": "@contradiction rup >= 1 : @colour_bound ;\r",
+   "settle": 1.2
+  },
+  {
+   "keys": ":check\r",
+   "settle": 1.5
+  },
+  {
+   "keys": ":save clique.pbp\r",
+   "settle": 1.5
+  },
+  {
+   "snap": "demos/img/04-optimal.svg"
+  }
+ ]
+}

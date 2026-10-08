@@ -411,6 +411,9 @@ impl Session {
                 Ok((trace, None))
             }
             CheckOutcome::Rejected { message, trace, .. } => {
+                // Name any constraint the reason mentions by ID.
+                let message =
+                    checker::parse::annotate_constraint_ids(&message, &self.labels_by_id());
                 self.known_bad = Some(message.clone());
                 Ok((trace, Some(message)))
             }

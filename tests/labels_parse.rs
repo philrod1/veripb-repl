@@ -101,3 +101,21 @@ line    5: @at_most_one pol @sum_all 2 d ;
     // A token count that doesn't match the rows leaves the trace alone.
     assert_eq!(pol_table_with_typed_operands(trace, "pol 6 ;"), trace);
 }
+
+#[test]
+fn rejection_reasons_name_labelled_ids() {
+    use veripb_repl::checker::parse::annotate_constraint_ids;
+    let mut labels = ahash::AHashMap::new();
+    labels.insert(3, vec!["@no_34".to_string()]);
+    assert_eq!(
+        annotate_constraint_ids(
+            "The given assignment falsifies the constraint with ID 3.",
+            &labels
+        ),
+        "The given assignment falsifies the constraint with ID 3 (@no_34)."
+    );
+    assert_eq!(
+        annotate_constraint_ids("constraint with ID 8 is not contradicting", &labels),
+        "constraint with ID 8 is not contradicting"
+    );
+}

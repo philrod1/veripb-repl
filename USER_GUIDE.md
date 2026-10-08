@@ -31,6 +31,10 @@ in a `.pbp` file (including the trailing `;`). `:quit` or EOF (Ctrl-D)
 exits. Only `:instance`, `:load`, `:help`, `:theme`, and `:quit` work
 without a formula; every other command reports "No formula loaded".
 
+A rejected line shows the checker's reason. Where the reason refers to a
+constraint by ID, the REPL adds the constraint's labels, e.g. "falsifies
+the constraint with ID 3 (@no_34)".
+
 ### The TUI (default) and `--plain`
 
 By default the REPL opens a full-terminal interface: three columns —

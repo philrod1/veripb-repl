@@ -353,6 +353,29 @@ pub fn pol_table_with_typed_operands(trace: &str, pol_line: &str) -> String {
     text
 }
 
+/// Appends each constraint's labels after every `ID <N>` in `text` (as in
+/// veripb's "falsifies the constraint with ID 3"), e.g. `ID 3 (@no_34)`.
+/// IDs without labels are left as they are.
+pub fn annotate_constraint_ids(
+    text: &str,
+    labels_by_id: &ahash::AHashMap<isize, Vec<String>>,
+) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(pos) = rest.find("ID ") {
+        let after = &rest[pos + 3..];
+        let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+        out.push_str(&rest[..pos + 3 + digits.len()]);
+        rest = &after[digits.len()..];
+        if let Some(names) = digits.parse::<isize>().ok().and_then(|id| labels_by_id.get(&id))
+        {
+            out.push_str(&format!(" ({})", names.join(" ")));
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Returns `N` from a `line <N>: ...` trace marker.
 fn line_marker_number(line: &str) -> Option<usize> {
     let rest = line.trim_start().strip_prefix("line")?.trim_start();
