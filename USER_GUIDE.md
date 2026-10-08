@@ -408,8 +408,8 @@ formulas are not supported.
   unchecked line, or a line past the end is an error.
 
   For a checked line:
-  - `pol`: the step-by-step table (each operator applied and the running
-    constraint).
+  - `pol`: the step-by-step table (each operand or operator, as written
+    in the line, so labels appear as labels, and the running constraint).
   - `red`: the substitution witness and every proof goal with how it was
     proved.
   - `rup`: the `ConstraintId N: ...` line, then `Line n needed:` and the

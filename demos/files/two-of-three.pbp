@@ -1,9 +1,9 @@
 pseudo-Boolean proof version 3.0
 f 4;
-pol 2 3 + ;
-pol 5 3 + ;
-pol 6 2 d ;
-pol 1 7 + ;
+@sum_12_13 pol @not_12 @not_13 + ;
+@sum_all pol @sum_12_13 @not_13 + ;
+@at_most_one pol @sum_all 2 d ;
+@contradiction pol @at_least_two @at_most_one + ;
 output NONE;
-conclusion UNSAT : 8;
+conclusion UNSAT : @contradiction;
 end pseudo-Boolean proof;

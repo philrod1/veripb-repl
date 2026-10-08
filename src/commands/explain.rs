@@ -8,7 +8,7 @@
 //! line. Read-only: replays through a throwaway checker.
 
 use crate::checker::RupHint;
-use crate::checker::parse::is_rup_line;
+use crate::checker::parse::{is_rup_line, pol_table_with_typed_operands, rule_keyword};
 use crate::commands::help;
 use crate::output::{self, Output, outln};
 use crate::session::{RejectionDiagnosis, Session};
@@ -81,6 +81,13 @@ fn explain_checked(session: &Session, n: usize, out: &mut dyn Output) {
         );
         return;
     }
+    // Show a `pol` table's operands as typed (labels rather than IDs).
+    let explanation = match session.checked_index(n) {
+        Some(idx) if rule_keyword(&session.buffer[idx]) == Some("pol") => {
+            pol_table_with_typed_operands(&explanation, &session.buffer[idx])
+        }
+        _ => explanation,
+    };
     if !explanation.trim().is_empty() {
         output::text(out, &explanation);
     }

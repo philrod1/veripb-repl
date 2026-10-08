@@ -293,6 +293,66 @@ pub fn constraint_ids_by_line(trace: &str) -> std::collections::BTreeMap<usize, 
     by_line
 }
 
+/// Rewrites the operand column of a traced `pol` table (`depth  operand
+/// top of stack`) to show `pol_line`'s operands as typed, e.g. `@label`
+/// where veripb prints the constraint ID. The table has one row per token
+/// of the `pol` expression; if the counts differ, `trace` is returned
+/// unchanged. Columns are re-aligned to the new widths.
+pub fn pol_table_with_typed_operands(trace: &str, pol_line: &str) -> String {
+    let Some(expr) = pol_line
+        .split_once(" pol ")
+        .map(|(_, e)| e)
+        .or_else(|| pol_line.trim_start().strip_prefix("pol "))
+    else {
+        return trace.to_string();
+    };
+    let expr = expr.trim().trim_end_matches(';');
+    let tokens: Vec<&str> = expr
+        .split_whitespace()
+        .map(|t| t.trim_end_matches(';'))
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    let lines: Vec<&str> = trace.lines().collect();
+    let Some(header) = lines.iter().position(|l| {
+        let t = l.trim();
+        t.starts_with("depth") && t.contains("operand") && t.contains("top of stack")
+    }) else {
+        return trace.to_string();
+    };
+    // Rows: `<depth> <operand> <top of stack>`, until the first other line.
+    let rows: Vec<(&str, &str)> = lines[header + 1..]
+        .iter()
+        .map_while(|l| {
+            let mut parts = l.split_whitespace();
+            let depth = parts.next()?;
+            depth.parse::<usize>().ok()?;
+            parts.next()?;
+            let rest = l.trim_start()[depth.len()..].trim_start();
+            let operand_len = rest.split_whitespace().next()?.len();
+            Some((depth, rest[operand_len..].trim_start()))
+        })
+        .collect();
+    if rows.len() != tokens.len() {
+        return trace.to_string();
+    }
+
+    let indent = &lines[header][..lines[header].len() - lines[header].trim_start().len()];
+    let depth_w = rows.iter().map(|(d, _)| d.len()).max().unwrap_or(0).max("depth".len()) + 2;
+    let operand_w = tokens.iter().map(|t| t.len()).max().unwrap_or(0).max("operand".len()) + 2;
+    let mut out: Vec<String> = lines[..header].iter().map(|l| l.to_string()).collect();
+    out.push(format!("{indent}{:<depth_w$}{:<operand_w$}top of stack", "depth", "operand"));
+    for ((depth, top), token) in rows.iter().zip(&tokens) {
+        out.push(format!("{indent}{depth:<depth_w$}{token:<operand_w$}{top}"));
+    }
+    out.extend(lines[header + 1 + rows.len()..].iter().map(|l| l.to_string()));
+    let mut text = out.join("\n");
+    if trace.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
+
 /// Returns `N` from a `line <N>: ...` trace marker.
 fn line_marker_number(line: &str) -> Option<usize> {
     let rest = line.trim_start().strip_prefix("line")?.trim_start();
