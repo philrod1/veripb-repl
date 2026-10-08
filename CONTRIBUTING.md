@@ -25,7 +25,9 @@ VERIPB_REPL_VERIPB_BIN=/absolute/path/to/veripb python3 demos/tools/tuishot.py d
 ```
 
 `--text` also writes each snapshot's screen text to a `.txt` file, for
-checking content without an SVG viewer.
+checking content without an SVG viewer. `TUISHOT_REPL_BIN` overrides the
+`veripb-repl` binary the scripts run, e.g. a build in another
+`CARGO_TARGET_DIR`.
 
 ## Code layout
 

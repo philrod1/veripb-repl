@@ -1,8 +1,8 @@
 pseudo-Boolean proof version 3.0
 f 5;
-rup 1 x3 >= 1 : 1 2 ;
-rup 1 ~x3 >= 1 : 4 5 ;
-rup >= 1 : 6 7 ;
+@x3 rup 1 x3 >= 1 : @x1_or_x2 @x1_imp_x3 ;
+@not_x3 rup 1 ~x3 >= 1 : @x3_imp_x4 @x3_imp_nx4 ;
+@contradiction rup >= 1 : @x3 @not_x3 ;
 output NONE;
-conclusion UNSAT : 8;
+conclusion UNSAT : @contradiction;
 end pseudo-Boolean proof;
