@@ -20,7 +20,7 @@ pub fn run(session: &mut Option<Session>, args: &str, out: &mut dyn Output) {
             outln!(
                 out,
                 "Loaded {} constraints from {path}",
-                new_session.formula.len()
+                new_session.formula_constraint_count()
             );
             *session = Some(new_session);
         }

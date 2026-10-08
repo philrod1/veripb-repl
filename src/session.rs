@@ -61,17 +61,16 @@ pub(crate) struct FormulaEditSnapshot {
 pub struct Session {
     /// The formula's source path, for display only.
     pub formula_path: String,
-    /// The formula's constraint lines; index `i` is constraint `i + 1` in
-    /// `:formula`/the Formula pane.
+    /// The formula's constraint lines, verbatim (including any leading
+    /// `@label`s). A line may load as two constraints (see
+    /// `checker::parse::formula_line_constraints`); [`Self::formula_first_ids`]
+    /// gives each line's first constraint ID.
     pub formula: Vec<String>,
     /// The formula's `min:`/`max:` objective line, verbatim, if any.
     pub objective: Option<String>,
     /// The formula's `preserved: <var> ...;` line, verbatim, if any.
     pub preserved: Option<String>,
     pub variables: VarNames,
-    /// Always empty: `@label`s are not yet correlated with constraint IDs.
-    pub labels: ahash::AHashMap<String, isize>,
-    pub label_map: ahash::AHashMap<String, isize>,
     /// Every proof line, in order, checked or not. A failed check never
     /// truncates it.
     pub buffer: Vec<String>,
@@ -106,10 +105,18 @@ pub struct Session {
     /// [`Self::insert_line`]/[`Self::delete_line`]; cleared by
     /// [`Self::reset`].
     pub breakpoints: BTreeSet<usize>,
-    /// The database for `(generation, buffer[..checked_len])`, refreshed
-    /// lazily by [`Self::database`]. A `RefCell` so read-only (`&Session`)
-    /// contexts can populate it.
-    database_cache: std::cell::RefCell<Option<(u64, checker::Database)>>,
+    /// The database and label map for `(generation, buffer[..checked_len])`,
+    /// refreshed lazily by [`Self::database`]. A `RefCell` so read-only
+    /// (`&Session`) contexts can populate it.
+    database_cache: std::cell::RefCell<Option<DatabaseCache>>,
+}
+
+/// One refresh of [`Session::database`]: the generation it was computed
+/// for, the database, and every label's constraint ID at that point.
+struct DatabaseCache {
+    generation: u64,
+    database: checker::Database,
+    labels: ahash::AHashMap<String, isize>,
 }
 
 /// What happened when a freshly-typed line was handed to [`Session::append_line`].
@@ -159,8 +166,6 @@ impl Session {
             objective,
             preserved,
             variables,
-            labels: ahash::AHashMap::new(),
-            label_map: ahash::AHashMap::new(),
             buffer: Vec::new(),
             checked_len: 0,
             known_bad: None,
@@ -174,11 +179,72 @@ impl Session {
         })
     }
 
-    /// Returns `label_map` inverted: each constraint ID's labels, sorted.
-    /// Currently always empty (see `labels`).
+    /// Returns the total number of constraints veripb loads from the
+    /// formula (what `f N;` must say).
+    pub fn formula_constraint_count(&self) -> usize {
+        self.formula
+            .iter()
+            .map(|line| checker::parse::formula_line_constraints(line))
+            .sum()
+    }
+
+    /// Returns the first constraint ID of each formula line, in order.
+    pub fn formula_first_ids(&self) -> Vec<usize> {
+        let mut next = 1;
+        self.formula
+            .iter()
+            .map(|line| {
+                let first = next;
+                next += checker::parse::formula_line_constraints(line);
+                first
+            })
+            .collect()
+    }
+
+    /// Returns formula line `idx`'s constraint ID, or ID range for a line
+    /// that loads as two constraints (`"3"`, `"1-2"`).
+    pub fn formula_line_ids(&self, idx: usize) -> String {
+        let first = self.formula_first_ids()[idx];
+        match checker::parse::formula_line_constraints(&self.formula[idx]) {
+            1 => first.to_string(),
+            n => format!("{first}-{}", first + n - 1),
+        }
+    }
+
+    /// Returns the labels defined in the formula (each line's leading
+    /// `@label`s, the i-th naming its i-th constraint).
+    fn formula_labels(&self) -> ahash::AHashMap<String, isize> {
+        let mut labels = ahash::AHashMap::new();
+        for (line, first) in self.formula.iter().zip(self.formula_first_ids()) {
+            for (i, label) in checker::parse::leading_labels(line).into_iter().enumerate() {
+                labels.insert(label.to_string(), (first + i) as isize);
+            }
+        }
+        labels
+    }
+
+    /// Returns every label's constraint ID for the checked prefix: formula
+    /// labels, then labels on checked proof lines (a later definition
+    /// replaces an earlier one). Refreshes with [`Self::database`]; if that
+    /// fails, returns the formula labels only. Labels on `e` lines (which
+    /// name an existing constraint rather than derive one) are not tracked.
+    pub fn label_ids(&self) -> ahash::AHashMap<String, isize> {
+        match self.database() {
+            Ok(_) => self
+                .database_cache
+                .borrow()
+                .as_ref()
+                .map(|cache| cache.labels.clone())
+                .unwrap_or_default(),
+            Err(_) => self.formula_labels(),
+        }
+    }
+
+    /// Returns [`Self::label_ids`] inverted: each constraint ID's labels,
+    /// sorted.
     pub fn labels_by_id(&self) -> ahash::AHashMap<isize, Vec<String>> {
         let mut by_id: ahash::AHashMap<isize, Vec<String>> = ahash::AHashMap::new();
-        for (name, id) in &self.label_map {
+        for (name, id) in &self.label_ids() {
             by_id.entry(*id).or_default().push(name.clone());
         }
         for names in by_id.values_mut() {
@@ -193,7 +259,7 @@ impl Session {
     pub fn preamble_lines(&self) -> [String; PREAMBLE_LINES] {
         [
             "pseudo-Boolean proof version 3.0".to_string(),
-            format!("f {};", self.formula.len()),
+            format!("f {};", self.formula_constraint_count()),
         ]
     }
 
@@ -235,16 +301,38 @@ impl Session {
     pub fn database(&self) -> anyhow::Result<std::cell::Ref<'_, checker::Database>> {
         let fresh = matches!(
             &*self.database_cache.borrow(),
-            Some((cached_gen, _)) if *cached_gen == self.generation
+            Some(cache) if cache.generation == self.generation
         );
         if !fresh {
             let text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
             let formula_file = self.formula_temp_file()?;
-            let database = checker::show_database(formula_file.path(), &text)?;
-            *self.database_cache.borrow_mut() = Some((self.generation, database));
+            // Trace the checked lines too, to learn which IDs labelled lines
+            // derived.
+            let trace_range = (self.checked_len > 0)
+                .then(|| (PREAMBLE_LINES + 1, PREAMBLE_LINES + self.checked_len));
+            let (outcome, database) =
+                checker::check_with_database(formula_file.path(), &text, trace_range)?;
+            let trace = match outcome {
+                CheckOutcome::Accepted { trace } | CheckOutcome::Rejected { trace, .. } => trace,
+            };
+            let ids_by_line = checker::parse::constraint_ids_by_line(&trace);
+            let mut labels = self.formula_labels();
+            for (idx, line) in self.buffer[..self.checked_len].iter().enumerate() {
+                let Some(ids) = ids_by_line.get(&self.display_line(idx)) else {
+                    continue;
+                };
+                for (label, id) in checker::parse::leading_labels(line).into_iter().zip(ids) {
+                    labels.insert(label.to_string(), *id as isize);
+                }
+            }
+            *self.database_cache.borrow_mut() = Some(DatabaseCache {
+                generation: self.generation,
+                database,
+                labels,
+            });
         }
         Ok(std::cell::Ref::map(self.database_cache.borrow(), |cache| {
-            &cache.as_ref().expect("just populated above").1
+            &cache.as_ref().expect("just populated above").database
         }))
     }
 
@@ -503,13 +591,12 @@ impl Session {
     }
 
     /// Clears the buffer, breakpoints, and undo stack, leaving
-    /// `formula`/`variables`/`labels` alone.
+    /// `formula`/`variables` alone.
     pub fn reset(&mut self) -> anyhow::Result<()> {
         self.buffer.clear();
         self.checked_len = 0;
         self.known_bad = None;
         self.last_step_constraint_ids = Vec::new();
-        self.label_map = self.labels.clone();
         self.breakpoints.clear();
         self.generation += 1;
         self.undo_stack.clear();
@@ -567,10 +654,18 @@ impl Session {
         buffer_idx + PREAMBLE_LINES + 1
     }
 
-    /// Converts a 1-based formula constraint number (as in `:show`/the
-    /// Formula pane) to a `formula` index. `None` if out of range.
+    /// Converts a formula constraint ID (as in `:show`/the Formula pane) to
+    /// the index of the `formula` line holding it. `None` if out of range.
     pub(crate) fn formula_index(&self, n: usize) -> Option<usize> {
-        (n >= 1 && n <= self.formula.len()).then(|| n - 1)
+        if n == 0 {
+            return None;
+        }
+        self.formula_first_ids()
+            .iter()
+            .zip(&self.formula)
+            .position(|(first, line)| {
+                (*first..*first + checker::parse::formula_line_constraints(line)).contains(&n)
+            })
     }
 
     /// Captures the current state for [`Self::restore_snapshot`].
@@ -616,20 +711,21 @@ impl Session {
         Ok(())
     }
 
-    /// Replaces formula constraint `n` (1-based) with `new_text`. The new
-    /// formula is validated first; on error `self` is unchanged. On success
-    /// the buffer is cleared and the base buffer (`recoverable_buffer`, else
-    /// `buffer`) is stored in `recoverable_buffer`/`last_formula_edit`; the
-    /// caller reverifies it via `replace_buffer_and_verify`.
+    /// Replaces the formula line holding constraint ID `n` with `new_text`.
+    /// The new formula is validated first; on error `self` is unchanged. On
+    /// success the buffer is cleared and the base buffer
+    /// (`recoverable_buffer`, else `buffer`) is stored in
+    /// `recoverable_buffer`/`last_formula_edit`; the caller reverifies it via
+    /// `replace_buffer_and_verify`.
     ///
-    /// Rejects `=` constraints: OPB splits them in two, changing the
-    /// constraint count.
+    /// Rejects a replacement that loads as a different number of
+    /// constraints than the line it replaces: later constraint IDs would
+    /// shift.
     pub fn replace_formula_constraint(&mut self, n: usize, new_text: &str) -> anyhow::Result<()> {
+        let total = self.formula_constraint_count();
         let idx = self.formula_index(n).ok_or_else(|| {
             anyhow::anyhow!(
-                "constraint {n} is out of range — the formula has {} constraint(s) (1-{}).",
-                self.formula.len(),
-                self.formula.len()
+                "constraint {n} is out of range — the formula has {total} constraint(s) (1-{total})."
             )
         })?;
 
@@ -639,12 +735,15 @@ impl Session {
             new_text.push_str(" ;");
         }
 
-        if is_equality_constraint(&new_text) {
+        let (old_count, new_count) = (
+            checker::parse::formula_line_constraints(&self.formula[idx]),
+            checker::parse::formula_line_constraints(&new_text),
+        );
+        if old_count != new_count {
             anyhow::bail!(
-                "an `=` constraint splits into two (`>=` and `<=`) — editing one formula \
-                 constraint in place can't change how many there are. Use `>=` or `<=` \
-                 instead, or edit the OPB file and :load it if the constraint count needs \
-                 to change."
+                "this line loads as {old_count} constraint(s) and the replacement as \
+                 {new_count}; an edit can't change the count, since later constraint IDs \
+                 would shift. Edit the OPB file and :load it instead."
             );
         }
 
@@ -655,10 +754,7 @@ impl Session {
         // touching `self`.
         let candidate_file =
             write_formula_temp_file(&candidate_formula, &self.objective, &self.preserved)?;
-        let empty_proof = format!(
-            "pseudo-Boolean proof version 3.0\nf {};\n",
-            candidate_formula.len()
-        );
+        let empty_proof = format!("pseudo-Boolean proof version 3.0\nf {total};\n");
         let outcome = checker::check(candidate_file.path(), &empty_proof, None)
             .context("failed to validate the edited formula")?;
         if let CheckOutcome::Rejected { message, .. } = outcome {
@@ -682,7 +778,6 @@ impl Session {
         self.known_bad = None;
         self.last_step_constraint_ids = Vec::new();
         self.variables = candidate_vars;
-        self.label_map = self.labels.clone();
         self.recoverable_buffer = Some(base_buffer.clone());
         self.last_formula_edit = Some(FormulaEditSnapshot {
             n,
@@ -782,15 +877,24 @@ impl Session {
         let (prefix, typed_hints) = checker::parse::split_rup_hints(line);
         let typed_hints = typed_hints.unwrap_or_default();
 
-        let database = self.database()?;
-        let missing_ids = typed_hints
+        let labels = self.label_ids();
+        let mut unknown_labels = Vec::new();
+        let ids: Vec<usize> = typed_hints
             .iter()
             .filter_map(|hint| match hint {
                 checker::RupHint::ConstraintId(id) => Some(*id),
+                checker::RupHint::Label(name) => match labels.get(name) {
+                    Some(id) => Some(*id as usize),
+                    None => {
+                        unknown_labels.push(name.clone());
+                        None
+                    }
+                },
                 checker::RupHint::NegatedPremise => None,
             })
-            .filter(|id| database.get(*id).is_none())
             .collect();
+        let database = self.database()?;
+        let missing_ids = ids.into_iter().filter(|id| database.get(*id).is_none()).collect();
         drop(database);
 
         let mut text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
@@ -805,6 +909,7 @@ impl Session {
             display_line: self.display_line(self.checked_len),
             typed_hints,
             missing_ids,
+            unknown_labels,
             without_hints,
         }))
     }
@@ -827,8 +932,10 @@ pub struct RejectionDiagnosis {
     pub display_line: usize,
     /// The hints typed after the line's `:` (empty if it had none).
     pub typed_hints: Vec<checker::RupHint>,
-    /// Typed `ConstraintId`s not in the live database.
+    /// Typed hint IDs (or labels' IDs) not in the live database.
     pub missing_ids: Vec<usize>,
+    /// Typed `@label` hints that no formula or checked line defines.
+    pub unknown_labels: Vec<String>,
     /// Re-checking the same constraint with no hints: `Ok` with the hints
     /// the checker then needed, or `Err` with its rejection message.
     pub without_hints: Result<Vec<checker::RupHint>, String>,
@@ -895,8 +1002,3 @@ fn write_formula_temp_file(
     Ok(file)
 }
 
-/// Returns whether `line` uses a bare `=` relational operator rather than
-/// `>=`/`<=`.
-fn is_equality_constraint(line: &str) -> bool {
-    !line.contains(">=") && !line.contains("<=") && line.contains('=')
-}

@@ -397,7 +397,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             format!(
                 "Formula: {} ({})",
                 file_name(&session.formula_path),
-                session.formula.len()
+                session.formula_constraint_count()
             ),
             formula_lines(session, app.formula_browse_cursor()),
         ),
@@ -1168,23 +1168,26 @@ fn tokenize_proof_line(line: &str, var_names: &VarNames) -> Vec<Span> {
     spans
 }
 
-/// Formula constraints numbered 1-based (matching checker constraint
-/// IDs), labels first. `cursor` (1-based) marks `:formula` browse mode's
-/// row.
+/// Formula lines, each prefixed by its constraint ID (or ID range, for a
+/// line that loads as two constraints), matching the Database pane. Labels
+/// and variables are coloured by lookup, since formula lines may use
+/// implication syntax. `cursor` (a 1-based line) marks `:formula` browse
+/// mode's row.
 fn formula_lines(session: &Session, cursor: Option<usize>) -> Vec<PanelLine> {
-    let labels_by_id = session.labels_by_id();
-    let num_w = number_width(session.formula.len());
+    let ids: Vec<String> = (0..session.formula.len())
+        .map(|idx| session.formula_line_ids(idx))
+        .collect();
+    let num_w = ids.iter().map(String::len).max().unwrap_or(1);
     let mut lines: Vec<PanelLine> = session
         .formula
         .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let mut spans = label_spans(&labels_by_id, (i + 1) as isize);
+        .zip(&ids)
+        .map(|(c, id)| {
             // `c` carries its trailing `;` (required when re-serialized to
-            // a temp .opb file); `tokenize_constraint` expects none.
+            // a temp .opb file); it isn't shown.
             let text = c.trim_end().strip_suffix(';').unwrap_or(c).trim_end();
-            spans.extend(tokenize_constraint(text));
-            content(format!("{:>num_w$}: ", i + 1), spans, false)
+            let spans = tokenize_proof_line(text, &session.variables);
+            content(format!("{id:>num_w$}: "), spans, false)
         })
         .collect();
     if let Some(cursor) = cursor

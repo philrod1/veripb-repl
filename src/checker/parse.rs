@@ -34,6 +34,8 @@ pub fn split_rup_hints(line: &str) -> (&str, Option<Vec<RupHint>>) {
         .filter_map(|tok| {
             if tok == "~" {
                 Some(RupHint::NegatedPremise)
+            } else if tok.starts_with('@') {
+                Some(RupHint::Label(tok.to_string()))
             } else {
                 tok.parse::<usize>().ok().map(RupHint::ConstraintId)
             }
@@ -42,13 +44,26 @@ pub fn split_rup_hints(line: &str) -> (&str, Option<Vec<RupHint>>) {
     (prefix.trim(), Some(hints))
 }
 
-/// Returns a proof line's rule keyword — its first token, or its second
-/// if the first is an `@label`.
+/// Returns a proof line's rule keyword: its first token after any
+/// leading `@label`s.
 pub fn rule_keyword(line: &str) -> Option<&str> {
-    let mut tokens = line.split_whitespace();
-    match tokens.next()? {
-        t if t.starts_with('@') => tokens.next(),
-        t => Some(t),
+    line.split_whitespace().find(|t| !t.starts_with('@'))
+}
+
+/// Returns the `@label`s at the start of a proof or formula line, in order.
+pub fn leading_labels(line: &str) -> Vec<&str> {
+    line.split_whitespace().take_while(|t| t.starts_with('@')).collect()
+}
+
+/// Returns how many constraints veripb loads for one formula constraint
+/// line: 2 for an equivalence (`<==>`) or an equality (`=`, also behind
+/// `==>`), else 1. (`<==` or `<==>` with `=` is rejected by veripb.)
+pub fn formula_line_constraints(line: &str) -> usize {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    if tokens.contains(&"<==>") || tokens.contains(&"=") {
+        2
+    } else {
+        1
     }
 }
 
@@ -259,6 +274,33 @@ pub fn last_line_constraint_ids(trace: &str) -> Vec<usize> {
         .iter()
         .filter_map(|line| constraint_id_in(line))
         .collect()
+}
+
+/// Returns, for each `line <N>:` marker in a trace, the IDs of the
+/// `ConstraintId` lines that follow it before the next marker: what each
+/// traced proof line derived, by its line number in the traced proof.
+pub fn constraint_ids_by_line(trace: &str) -> std::collections::BTreeMap<usize, Vec<usize>> {
+    let mut by_line = std::collections::BTreeMap::new();
+    let mut current = None;
+    for line in trace.lines() {
+        if let Some(n) = line_marker_number(line) {
+            current = Some(n);
+            by_line.entry(n).or_insert_with(Vec::new);
+        } else if let (Some(n), Some(id)) = (current, constraint_id_in(line)) {
+            by_line.entry(n).or_insert_with(Vec::new).push(id);
+        }
+    }
+    by_line
+}
+
+/// Returns `N` from a `line <N>: ...` trace marker.
+fn line_marker_number(line: &str) -> Option<usize> {
+    let rest = line.trim_start().strip_prefix("line")?.trim_start();
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() || !rest[digits.len()..].starts_with(':') {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// Returns whether `line` is a `line <N>: ...` trace marker.

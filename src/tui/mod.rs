@@ -1065,25 +1065,30 @@ impl App {
                 .push("Error: the formula has no constraints to edit.");
             return;
         }
-        let max_line = session.formula.len();
+        // The browse cursor is a 1-based formula *line*; `n` is a
+        // constraint ID, and a line may hold two.
         let start_line = if args.trim().is_empty() {
-            max_line
+            session.formula.len()
         } else {
-            match edit::parse_start_line(args.trim()) {
+            let n = match edit::parse_start_line(args.trim()) {
                 Ok(n) => n,
                 Err(msg) => {
                     self.scrollback.push(&format!("Error: {msg}"));
                     return;
                 }
+            };
+            match session.formula_index(n) {
+                Some(idx) => idx + 1,
+                None => {
+                    let total = session.formula_constraint_count();
+                    self.scrollback.push(&format!(
+                        "Error: constraint {n} is out of range — the formula has {total} \
+                         constraint(s) (1-{total})."
+                    ));
+                    return;
+                }
             }
         };
-        if start_line < 1 || start_line > max_line {
-            self.scrollback.push(&format!(
-                "Error: constraint {start_line} is out of range — the formula has {max_line} \
-                 constraint(s) (1-{max_line})."
-            ));
-            return;
-        }
 
         self.focus = Pane::Formula;
         self.retarget_zoom(Pane::Formula);
@@ -1892,8 +1897,8 @@ impl App {
         // `session.formula` entries carry a trailing `;`; stripped here —
         // `replace_formula_constraint` re-adds one on commit regardless.
         session
-            .formula_index(browse.cursor)
-            .and_then(|idx| session.formula.get(idx))
+            .formula
+            .get(browse.cursor.saturating_sub(1))
             .map(|c| {
                 c.trim_end()
                     .strip_suffix(';')
@@ -2014,7 +2019,8 @@ impl App {
             // mode-wide entry.
             let undo_before = (session.generation, session.snapshot());
             self.scrollback.push(&format!("opb> {trimmed}"));
-            if let Err(err) = formula::commit(session, cursor, &trimmed, &mut self.scrollback) {
+            let n = session.formula_first_ids()[cursor - 1];
+            if let Err(err) = formula::commit(session, n, &trimmed, &mut self.scrollback) {
                 self.scrollback.push(&format!("Error: {err:#}"));
             }
             if session.generation != undo_before.0 {
@@ -2056,8 +2062,12 @@ impl App {
             }
             self.scroll_formula_to_cursor(line);
             self.refill_formula_browse_prompt();
-        } else {
-            self.start_formula_browse(&line.to_string());
+        } else if let Some(id) = self
+            .session
+            .as_ref()
+            .and_then(|s| s.formula_first_ids().get(line - 1).copied())
+        {
+            self.start_formula_browse(&id.to_string());
         }
     }
 

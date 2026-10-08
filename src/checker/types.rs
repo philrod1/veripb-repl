@@ -21,11 +21,14 @@ impl CheckOutcome {
     }
 }
 
-/// One hint in a `rup` step's minimized hint list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One hint in a `rup` step's hint list.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RupHint {
     /// A specific already-derived constraint.
     ConstraintId(usize),
+    /// A constraint named by label (`@name`), as typed. veripb's own
+    /// elaborated hint lists always use IDs.
+    Label(String),
     /// The rule's own negation.
     NegatedPremise,
 }

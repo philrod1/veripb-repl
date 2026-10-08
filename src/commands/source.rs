@@ -74,7 +74,7 @@ pub(crate) fn parse_derivation<'a>(
                 continue;
             }
             past_preamble = true;
-            if parse_f_check(line) == Some(session.formula.len()) {
+            if parse_f_check(line) == Some(session.formula_constraint_count()) {
                 continue;
             }
         }

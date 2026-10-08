@@ -69,7 +69,7 @@ pub fn startup(
             outln!(
                 out,
                 "Loaded {} constraints from {path}",
-                session.formula.len()
+                session.formula_constraint_count()
             );
             Ok(Some(session))
         }

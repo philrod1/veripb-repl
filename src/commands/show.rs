@@ -58,7 +58,7 @@ fn parse_show_filters(args: &str, session: &Session) -> Result<Vec<ShowFilter>, 
             // via the plain ID filter.
             tok if tok.starts_with('@') => {
                 let id = session
-                    .label_map
+                    .label_ids()
                     .get(tok)
                     .copied()
                     .ok_or_else(|| format!("no label named '{tok}'"))?;
