@@ -91,7 +91,7 @@ fn announce_next(state: &FormulaEditState, session: &Session, out: &mut dyn Outp
     let idx = session
         .formula_index(n)
         .expect("validated when the mode started");
-    outln!(out, "Constraint {n}: {}", session.formula[idx]);
+    outln!(out, "Constraint {}: {}", session.formula_line_ids(idx), session.formula[idx]);
 }
 
 /// `:formula [<n>]` / `:formula <n>-<m>` — parse and start formula-editing
@@ -107,7 +107,7 @@ pub fn start(session: &mut Session, args: &str, out: &mut dyn Output) -> Option<
             outln!(out, "Error: the formula has no constraints to edit.");
             return None;
         }
-        let last = session.formula.len();
+        let last = *session.formula_first_ids().last().expect("checked non-empty");
         (last, last, false)
     } else {
         match edit::parse_range(args.trim()) {
@@ -118,19 +118,25 @@ pub fn start(session: &mut Session, args: &str, out: &mut dyn Output) -> Option<
             }
         }
     };
-    if lo < 1 || hi > session.formula.len() {
+    let total = session.formula_constraint_count();
+    if lo < 1 || hi > total {
         outln!(
             out,
-            "Error: constraint {} is out of range — the formula has {} constraint(s) (1-{}).",
+            "Error: constraint {} is out of range — the formula has {total} constraint(s) \
+             (1-{total}).",
             if lo < 1 { lo } else { hi },
-            session.formula.len(),
-            session.formula.len()
         );
         return None;
     }
 
+    // One queue entry per formula line in the range, as its first ID.
+    let first_ids = session.formula_first_ids();
+    let mut queue: Vec<usize> = (lo..=hi)
+        .filter_map(|n| session.formula_index(n).map(|idx| first_ids[idx]))
+        .collect();
+    queue.dedup();
     let state = FormulaEditState {
-        queue: (lo..=hi).collect(),
+        queue: queue.into(),
         single: !is_range,
     };
     // Formula mode entry doesn't otherwise mutate anything — a constraint
@@ -148,9 +154,10 @@ pub fn start(session: &mut Session, args: &str, out: &mut dyn Output) -> Option<
              unchanged), then :done when finished. :formula cancel undoes the most recent commit."
         );
     } else {
+        let ids = session.formula_line_ids(session.formula_index(lo).expect("validated above"));
         outln!(
             out,
-            "Editing formula constraint {lo} — retype it and submit; the proof reverifies \
+            "Editing formula constraint {ids} — retype it and submit; the proof reverifies \
              automatically. :formula cancel undoes it if needed."
         );
     }
@@ -189,7 +196,7 @@ pub(crate) fn commit(
     let new_text_pretty = session.formula[idx].clone();
     let base_buffer = snapshot.buffer.clone();
 
-    outln!(out, "Constraint {n} updated:");
+    outln!(out, "Constraint {} updated:", session.formula_line_ids(idx));
     outln!(out, "  was: {old_text}");
     outln!(out, "  now: {new_text_pretty}");
 
@@ -311,7 +318,10 @@ pub fn handle(
                 .queue
                 .pop_front()
                 .expect("handle only called while queue is non-empty");
-            outln!(out, "Keeping constraint {n} unchanged.");
+            let ids = session.formula_line_ids(
+                session.formula_index(n).expect("validated when the mode started"),
+            );
+            outln!(out, "Keeping constraint {ids} unchanged.");
             if state.single || state.queue.is_empty() {
                 outln!(out, "Left formula mode.");
                 Ok(FormulaEditFlow::Ended)

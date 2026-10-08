@@ -120,10 +120,14 @@ fn print_diagnosis(session: &Session, diagnosis: &RejectionDiagnosis, out: &mut 
             .iter()
             .map(|hint| match hint {
                 RupHint::ConstraintId(id) => id.to_string(),
+                RupHint::Label(name) => name.clone(),
                 RupHint::NegatedPremise => "~".to_string(),
             })
             .collect();
         outln!(out, "  {TYPED_HINTS} {}", typed.join(" "));
+    }
+    for name in &diagnosis.unknown_labels {
+        outln!(out, "  {name} is not a defined label");
     }
     for id in &diagnosis.missing_ids {
         outln!(
@@ -186,6 +190,7 @@ fn print_hint_list(session: &Session, hints: &[RupHint], indent: &str, out: &mut
             RupHint::NegatedPremise => {
                 outln!(out, "{indent}{NEGATED_PREMISE}");
             }
+            RupHint::Label(name) => outln!(out, "{indent}{name}"),
             RupHint::ConstraintId(id) => {
                 let labels = labels_by_id
                     .get(&(*id as isize))

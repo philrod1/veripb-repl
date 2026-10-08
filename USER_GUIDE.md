@@ -42,8 +42,11 @@ and errors; your first rule is line 3. The columns refresh after every
 accepted line; command output, checker traces, and errors go to the
 Output pane.
 
-Showing constraint labels (`@name`) next to the constraints they name in
-the Formula and Database columns is **Not implemented**.
+Constraint labels (`@name`) are shown ahead of the constraints they name
+in the Formula and Database columns. The Formula column numbers each line
+by its constraint ID, matching the Database column; a line that loads as
+two constraints (an equivalence `<==>` or an equality `=`) shows an ID
+range, e.g. `1-2:`.
 
 **Colouring.** Variable names and `@labels` are highlighted in the three
 columns (one colour each); keywords, operators, and numbers are not.
@@ -148,9 +151,9 @@ when the line starts with `:` (a lone `:` lists all of them), rule
 keywords otherwise. After a complete rule keyword, its arguments complete
 against live constraint IDs and variable names (bare and negated, `~x3`)
 from the session. This is not grammar-aware (e.g. `red` is offered
-constraint IDs in its substitution). Completing `@labels` is **Not
-implemented**. Nothing is offered for arguments before a formula is
-loaded.
+constraint IDs in its substitution). Where constraint IDs are offered,
+their `@labels` are offered too. Nothing is offered for arguments before a
+formula is loaded.
 
 - `:instance` is pre-selected among `:`-command candidates. With no
   session, `:instance`, `:load`, `:help`, `:theme`, `:quit` are listed
@@ -300,7 +303,7 @@ candidates.
 | `:list` | print every buffer line, numbered, with `[unchecked]`/`[breakpoint]` tags | **Implemented** |
 | `:load <file>` | load an OPB formula, starting a new session | **Implemented** (OPB only) |
 | `:instance <file.opb\|file.pbp\|stem>` | `:load` a formula then `:source` its matching proof | **Implemented** |
-| `:show [filters]` | list database constraints, filtered by variable (exact or `*`-glob), ID/range, or core/derived | **Implemented**; label filters **Not implemented** |
+| `:show [filters]` | list database constraints, filtered by variable or label (exact or `*`-glob), ID/range, or core/derived | **Implemented** |
 | `:objective` | show the current objective and best known values | **Implemented** |
 | `:preserved` | show the current preserved variable set | **Implemented** |
 | `:goals` | inside a subproof, list remaining proof goals | **Not implemented** |
@@ -355,12 +358,17 @@ formulas are not supported.
     any number of times); no match gives an empty result, not an error
   - an ID (`5`) or inclusive range (`5-12`)
   - `core` or `derived`
-  - a label (`@sum`) or label glob (`@i[vertex0]*`) — **Not
-    implemented**: `:show @sum` always errors "no label named '@sum'",
-    and a label glob matches nothing
-  - examples: `:show x3 core`; `:show i[vertex0]*`
+  - a label (`@sum`) — the constraint it names; an undefined label is an
+    error
+  - a label glob (`@amo*`) — constraints with a label matching the
+    pattern
+  - examples: `:show x3 core`; `:show i[vertex0]*`; `:show @amo*`
 
-  Displaying labels ahead of constraints is **Not implemented**.
+  Each constraint is shown with its labels ahead of it. Labels come from
+  the formula (each line's leading `@label`s, one per constraint) and from
+  checked proof lines (`@name pol ...`); a later definition of a label
+  replaces an earlier one, as in veripb. Labels set by an `e` rule
+  (`@name e ...`, which names an existing constraint) are not shown.
 
 - **`:list`** — prints the two preamble lines (tagged `[preamble]`;
   not editable or undoable) and every buffer line, numbered continuously
@@ -622,12 +630,14 @@ formulas are not supported.
 
 ### Editing the formula
 
-- **`:formula [<n>]` / `:formula <n>-<m>`** — retypes existing formula
-  constraints in place (prompt `opb>`); with no argument, the last
-  constraint. The constraint count cannot change, so constraint IDs stay
-  the same. An `=` constraint is rejected (it counts as two constraints);
-  use `>=` or `<=`, or edit the OPB file and `:load` it. A trailing `;` is
-  added if missing.
+- **`:formula [<n>]` / `:formula <n>-<m>`** — retypes formula lines in
+  place (prompt `opb>`): the line holding constraint ID `n`, the lines
+  holding IDs `n` to `m`, or with no argument the last line. A line that
+  loads as two constraints (`<==>`, `=`) is edited as a whole. A
+  replacement must load as the same number of constraints as the line it
+  replaces, so constraint IDs stay the same; to change the count, edit the
+  OPB file and `:load` it. Retype any `@label`s you want to keep. A
+  trailing `;` is added if missing.
 
   Each committed replacement reverifies the whole buffer against the new
   formula. Lines that still check stay checked; the first failing line
@@ -712,7 +722,7 @@ formulas are not supported.
 - **Completion** covers command and rule names, file paths for
   `:load`/`:source`/`:save`/`:instance`, `:help` topics, `:theme` names,
   and rule arguments (constraint IDs and variables, not grammar-aware).
-  Not completed: `@labels`, paths containing spaces, and rule arguments
+  Not completed: paths containing spaces, and rule arguments
   before the rule keyword is unambiguous.
 - **Mode-specific completion (TUI only).** In a `:formula` browse, `:`
   completion offers only `:formula cancel` and `:done`; in `:debug`, only
@@ -727,15 +737,15 @@ formulas are not supported.
 - **Prompts don't show subproof depth.** The plain prompt shows only the
   mode (`pbp>`, `edit>`, `opb>`, `debug>`); the TUI shows `pbp>`/`opb>`/
   `debug>` or the Vim status (`-- NORMAL --`/`-- INSERT --`).
+- **Labels set by `e`** (`@name e <constraint> ;`) are not shown or
+  usable in `:show`: the checker's trace doesn't report which constraint
+  an `e` rule matched. Proof lines may still use them.
 - **No subproof-specific support.** Multi-line constructs (e.g. a `red ...
   : subproof` body) are accepted line by line, but there is no depth
   tracking or goal listing.
 
 ## Not yet implemented
 
-- `@label` support: showing labels in `:show` and the Formula/Database
-  panes, `:show @label` filters, and label completion. (Labels in typed
-  proof lines are coloured.)
 - The full propagation trail of a `rup` step (every intermediate
   assignment); `:explain` shows only the needed hints.
 - `:goals` — list remaining proof goals inside a subproof.
