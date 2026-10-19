@@ -8,6 +8,7 @@ VERIPB_REPL_VERIPB_BIN set):
     python3 demos/tools/tuishot.py demos/tools/<demo>.json [--text]
 
 --text also writes each snapshot's screen text to a .txt file next to it.
+TUISHOT_REPL_BIN, if set, replaces the script's veripb-repl path.
 
 Script format:
     {"cmd": ["target/debug/veripb-repl", "<args>"],   # relative to repo root
@@ -245,7 +246,10 @@ def main():
     workdir = tempfile.mkdtemp(prefix="tuishot-")
     for path in spec.get("copy", []):
         shutil.copytree(os.path.join(repo, path), os.path.join(workdir, path))
-    cmd = [os.path.join(repo, spec["cmd"][0])] + spec["cmd"][1:]
+    # TUISHOT_REPL_BIN overrides the script's binary path (e.g. a build in
+    # another CARGO_TARGET_DIR).
+    binary = os.environ.get("TUISHOT_REPL_BIN") or os.path.join(repo, spec["cmd"][0])
+    cmd = [binary] + spec["cmd"][1:]
     pid, fd = pty.fork()
     if pid == 0:
         os.chdir(workdir)

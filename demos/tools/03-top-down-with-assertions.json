@@ -10,15 +10,15 @@
  "rows": 32,
  "steps": [
   {
-   "keys": "a 1 ~p11 1 ~p21 1 ~p31 >= 2 ;\r",
+   "keys": "@h1_amo a 1 ~p11 1 ~p21 1 ~p31 >= 2 ;\r",
    "settle": 1.2
   },
   {
-   "keys": "a 1 ~p12 1 ~p22 1 ~p32 >= 2 ;\r",
+   "keys": "@h2_amo a 1 ~p12 1 ~p22 1 ~p32 >= 2 ;\r",
    "settle": 1.2
   },
   {
-   "keys": "pol 1 2 + 3 + 10 + 11 + ;\r",
+   "keys": "@contradiction pol @p1_placed @p2_placed + @p3_placed + @h1_amo + @h2_amo + ;\r",
    "settle": 1.2
   },
   {
@@ -35,7 +35,7 @@
    "snap": "demos/img/03-deassert.svg"
   },
   {
-   "keys": "pol 4 5 + 6 + 2 d ;\r"
+   "keys": "@h1_amo pol @h1_not_12 @h1_not_13 + @h1_not_23 + 2 d ;\r"
   },
   {
    "keys": "\u001b"
@@ -57,7 +57,7 @@
    "keys": ":deassert\r"
   },
   {
-   "keys": "pol 7 8 + 9 + 2 d ;\r"
+   "keys": "@h2_amo pol @h2_not_12 @h2_not_13 + @h2_not_23 + 2 d ;\r"
   },
   {
    "keys": "\u001b"

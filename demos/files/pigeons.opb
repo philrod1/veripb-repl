@@ -1,14 +1,14 @@
 * #variable= 6 #constraint= 9
 * pigeon i in hole j: p<i><j>
 * every pigeon is in a hole
-1 p11 1 p12 >= 1 ;
-1 p21 1 p22 >= 1 ;
-1 p31 1 p32 >= 1 ;
+@p1_placed 1 p11 1 p12 >= 1 ;
+@p2_placed 1 p21 1 p22 >= 1 ;
+@p3_placed 1 p31 1 p32 >= 1 ;
 * no two pigeons share hole 1
-1 ~p11 1 ~p21 >= 1 ;
-1 ~p11 1 ~p31 >= 1 ;
-1 ~p21 1 ~p31 >= 1 ;
+@h1_not_12 1 ~p11 1 ~p21 >= 1 ;
+@h1_not_13 1 ~p11 1 ~p31 >= 1 ;
+@h1_not_23 1 ~p21 1 ~p31 >= 1 ;
 * no two pigeons share hole 2
-1 ~p12 1 ~p22 >= 1 ;
-1 ~p12 1 ~p32 >= 1 ;
-1 ~p22 1 ~p32 >= 1 ;
+@h2_not_12 1 ~p12 1 ~p22 >= 1 ;
+@h2_not_13 1 ~p12 1 ~p32 >= 1 ;
+@h2_not_23 1 ~p22 1 ~p32 >= 1 ;

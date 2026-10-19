@@ -12,28 +12,31 @@ the file by hand and re-running `veripb` from the command line.
 ## The problem
 
 `chain.opb` is unsatisfiable: `x1 ∨ x2`, both `x1` and `x2` imply `x3`,
-and `x3` implies both `x4` and `¬x4`.
+and `x3` implies both `x4` and `¬x4`. Each constraint has a label saying
+what it means:
 
 ```
 * #variable= 4 #constraint= 5
-1 x1 1 x2 >= 1 ;
-1 ~x1 1 x3 >= 1 ;
-1 ~x2 1 x3 >= 1 ;
-1 ~x3 1 x4 >= 1 ;
-1 ~x3 1 ~x4 >= 1 ;
+@x1_or_x2   1 x1 1 x2 >= 1 ;
+@x1_imp_x3  1 ~x1 1 x3 >= 1 ;
+@x2_imp_x3  1 ~x2 1 x3 >= 1 ;
+@x3_imp_x4  1 ~x3 1 x4 >= 1 ;
+@x3_imp_nx4 1 ~x3 1 ~x4 >= 1 ;
 ```
 
-The proof derives `x3`, then `¬x3`, then the contradiction. Its first
-`rup` step lists hints `1 2`, but it also needs constraint 3:
+The proof derives `x3`, then `¬x3`, then the contradiction, labelling
+each step and referring to constraints only by label. Its first `rup`
+step lists hints `@x1_or_x2 @x1_imp_x3`, but `x2` might be the true one,
+so it also needs `@x2_imp_x3`:
 
 ```
 pseudo-Boolean proof version 3.0
 f 5;
-rup 1 x3 >= 1 : 1 2 ;
-rup 1 ~x3 >= 1 : 4 5 ;
-rup >= 1 : 6 7 ;
+@x3 rup 1 x3 >= 1 : @x1_or_x2 @x1_imp_x3 ;
+@not_x3 rup 1 ~x3 >= 1 : @x3_imp_x4 @x3_imp_nx4 ;
+@contradiction rup >= 1 : @x3 @not_x3 ;
 output NONE;
-conclusion UNSAT : 8;
+conclusion UNSAT : @contradiction;
 end pseudo-Boolean proof;
 ```
 
@@ -45,7 +48,8 @@ Running `veripb` directly reports only that line 3 is not implied by RUP.
 cargo run -- demos/files/chain.opb
 ```
 
-The Formula and Database panes show the five constraints with their IDs.
+The Formula and Database panes show the five constraints with their IDs
+and labels.
 At the `pbp>` prompt:
 
 ```
@@ -77,10 +81,10 @@ buffer, unchecked.
 With no argument, `:explain` targets the rejected line. For a `rup` step
 it re-checks the same constraint with the hint list removed. Here that
 succeeds, so the constraint is RUP-implied and the hint list is wrong:
-the checker's minimal set of needed hints includes constraint 3, which
-the proof left out. If a typed hint ID didn't exist, `:explain` would
-say so; if the constraint failed even without hints, it would say the
-constraint isn't RUP-implied at all.
+the checker's minimal set of needed hints includes `@x2_imp_x3`, which
+the proof left out. If a typed hint named an undefined label or a
+deleted constraint, `:explain` would say so; if the constraint failed
+even without hints, it would say the constraint isn't RUP-implied at all.
 
 The screenshot below has the Output pane enlarged with its `[▭]` button.
 
@@ -93,7 +97,8 @@ The screenshot below has the Output pane enlarged with its `[▭]` button.
 ```
 
 This opens Vim mode on line 3. Move to the `;` (`l` or →), press `i`, and
-type `3 `. Press Esc to commit the line, and Esc again to leave Vim mode.
+type `@x2_imp_x3 `. Press Esc to commit the line, and Esc again to leave
+Vim mode. The Proof pane scrolls sideways to follow the cursor.
 
 ![Vim Insert mode on line 3](img/01-edit.svg)
 
@@ -106,7 +111,8 @@ type `3 `. Press Esc to commit the line, and Esc again to leave Vim mode.
 ```
 
 `:verify` checks from line 3 to the end; the Database pane gains
-constraints 6–8. `:check` tries the possible conclusions against the
+constraints 6–8, shown with their labels `@x3`, `@not_x3` and
+`@contradiction`. `:check` tries the possible conclusions against the
 checked lines without closing the proof and reports
 `s VERIFIED UNSATISFIABLE`. `:save` writes a complete proof with that
 conclusion:
@@ -118,9 +124,9 @@ conclusion:
 ```
 pseudo-Boolean proof version 3.0
 f 5;
-rup 1 x3 >= 1 : 1 2 3 ;
-rup 1 ~x3 >= 1 : 4 5 ;
-rup >= 1 : 6 7 ;
+@x3 rup 1 x3 >= 1 : @x1_or_x2 @x1_imp_x3 @x2_imp_x3 ;
+@not_x3 rup 1 ~x3 >= 1 : @x3_imp_x4 @x3_imp_nx4 ;
+@contradiction rup >= 1 : @x3 @not_x3 ;
 output NONE;
 conclusion UNSAT;
 end pseudo-Boolean proof;

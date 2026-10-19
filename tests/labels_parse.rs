@@ -72,3 +72,50 @@ proofgoal #1: [] |- 1 ~x1 >= 0
     assert_eq!(by_line.get(&5), Some(&vec![6]));
     assert_eq!(by_line.get(&1), Some(&vec![]));
 }
+
+#[test]
+fn pol_table_shows_operands_as_typed() {
+    use veripb_repl::checker::parse::pol_table_with_typed_operands;
+    let trace = "\
+Running VeriPB version 3.0.2
+line    5: @at_most_one pol @sum_all 2 d ;
+    depth  operand  top of stack
+    1      6        3 ~x1 1 ~x2 2 ~x3 >= 3
+    2      2        2
+    1      d        2 ~x1 1 ~x2 1 ~x3 >= 2
+  ConstraintId 7: 2 ~x1 1 ~x2 1 ~x3 >= 2
+";
+    let shown = pol_table_with_typed_operands(trace, "@at_most_one pol @sum_all 2 d ;");
+    assert_eq!(
+        shown,
+        "\
+Running VeriPB version 3.0.2
+line    5: @at_most_one pol @sum_all 2 d ;
+    depth  operand   top of stack
+    1      @sum_all  3 ~x1 1 ~x2 2 ~x3 >= 3
+    2      2         2
+    1      d         2 ~x1 1 ~x2 1 ~x3 >= 2
+  ConstraintId 7: 2 ~x1 1 ~x2 1 ~x3 >= 2
+"
+    );
+    // A token count that doesn't match the rows leaves the trace alone.
+    assert_eq!(pol_table_with_typed_operands(trace, "pol 6 ;"), trace);
+}
+
+#[test]
+fn rejection_reasons_name_labelled_ids() {
+    use veripb_repl::checker::parse::annotate_constraint_ids;
+    let mut labels = ahash::AHashMap::new();
+    labels.insert(3, vec!["@no_34".to_string()]);
+    assert_eq!(
+        annotate_constraint_ids(
+            "The given assignment falsifies the constraint with ID 3.",
+            &labels
+        ),
+        "The given assignment falsifies the constraint with ID 3 (@no_34)."
+    );
+    assert_eq!(
+        annotate_constraint_ids("constraint with ID 8 is not contradicting", &labels),
+        "constraint with ID 8 is not contradicting"
+    );
+}

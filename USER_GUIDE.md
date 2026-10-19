@@ -31,6 +31,10 @@ in a `.pbp` file (including the trailing `;`). `:quit` or EOF (Ctrl-D)
 exits. Only `:instance`, `:load`, `:help`, `:theme`, and `:quit` work
 without a formula; every other command reports "No formula loaded".
 
+A rejected line shows the checker's reason. Where the reason refers to a
+constraint by ID, the REPL adds the constraint's labels, e.g. "falsifies
+the constraint with ID 3 (@no_34)".
+
 ### The TUI (default) and `--plain`
 
 By default the REPL opens a full-terminal interface: three columns —
@@ -408,8 +412,8 @@ formulas are not supported.
   unchecked line, or a line past the end is an error.
 
   For a checked line:
-  - `pol`: the step-by-step table (each operator applied and the running
-    constraint).
+  - `pol`: the step-by-step table (each operand or operator, as written
+    in the line, so labels appear as labels, and the running constraint).
   - `red`: the substitution witness and every proof goal with how it was
     proved.
   - `rup`: the `ConstraintId N: ...` line, then `Line n needed:` and the

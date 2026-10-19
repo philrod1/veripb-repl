@@ -1,0 +1,7 @@
+* #variable= 5 #constraint= 3
+* maximum clique: maximise x1 + ... + x5 (xi: vertex i is in the clique)
+min: -1 x1 -1 x2 -1 x3 -1 x4 -1 x5 ;
+* non-edges: a clique can't contain both ends
+@no_15 1 ~x1 1 ~x5 >= 1 ;
+@no_25 1 ~x2 1 ~x5 >= 1 ;
+@no_34 1 ~x3 1 ~x4 >= 1 ;
