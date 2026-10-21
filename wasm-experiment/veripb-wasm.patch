@@ -1,0 +1,182 @@
+diff -ruN a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -46,7 +46,6 @@
+ git-version = "0.3.9"
+ itertools = "0.15.0"
+ log = "0.4"
+-mimalloc = "=0.1.48"
+ thiserror = "2.0.20"
+ 
+ [dependencies.veripb-checker]
+@@ -58,6 +57,7 @@
+ path = "veripb-formula"
+ 
+ [dependencies.veripb-parser]
++default-features = false
+ version = "0.1.2"
+ path = "veripb-parser"
+ 
+@@ -108,3 +108,10 @@
+ 
+ [profile.bench]
+ debug = true
++
++[target.'cfg(not(target_family = "wasm"))'.dependencies]
++mimalloc = "=0.1.48"
++
++[features]
++default = ["native-compression"]
++native-compression = ["veripb-parser/native-compression"]
+diff -ruN a/src/bin/main.rs b/src/bin/main.rs
+--- a/src/bin/main.rs
++++ b/src/bin/main.rs
+@@ -3,12 +3,14 @@
+ use colored::Colorize;
+ use git_version::git_version;
+ use log::Level;
++#[cfg(not(target_family = "wasm"))]
+ use mimalloc::MiMalloc;
+ use std::io::Write;
+ 
+ use veripb::{args::Args, run_checker};
+ 
+ /// Use [mimalloc](https://github.com/microsoft/mimalloc) to improve allocation performance.
++#[cfg(not(target_family = "wasm"))]
+ #[global_allocator]
+ static GLOBAL: MiMalloc = MiMalloc;
+ 
+diff -ruN a/veripb-checker/Cargo.toml b/veripb-checker/Cargo.toml
+--- a/veripb-checker/Cargo.toml
++++ b/veripb-checker/Cargo.toml
+@@ -38,6 +38,7 @@
+ path = "../veripb-rules"
+ 
+ [dependencies.veripb-parser]
++default-features = false
+ version = "0.1.2"
+ path = "../veripb-parser"
+ 
+diff -ruN a/veripb-parser/Cargo.toml b/veripb-parser/Cargo.toml
+--- a/veripb-parser/Cargo.toml
++++ b/veripb-parser/Cargo.toml
+@@ -22,8 +22,8 @@
+ num-traits = "0.2.19"
+ spire_enum = "1.0.0"
+ thiserror = "2.0.20"
+-zstd = "0.13"
+-xz2 = "0.1.7"
++zstd = { version = "0.13", optional = true }
++xz2 = { version = "0.1.7", optional = true }
+ flate2 = "1.1.9"
+ 
+ [dependencies.veripb-formula]
+@@ -52,3 +52,7 @@
+ 
+ [[example]]
+ name = "wcnf_stats"
++
++[features]
++default = ["native-compression"]
++native-compression = ["dep:zstd", "dep:xz2"]
+diff -ruN a/veripb-parser/src/io.rs b/veripb-parser/src/io.rs
+--- a/veripb-parser/src/io.rs
++++ b/veripb-parser/src/io.rs
+@@ -39,8 +39,10 @@
+ #[delegated_enum]
+ pub enum MaybeCompressed<R: Read> {
+     Plain(BufReader<R>),
++    #[cfg(feature = "native-compression")]
+     Zstd(BufReader<zstd::stream::read::Decoder<'static, BufReader<R>>>),
+     Gzip(BufReader<flate2::read::GzDecoder<BufReader<R>>>),
++    #[cfg(feature = "native-compression")]
+     Xz(BufReader<xz2::read::XzDecoder<BufReader<R>>>),
+ }
+ 
+@@ -64,8 +66,10 @@
+     pub fn encoding(&self) -> Encoding {
+         match self {
+             Self::Plain(_) => Encoding::Plain,
++            #[cfg(feature = "native-compression")]
+             Self::Zstd(_) => Encoding::Zstd,
+             Self::Gzip(_) => Encoding::Gzip,
++            #[cfg(feature = "native-compression")]
+             Self::Xz(_) => Encoding::Xz,
+         }
+     }
+@@ -85,6 +89,13 @@
+                 Some(file_size),
+             ))
+         }
++        #[cfg(not(feature = "native-compression"))]
++        Encoding::Zstd | Encoding::Xz => Err(io::Error::new(
++            io::ErrorKind::Unsupported,
++            "zstd and xz input require the native-compression feature",
++        )
++        .into()),
++        #[cfg(feature = "native-compression")]
+         Encoding::Zstd => {
+             let decoder = zstd::stream::read::Decoder::new(file)?;
+             Ok((MaybeCompressed::Zstd(BufReader::new(decoder)), None))
+@@ -93,6 +104,7 @@
+             let decoder = flate2::read::GzDecoder::new(BufReader::new(file));
+             Ok((MaybeCompressed::Gzip(BufReader::new(decoder)), None))
+         }
++        #[cfg(feature = "native-compression")]
+         Encoding::Xz => {
+             let decoder = xz2::read::XzDecoder::new(BufReader::new(file));
+             Ok((MaybeCompressed::Xz(BufReader::new(decoder)), None))
+diff -ruN a/veripb-parser/src/pbp_parser/parser.rs b/veripb-parser/src/pbp_parser/parser.rs
+--- a/veripb-parser/src/pbp_parser/parser.rs
++++ b/veripb-parser/src/pbp_parser/parser.rs
+@@ -57,12 +57,14 @@
+         MaybeCompressed::Plain(r) => {
+             Parser::new(file_size, r, processor, formula_labels, args).parse()
+         }
++        #[cfg(feature = "native-compression")]
+         MaybeCompressed::Zstd(r) => {
+             Parser::new(file_size, r, processor, formula_labels, args).parse()
+         }
+         MaybeCompressed::Gzip(r) => {
+             Parser::new(file_size, r, processor, formula_labels, args).parse()
+         }
++        #[cfg(feature = "native-compression")]
+         MaybeCompressed::Xz(r) => {
+             Parser::new(file_size, r, processor, formula_labels, args).parse()
+         }
+@@ -2753,7 +2755,7 @@
+                     None
+                 }
+                 Token::Integer64(Sign::NoSign, id) => {
+-                    Some(PolToken::NonNegativeIntegerOrID(id as isize))
++                    Some(PolToken::NonNegativeIntegerOrID(id))
+                 }
+                 token if self.is_constraint_id(&token)? => {
+                     Some(PolToken::ConstraintId(self.constraint_id(token)?))
+@@ -2841,10 +2843,12 @@
+                 {
+                     return Err(self.pol_parse_error(token, stack_size, operand).into());
+                 }
+-                (_, Some(PolToken::ConstraintId(id)))
+-                | (_, Some(PolToken::NonNegativeIntegerOrID(id))) => {
++                (_, Some(PolToken::ConstraintId(id))) => {
+                     instructions.push(Instruction::ConstraintId(id))
+                 }
++                (_, Some(PolToken::NonNegativeIntegerOrID(id))) => {
++                    instructions.push(Instruction::ConstraintId(id as isize))
++                }
+                 (_, Some(PolToken::Literal(literal))) => {
+                     instructions.push(Instruction::LiteralAxiom(literal))
+                 }
+diff -ruN a/veripb-parser/src/pbp_parser/utils.rs b/veripb-parser/src/pbp_parser/utils.rs
+--- a/veripb-parser/src/pbp_parser/utils.rs
++++ b/veripb-parser/src/pbp_parser/utils.rs
+@@ -37,7 +37,7 @@
+ #[derive(Debug, PartialEq)]
+ pub enum PolToken {
+     ConstraintId(isize),
+-    NonNegativeIntegerOrID(isize),
++    NonNegativeIntegerOrID(i64),
+     PositiveInteger(BigInt),
+     Literal(Lit),
+ }
