@@ -163,8 +163,9 @@ enum VimSubMode {
 /// terminal's real cursor renders directly in the pane (see
 /// `draw::draw`'s tail) instead of mirroring the current line in the
 /// bottom prompt. Nothing touches the session at all in `Normal` mode —
-/// only `x`/`dd` (immediate), splitting a line in `Insert` (`Enter`), and
-/// committing out of `Insert` (`Esc`) ever call into `Session::set_line`,
+/// only `x`/`dd` (immediate), splitting a line in `Insert` (`Enter`),
+/// joining lines in `Insert` (Backspace at the start, Delete at the end),
+/// and committing out of `Insert` (`Esc`) ever call into `Session::set_line`,
 /// `insert_line`, or `delete_line`; each edit is recorded as one undoable
 /// action, following the same per-commit pattern as `formula_browse_apply`.
 struct VimState {
@@ -1538,6 +1539,66 @@ impl App {
         self.scroll_proof_to_cursor(next_line);
     }
 
+    /// Backspace at column 0 (`backward`) or Delete at the end of the line
+    /// in `Insert` mode: join the current line onto the previous one, or
+    /// the next line onto the current one, using the editor's text for the
+    /// current line. The cursor lands at the join and `Insert` continues on
+    /// the joined line. The two buffer mutations form one undoable action.
+    /// Does nothing on the first proof line (Backspace) or the last
+    /// (Delete).
+    fn vim_insert_join(&mut self, backward: bool) {
+        let Some(vim) = &self.vim else {
+            return;
+        };
+        let line = vim.line;
+        let text = self.editor.text();
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let Some(idx) = session.buffer_index(line) else {
+            return;
+        };
+        let upper = if backward {
+            let Some(upper) = idx.checked_sub(1) else {
+                return;
+            };
+            upper
+        } else {
+            if idx + 1 >= session.buffer.len() {
+                return;
+            }
+            idx
+        };
+        let (upper_text, lower_text) = if backward {
+            (session.buffer[upper].clone(), text)
+        } else {
+            (text, session.buffer[idx + 1].clone())
+        };
+        let join_col = upper_text.chars().count();
+        let merged = format!("{upper_text}{lower_text}");
+
+        let undo_before = (session.generation, session.snapshot());
+        let result = session
+            .set_line(upper, &merged)
+            .and_then(|()| session.delete_line(upper + 1));
+        if session.generation != undo_before.0 {
+            session.push_undo(undo_before.1);
+        }
+        if let Err(err) = result {
+            self.scrollback.push(&format!("Error: {err:#}"));
+            return;
+        }
+
+        let joined_line = session.display_line(upper);
+        if let Some(vim) = &mut self.vim {
+            vim.line = joined_line;
+            vim.col = join_col;
+        }
+        self.editor.set_text(&merged);
+        self.editor.set_cursor(join_col);
+        self.scroll_proof_to_cursor(joined_line);
+    }
+
     /// Move the Insert cursor to another proof line, committing the
     /// current line only when its text changed. The destination column is
     /// clamped to that line's length, matching a text editor's vertical
@@ -2318,10 +2379,20 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 match key.code {
                     // Vim `Insert` sub-mode: Esc commits and returns to
-                    // `Normal`; Enter opens the next proof line; arrows
+                    // `Normal`; Enter opens the next proof line; Backspace
+                    // at the start / Delete at the end joins lines; arrows
                     // navigate the proof buffer instead of prompt history.
                     KeyCode::Esc if app.vim_inserting() => app.vim_commit_insert(),
                     KeyCode::Enter if app.vim_inserting() => app.vim_insert_newline(),
+                    KeyCode::Backspace if app.vim_inserting() && app.editor.cursor() == 0 => {
+                        app.vim_insert_join(true);
+                    }
+                    KeyCode::Delete
+                        if app.vim_inserting()
+                            && app.editor.cursor() == app.editor.text().chars().count() =>
+                    {
+                        app.vim_insert_join(false);
+                    }
                     KeyCode::Up if app.vim_inserting() => app.vim_insert_move_vertical(true),
                     KeyCode::Down if app.vim_inserting() => app.vim_insert_move_vertical(false),
                     KeyCode::Left if app.vim_inserting() && app.editor.cursor() == 0 => {

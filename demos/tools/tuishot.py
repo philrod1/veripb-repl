@@ -16,12 +16,17 @@ Script format:
      "cols": 110, "rows": 40,
      "steps": [{"keys": "..."}, {"wait": 0.5}, {"snap": "demos/img/x.svg"},
                {"click": ["─ Output", "▭"]}]}
-Keys use JSON escapes: "\\r" Enter, "\\u001b" Esc. A "keys" step waits
+Keys use JSON escapes: "\\r" Enter, "\\u001b" Esc, "\\u007f" Backspace,
+"\\u001b[3~" Delete, "\\u001b[F" End. A "keys" step waits
 until output has been idle for "settle" seconds (default 0.8). A "click"
 step left-clicks the first occurrence of its second string on the first
 screen row containing its first string (e.g. a pane's zoom button).
 """
 import codecs, fcntl, html, json, os, pty, re, select, shutil, struct, sys, tempfile, termios, time
+
+# One key per write: a CSI sequence (e.g. Delete, End) whole, so the TUI
+# doesn't read its leading Esc as the Esc key; anything else one character.
+KEY_RE = re.compile(r"\x1b\[[0-9;]*[@-~]|.", re.S)
 
 # Box-drawing characters drawn as SVG lines rather than font glyphs (many
 # fonts lack some of them): arms out of the cell centre, and stroke weight.
@@ -260,8 +265,8 @@ def main():
     pump(fd, screen, 1.5)
     for step in spec["steps"]:
         if "keys" in step:
-            for ch in step["keys"]:
-                os.write(fd, ch.encode())
+            for key in KEY_RE.findall(step["keys"]):
+                os.write(fd, key.encode())
                 time.sleep(step.get("delay", 0.01))
             pump(fd, screen, step.get("settle", 0.8))
         elif "click" in step:
