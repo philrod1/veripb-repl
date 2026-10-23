@@ -1,8 +1,0 @@
-[package]
-name = "probe"
-version = "0.0.0"
-edition = "2024"
-[dependencies]
-malachite-bigint = "0.10.0"
-num-traits = "0.2"
-[workspace]
