@@ -1,0 +1,55 @@
+{
+ "cmd": [
+  "target/debug/veripb-repl",
+  "demos/files/chain.opb"
+ ],
+ "copy": [
+  "demos/files"
+ ],
+ "cols": 120,
+ "rows": 32,
+ "steps": [
+  {
+   "keys": ":source demos/files/chain.pbp\r"
+  },
+  {
+   "keys": ":edit 3\r"
+  },
+  {
+   "keys": "llllia\r"
+  },
+  {
+   "snap": "target/tuishot/vim-insert-join-1-split.svg"
+  },
+  {
+   "keys": "\u007f"
+  },
+  {
+   "snap": "target/tuishot/vim-insert-join-2-backspace.svg"
+  },
+  {
+   "keys": "\u001b[F\u001b[3~"
+  },
+  {
+   "snap": "target/tuishot/vim-insert-join-3-delete.svg"
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "keys": ":undo\r"
+  },
+  {
+   "snap": "target/tuishot/vim-insert-join-4-undo-delete.svg"
+  },
+  {
+   "keys": ":undo\r"
+  },
+  {
+   "snap": "target/tuishot/vim-insert-join-5-undo-backspace.svg"
+  }
+ ]
+}
