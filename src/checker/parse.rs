@@ -148,8 +148,9 @@ const RAN_OUT_OF_INPUT_MARKER: &str = "found end of file (EOF)";
 /// wrapper).
 ///
 /// On rejection the line comes from `<proof path>:<line>` (as in `Checking
-/// error at ...`/`Verification error at ...`), else from `line <N>`. Errors
-/// with the full raw output if neither is found.
+/// error at ...`/`Verification error at ...`), else from `line <N>`, searched
+/// in stderr then stdout, ignoring trace markers. Errors with the full raw
+/// output if neither is found.
 pub fn check_outcome(raw: &RawInvocation) -> anyhow::Result<CheckOutcome> {
     if raw.success {
         return Ok(CheckOutcome::Accepted {
@@ -170,7 +171,8 @@ pub fn check_outcome(raw: &RawInvocation) -> anyhow::Result<CheckOutcome> {
     }
 
     let line = find_path_anchored_line(&combined, &raw.proof_file_path)
-        .or_else(|| find_line_number(&combined));
+        .or_else(|| find_line_number(&raw.stderr))
+        .or_else(|| find_line_number(&raw.stdout));
 
     match line {
         Some(line) => Ok(CheckOutcome::Rejected {
@@ -252,12 +254,20 @@ fn find_path_anchored_line(text: &str, proof_file_path: &Path) -> Option<usize> 
     digits.parse().ok()
 }
 
-/// Returns the number after the first `line ` in `text` (syntax errors that
-/// omit the path).
+/// Returns the number after the first `line ` followed by a digit in
+/// `text` (syntax errors that omit the path), skipping `line <N>:` trace
+/// markers.
 fn find_line_number(text: &str) -> Option<usize> {
-    let after = text.find("line ").map(|idx| &text[idx + "line ".len()..])?;
-    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits.parse().ok()
+    text.lines()
+        .filter(|line| line_marker_number(line).is_none())
+        .flat_map(|line| {
+            line.match_indices("line ")
+                .map(move |(idx, _)| &line[idx + "line ".len()..])
+        })
+        .find_map(|after| {
+            let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse().ok()
+        })
 }
 
 /// Returns the IDs of every `ConstraintId N: ...` line after the trace's
