@@ -71,6 +71,31 @@ proofgoal #1: [] |- 1 ~x1 >= 0
     assert_eq!(by_line.get(&4), Some(&vec![]));
     assert_eq!(by_line.get(&5), Some(&vec![6]));
     assert_eq!(by_line.get(&1), Some(&vec![]));
+
+    // A line at a time, keeping only some lines. Lines that are not trace
+    // (including a `ConstraintId` line before the first marker) are not
+    // taken.
+    let mut parser = veripb_repl::checker::parse::ConstraintIdsByLine::new(|n| n != 3);
+    let taken: Vec<bool> = trace.lines().map(|line| parser.feed(line)).collect();
+    let streamed = parser.finish();
+    assert_eq!(streamed.get(&3), None);
+    assert_eq!(streamed.get(&5), by_line.get(&5));
+    assert_eq!(streamed.get(&4), by_line.get(&4));
+    let kept: Vec<&str> = trace
+        .lines()
+        .zip(&taken)
+        .filter(|(_, taken)| !**taken)
+        .map(|(line, _)| line)
+        .collect();
+    assert_eq!(
+        kept,
+        vec![
+            "Running VeriPB version 3.0.2",
+            "  ConstraintId 1: 1 x1 1 x2 >= 1",
+            "  ** proofgoal from satisfying added constraint **",
+            "proofgoal #1: [] |- 1 ~x1 >= 0",
+        ]
+    );
 }
 
 #[test]

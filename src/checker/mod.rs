@@ -43,13 +43,22 @@ pub fn check(
 
 /// Like [`check`], also returning the final database from the same call,
 /// whether or not the proof was accepted. `trace_ranges` are the 1-based,
-/// inclusive line ranges to trace; none checks silently.
+/// inclusive line ranges to trace; none checks silently. Each line of
+/// veripb's output goes to `consume` as it is written; the lines it returns
+/// `true` for are left out of the outcome's trace (see
+/// [`invoke::run_streaming`]).
 pub fn check_with_database(
     formula_path: &Path,
     proof_text: &str,
     trace_ranges: &[(usize, usize)],
+    consume: impl FnMut(&str) -> bool,
 ) -> anyhow::Result<(CheckOutcome, Database)> {
-    let dump = invoke::run_with_database_dump(formula_path, proof_text, trace_args(trace_ranges))?;
+    let dump = invoke::run_with_database_dump(
+        formula_path,
+        proof_text,
+        trace_args(trace_ranges),
+        consume,
+    )?;
     let outcome = parse::check_outcome(&dump.raw)?;
     let database = parse::parse_database_dump(&dump.database_dump)?;
     Ok((outcome, database))
@@ -86,8 +95,12 @@ pub fn elaborate_rup(
 
 /// Returns the live database after replaying `proof_text`.
 pub fn show_database(formula_path: &Path, proof_text: &str) -> anyhow::Result<Database> {
-    let dump =
-        invoke::run_with_database_dump(formula_path, proof_text, std::iter::empty::<&str>())?;
+    let dump = invoke::run_with_database_dump(
+        formula_path,
+        proof_text,
+        std::iter::empty::<&str>(),
+        |_| false,
+    )?;
     parse::parse_database_dump(&dump.database_dump)
 }
 

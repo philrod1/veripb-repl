@@ -160,3 +160,21 @@ fn a_rejected_batch_stops_at_the_line_veripb_names() {
     assert_eq!(session.checked_len, 50);
     assert!(session.known_bad.is_some());
 }
+
+#[test]
+fn labels_are_learned_across_many_labelled_ranges() {
+    require_veripb!();
+    let mut session = load();
+    // 1,001 labelled lines each between unlabelled ones: more separate
+    // ranges than are passed to veripb, so the whole span is traced.
+    for i in 0..1001 {
+        session.buffer.push(format!("@l{i} rup 1 ~x1 >= 1 ;"));
+        session.buffer.push("rup 1 ~x2 >= 1 ;".to_string());
+    }
+    let (_, rejection) = session.drive_forward().expect("verify should run");
+    assert!(rejection.is_none(), "{rejection:?}");
+    let labels = session.label_ids();
+    assert_eq!(labels.get("@l0"), Some(&5));
+    assert_eq!(labels.get("@l1000"), Some(&(5 + 2 * 1000)));
+    assert_eq!(labels.get("@c"), Some(&3));
+}

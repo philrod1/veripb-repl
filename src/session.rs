@@ -318,14 +318,21 @@ impl Session {
             let text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
             let formula_file = self.formula_temp_file()?;
             // Trace the checked labelled lines too, to learn which IDs they
-            // derived.
+            // derived. The trace is read as veripb writes it, keeping only
+            // the labelled lines' IDs: it can be several times the proof's
+            // size.
             let trace_ranges = self.labelled_line_ranges();
-            let (outcome, database) =
-                checker::check_with_database(formula_file.path(), &text, &trace_ranges)?;
-            let trace = match outcome {
-                CheckOutcome::Accepted { trace } | CheckOutcome::Rejected { trace, .. } => trace,
+            let labelled = |n: usize| {
+                n.checked_sub(PREAMBLE_LINES + 1)
+                    .and_then(|idx| self.buffer[..self.checked_len].get(idx))
+                    .is_some_and(|line| !checker::parse::leading_labels(line).is_empty())
             };
-            let ids_by_line = checker::parse::constraint_ids_by_line(&trace);
+            let mut ids = checker::parse::ConstraintIdsByLine::new(labelled);
+            let (_, database) =
+                checker::check_with_database(formula_file.path(), &text, &trace_ranges, |line| {
+                    ids.feed(line)
+                })?;
+            let ids_by_line = ids.finish();
             let mut labels = self.formula_labels();
             for (idx, line) in self.buffer[..self.checked_len].iter().enumerate() {
                 let Some(ids) = ids_by_line.get(&self.display_line(idx)) else {
