@@ -16,13 +16,17 @@ use std::path::Path;
 
 pub use types::{CheckOutcome, Database, DatabaseEntry, ObjectiveBounds, RupHint};
 
-/// Returns the `--trace-lines <lo>..=<hi>` argument for `trace_range`, or
-/// no arguments at all for a silent check.
-fn trace_args(trace_range: Option<(usize, usize)>) -> Vec<String> {
-    match trace_range {
-        Some((lo, hi)) => vec!["--trace-lines".to_string(), format!("{lo}..={hi}")],
-        None => Vec::new(),
+/// Returns the `--trace-lines <lo>..=<hi>[,<lo>..=<hi>...]` argument for
+/// `ranges`, or no arguments at all (a silent check) if there are none.
+fn trace_args(ranges: &[(usize, usize)]) -> Vec<String> {
+    if ranges.is_empty() {
+        return Vec::new();
     }
+    let list: Vec<String> = ranges
+        .iter()
+        .map(|(lo, hi)| format!("{lo}..={hi}"))
+        .collect();
+    vec!["--trace-lines".to_string(), list.join(",")]
 }
 
 /// Checks `proof_text` against `formula_path`. `trace_range`, if given,
@@ -33,18 +37,19 @@ pub fn check(
     proof_text: &str,
     trace_range: Option<(usize, usize)>,
 ) -> anyhow::Result<CheckOutcome> {
-    let raw = invoke::run(formula_path, proof_text, trace_args(trace_range))?;
+    let raw = invoke::run(formula_path, proof_text, trace_args(trace_range.as_slice()))?;
     parse::check_outcome(&raw)
 }
 
 /// Like [`check`], also returning the final database from the same call,
-/// whether or not the proof was accepted.
+/// whether or not the proof was accepted. `trace_ranges` are the 1-based,
+/// inclusive line ranges to trace; none checks silently.
 pub fn check_with_database(
     formula_path: &Path,
     proof_text: &str,
-    trace_range: Option<(usize, usize)>,
+    trace_ranges: &[(usize, usize)],
 ) -> anyhow::Result<(CheckOutcome, Database)> {
-    let dump = invoke::run_with_database_dump(formula_path, proof_text, trace_args(trace_range))?;
+    let dump = invoke::run_with_database_dump(formula_path, proof_text, trace_args(trace_ranges))?;
     let outcome = parse::check_outcome(&dump.raw)?;
     let database = parse::parse_database_dump(&dump.database_dump)?;
     Ok((outcome, database))

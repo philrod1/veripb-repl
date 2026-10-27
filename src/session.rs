@@ -28,6 +28,17 @@ use crate::varnames::VarNames;
 /// Lines in a synthesized v3 proof preamble.
 const PREAMBLE_LINES: usize = 2;
 
+/// The most lines a batched check (`:verify`, `:continue`) traces in full.
+/// veripb's trace runs to several times the proof's size, and is read whole
+/// and printed; past this, only the batch's last line is traced (what
+/// `last_step_constraint_ids` needs).
+pub const FULL_TRACE_MAX_LINES: usize = 10_000;
+
+/// The most separate line ranges `database()` passes to `--trace-lines`
+/// (each a few bytes of veripb's command line); past this, one range from
+/// the first labelled line to the last.
+const MAX_TRACE_RANGES: usize = 1_000;
+
 /// One `:undo`-stack entry: the state `restore_snapshot` restores.
 pub(crate) struct Snapshot {
     formula: Vec<String>,
@@ -306,12 +317,11 @@ impl Session {
         if !fresh {
             let text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
             let formula_file = self.formula_temp_file()?;
-            // Trace the checked lines too, to learn which IDs labelled lines
+            // Trace the checked labelled lines too, to learn which IDs they
             // derived.
-            let trace_range = (self.checked_len > 0)
-                .then(|| (PREAMBLE_LINES + 1, PREAMBLE_LINES + self.checked_len));
+            let trace_ranges = self.labelled_line_ranges();
             let (outcome, database) =
-                checker::check_with_database(formula_file.path(), &text, trace_range)?;
+                checker::check_with_database(formula_file.path(), &text, &trace_ranges)?;
             let trace = match outcome {
                 CheckOutcome::Accepted { trace } | CheckOutcome::Rejected { trace, .. } => trace,
             };
@@ -334,6 +344,27 @@ impl Session {
         Ok(std::cell::Ref::map(self.database_cache.borrow(), |cache| {
             &cache.as_ref().expect("just populated above").database
         }))
+    }
+
+    /// The display-line ranges of the checked lines with leading `@label`s,
+    /// consecutive lines merged; one range from the first to the last if
+    /// there would be more than [`MAX_TRACE_RANGES`].
+    fn labelled_line_ranges(&self) -> Vec<(usize, usize)> {
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        for (idx, line) in self.buffer[..self.checked_len].iter().enumerate() {
+            if checker::parse::leading_labels(line).is_empty() {
+                continue;
+            }
+            let n = self.display_line(idx);
+            match ranges.last_mut() {
+                Some((_, hi)) if *hi + 1 == n => *hi = n,
+                _ => ranges.push((n, n)),
+            }
+        }
+        if ranges.len() > MAX_TRACE_RANGES {
+            ranges = vec![(ranges[0].0, ranges[ranges.len() - 1].1)];
+        }
+        ranges
     }
 
     /// Returns the best-known objective bounds for `buffer[..checked_len]`.
@@ -421,25 +452,45 @@ impl Session {
     }
 
     /// Advances `checked_len` to `boundary` (`<= buffer.len()`) with one
-    /// batched `veripb` call. If the batch is rejected, its output is
-    /// discarded and [`Self::verify_next`] runs line by line up to
-    /// `boundary` to find the failing line. No-op returning an empty
-    /// capture if `boundary <= checked_len`.
+    /// batched `veripb` call, tracing every new line, or only the last if
+    /// there are more than [`FULL_TRACE_MAX_LINES`]. If the batch is
+    /// rejected, its output is discarded: every line before the one veripb
+    /// names was accepted, so `checked_len` moves to that line and
+    /// [`Self::verify_next`] checks it for the rejection message (going on
+    /// line by line up to `boundary` if it is accepted after all, or if the
+    /// named line is outside the batch). No-op returning an empty capture if
+    /// `boundary <= checked_len`.
     fn verify_forward(&mut self, boundary: usize) -> anyhow::Result<(String, Option<String>)> {
         if boundary <= self.checked_len {
             return Ok((String::new(), None));
         }
 
-        let candidate_start = PREAMBLE_LINES + self.checked_len + 1;
         let candidate_end = PREAMBLE_LINES + boundary;
+        let candidate_start = if boundary - self.checked_len > FULL_TRACE_MAX_LINES {
+            candidate_end
+        } else {
+            PREAMBLE_LINES + self.checked_len + 1
+        };
         let text = self.preamble_and_lines(&self.buffer[..boundary]);
         let outcome = self.check(&text, Some((candidate_start, candidate_end)))?;
-        if let CheckOutcome::Accepted { trace } = outcome {
-            self.checked_len = boundary;
+        let rejected_idx = match outcome {
+            CheckOutcome::Accepted { trace } => {
+                self.checked_len = boundary;
+                self.known_bad = None;
+                self.last_step_constraint_ids = checker::parse::last_line_constraint_ids(&trace);
+                self.generation += 1;
+                return Ok((trace, None));
+            }
+            CheckOutcome::Rejected { line, .. } => line.checked_sub(PREAMBLE_LINES + 1),
+        };
+        if let Some(idx) = rejected_idx
+            && idx > self.checked_len
+            && idx < boundary
+        {
+            self.checked_len = idx;
             self.known_bad = None;
-            self.last_step_constraint_ids = checker::parse::last_line_constraint_ids(&trace);
+            self.last_step_constraint_ids = Vec::new();
             self.generation += 1;
-            return Ok((trace, None));
         }
 
         let mut captured_all = String::new();

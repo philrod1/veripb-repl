@@ -20,6 +20,13 @@ pub fn run(session: &mut Session, out: &mut dyn Output) -> anyhow::Result<()> {
 
     let (captured, rejection) = session.drive_forward()?;
     output::text(out, &captured);
+    if pending > crate::session::FULL_TRACE_MAX_LINES && rejection.is_none() {
+        outln!(
+            out,
+            "(Traced the last line only: more than {} lines. :explain <n> traces any line.)",
+            crate::session::FULL_TRACE_MAX_LINES
+        );
+    }
 
     match rejection {
         None => outln!(out, "Verified {pending} line(s)."),
