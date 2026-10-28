@@ -24,11 +24,23 @@ pub const COMMANDS: &[Topic] = &[
         details: &[
             "With a conclusion (UNSAT, SAT, BOUNDS <lo> <hi>, ...), tests that",
             "one and prints the checker's verdict or error.",
-            "With no argument, tries UNSAT and SAT, or with an objective only",
-            "BOUNDS v v, once the objective has a best value with",
-            "checked-deletion guarantees (see :objective). Prints the first that",
-            "verifies, or NOT YET CONCLUDED.",
+            "With no argument, tries the intended conclusion (:conclusion), then",
+            "UNSAT and SAT, or with an objective only BOUNDS v v, once the",
+            "objective has a best value with checked-deletion guarantees (see",
+            ":objective). Prints the first that verifies, or NOT YET CONCLUDED.",
             "Only checked lines are used. Nothing is added to the proof.",
+        ],
+    },
+    Topic {
+        name: "conclusion",
+        usage: ":conclusion [<conclusion>|none]",
+        summary: "show, set or clear the conclusion the proof means to reach",
+        details: &[
+            "Bare :check and :save try this conclusion first; :save writes it",
+            "even if nothing verifies. :source sets it from the file's own",
+            "conclusion line. none clears it; :undo restores it.",
+            "Setting it checks nothing: :check does.",
+            "The conclusion proof rule follows.",
         ],
     },
     Topic {
@@ -673,11 +685,6 @@ pub fn rule_matches(prefix: &str) -> Vec<&'static Topic> {
         .collect()
 }
 
-/// Exact-name lookup across commands then rules.
-fn find(name: &str) -> Option<&'static Topic> {
-    COMMANDS.iter().chain(RULES.iter()).find(|t| t.name == name)
-}
-
 /// A hint explaining a likely cause of the checker rejecting proof line
 /// `line`, for mistakes whose checker error doesn't name the rule, or
 /// `None`. Printed under the rejection by every command that reports one.
@@ -720,19 +727,26 @@ pub fn run(args: &str, out: &mut dyn Output) {
         return;
     }
 
-    match find(topic) {
-        Some(t) => {
-            outln!(out, "{}", t.usage);
-            outln!(out, "  {}", t.summary);
-            for line in t.details {
-                outln!(out, "  {line}");
-            }
+    // A command and a rule can share a name (`conclusion`): show both.
+    let topics: Vec<&Topic> = COMMANDS
+        .iter()
+        .chain(RULES)
+        .filter(|t| t.name == topic)
+        .collect();
+    for (i, t) in topics.iter().enumerate() {
+        if i > 0 {
+            outln!(out);
         }
-        None => {
-            outln!(
-                out,
-                "No help for '{topic}' — try :help with no argument for the list."
-            );
+        outln!(out, "{}", t.usage);
+        outln!(out, "  {}", t.summary);
+        for line in t.details {
+            outln!(out, "  {line}");
         }
+    }
+    if topics.is_empty() {
+        outln!(
+            out,
+            "No help for '{topic}' — try :help with no argument for the list."
+        );
     }
 }

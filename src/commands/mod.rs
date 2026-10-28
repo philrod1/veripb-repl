@@ -4,6 +4,7 @@
 //! print directly.
 
 pub mod check;
+pub mod conclusion;
 pub mod debug;
 pub mod edit;
 pub mod explain;
@@ -265,6 +266,7 @@ fn dispatch_inner(
             "show" => show::run(session, cmd_args, out),
             "explain" => explain::run(session, cmd_args, out),
             "check" => check::run(session, cmd_args, out)?,
+            "conclusion" => conclusion::run(session, cmd_args, out),
             "objective" => objective::run(session, out),
             "preserved" => preserved::run(session, out),
             "list" => list::run(session, out),

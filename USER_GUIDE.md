@@ -313,7 +313,8 @@ candidates.
 | *(bare rule text)* | check a v3 proof rule and, if accepted, add it | **Implemented** |
 | `:quit` | exit | **Implemented** |
 | `:theme [<name>]` | TUI only: switch palette (`dark`/`light`/`hi-contrast`/`colorblind`) | **Implemented** |
-| `:check [<conclusion>]` | test whether the checked prefix verifies with a conclusion, without closing the proof; bare: try `UNSAT` and `SAT`, or `BOUNDS v v` with an objective | **Implemented** |
+| `:check [<conclusion>]` | test whether the checked prefix verifies with a conclusion, without closing the proof; bare: try the intended conclusion, then `UNSAT` and `SAT`, or `BOUNDS v v` with an objective | **Implemented** |
+| `:conclusion [<conclusion>\|none]` | show, set or clear the intended conclusion that bare `:check` and `:save` try first | **Implemented** |
 | `:explain [<n>]` | show how line `n` was derived, or why it was rejected | **Implemented** |
 | `:list` | print every buffer line, numbered, with `[unchecked]`/`[breakpoint]` tags | **Implemented** |
 | `:load <file>` | load an OPB formula, starting a new session | **Implemented** (OPB only) |
@@ -451,8 +452,9 @@ formulas are not supported.
   syntax: `SAT`, `UNSAT`, `UNSAT : 5`, `BOUNDS 0 10`, `NONE`,
   `ENUMERATION_COMPLETE ...`, etc.
 
-  With **no argument**, `:check` tries these and prints the first that
-  verifies:
+  With **no argument**, `:check` tries the intended conclusion first, if
+  there is one (see `:conclusion`), saying so if it does not verify; then
+  these, printing the first that verifies:
   - without an objective, `UNSAT` (needs a contradicting constraint in
     the database) and `SAT` (needs a solution logged by `sol`/`solx`).
     `SAT` goes first if the database has already been computed and holds
@@ -475,6 +477,15 @@ formulas are not supported.
   as rules, every candidate fails, so bare `:check` prints `NOT YET
   CONCLUDED`; `:check <conclusion>` shows the error ("Expected end of file
   (EOF) but found `output` ...").
+
+- **`:conclusion [<conclusion>|none]`** — with no argument, shows the
+  intended conclusion: the one the proof means to reach, which bare
+  `:check` and bare `:save` try first. With a conclusion (same syntax as
+  `:check`; a leading `conclusion` and the `;` are optional), sets it
+  without checking it; `none` clears it. `:source` sets it from the
+  file's closing `conclusion` line. Setting it is an action for `:undo`;
+  `:reset`, `:load` and `:instance` clear it. `:help conclusion` shows
+  this command, then the `conclusion` proof rule.
 
 ### Changing the buffer
 
@@ -514,7 +525,9 @@ formulas are not supported.
   - A leading `f N;` matching the formula's constraint count is skipped;
     a non-matching one is kept, so `:verify` reports the mismatch.
   - Closing `output`/`conclusion`/`end pseudo-Boolean proof;` lines are
-    dropped.
+    not loaded. The file's conclusion becomes the intended conclusion
+    (see `:conclusion`), printed as `Intended conclusion: …`; a file
+    without one clears it.
   - An unreadable file is an error and changes nothing.
   - Multi-line constructs (`red ... : subproof ... qed;`) load as
     ordinary lines.
@@ -537,13 +550,15 @@ formulas are not supported.
   <conclusion>; end pseudo-Boolean proof;`. Always writes. With an
   explicit conclusion (same syntax as `:check`), it is first checked
   against the checked prefix; failure is a warning, not an abort. With no
-  conclusion, `:save` tries the same candidates as bare `:check` and falls
-  back to `conclusion NONE` with a reminder that `NONE` proves nothing.
+  conclusion, `:save` tries the same candidates as bare `:check`. If none
+  verifies, it saves with the intended conclusion if there is one (with a
+  warning), else with `conclusion NONE` and a reminder that `NONE` proves
+  nothing.
   Unchecked lines or a rejected line produce a warning. The session is not
   changed.
 
 - **`:reset`** — clears the buffer (checked or not), the undo history,
-  and breakpoints; the in-memory formula is kept. (`:load` re-reads the
+  breakpoints and the intended conclusion; the in-memory formula is kept. (`:load` re-reads the
   formula file instead.) Reports a no-op if the buffer is already empty.
 
 - **`:delete <n>` / `:delete <n>-<m>`** — removes the lines immediately, in
