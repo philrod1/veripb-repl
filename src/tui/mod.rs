@@ -24,6 +24,7 @@ mod layout;
 mod theme;
 
 use std::io;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -32,6 +33,7 @@ use crossterm::{
     execute, terminal,
 };
 
+use crate::checker::progress::{self, Progress};
 use crate::commands::{self, Flow, debug, edit, formula, help};
 use crate::output::Output;
 use crate::session::Session;
@@ -97,6 +99,75 @@ impl Pane {
 pub enum Zoom {
     Wide,
     Full,
+}
+
+/// A command that took at least this long says so when it finishes.
+const SHOW_ELAPSED_AFTER: Duration = Duration::from_secs(1);
+
+/// `elapsed` as `8.4 s` or `2 min 5 s`.
+fn format_elapsed(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs_f64();
+    if secs < 60.0 {
+        format!("{secs:.1} s")
+    } else {
+        let whole = elapsed.as_secs();
+        format!("{} min {} s", whole / 60, whole % 60)
+    }
+}
+
+/// `n` with its digits grouped in threes: `2,312,067`.
+fn group_digits(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// A command (or the Database pane's refresh) under way: shown on the
+/// prompt row, with the progress of each `veripb` run it makes, by the
+/// reporter `run` installs (see `checker::progress`).
+pub(crate) struct Activity {
+    label: String,
+    start: Instant,
+    /// `veripb` runs started so far.
+    runs: usize,
+    /// The prompt row, and the width inside the border.
+    row: u16,
+    width: usize,
+    theme: theme::Theme,
+}
+
+impl Activity {
+    /// The progress line for `progress`: `:verify · 4 s · line 1,251,781 of
+    /// 2,312,067 (54%)`, naming the run when there has been more than one.
+    fn line(&self, progress: Progress) -> String {
+        let run = if self.runs > 1 {
+            format!("run {} · ", self.runs)
+        } else {
+            String::new()
+        };
+        format!(
+            "{} · {} s · {run}line {} of {} ({}%)",
+            self.label,
+            self.start.elapsed().as_secs(),
+            group_digits(progress.line),
+            group_digits(progress.total),
+            progress.line * 100 / progress.total.max(1)
+        )
+    }
+
+    fn report(&mut self, progress: Progress) {
+        if progress.started {
+            self.runs += 1;
+        }
+        let line = self.line(progress);
+        let _ = draw::progress_line(&mut io::stdout(), &line, self.row, self.width, self.theme);
+    }
 }
 
 /// Bottom-pane transcript of everything commands and the checker have
@@ -292,6 +363,9 @@ pub struct App {
     /// The top panes' line widths, kept between frames; see
     /// `draw::PaneWidths`.
     pane_widths: draw::PaneWidths,
+    /// What is under way, if anything; see `Activity`. Shared with the
+    /// progress reporter's thread.
+    activity: Arc<Mutex<Option<Activity>>>,
     /// Position and time of the last left-click, for double-click
     /// detection — a second click on the same cell within
     /// `DOUBLE_CLICK_WINDOW` opens `:edit` on whatever Proof line is
@@ -384,6 +458,7 @@ impl App {
             formula_content_h: 0,
             database_content_h: 0,
             pane_widths: draw::PaneWidths::default(),
+            activity: Arc::new(Mutex::new(None)),
             last_click: None,
             vim: None,
             formula_browse: None,
@@ -2206,6 +2281,52 @@ impl App {
     /// non-interactive in both frontends, so it just flows through
     /// `dispatch` normally.
     fn execute(&mut self, line: &str) -> bool {
+        let label = line.split_whitespace().next().unwrap_or(line);
+        let began = self.begin_activity(label);
+        let keep_going = self.execute_line(line);
+        if began
+            && let Some(elapsed) = self.end_activity()
+            && elapsed >= SHOW_ELAPSED_AFTER
+        {
+            self.scrollback
+                .push(&format!("({label} took {})", format_elapsed(elapsed)));
+        }
+        keep_going
+    }
+
+    /// Shows `label` on the prompt row, with the progress of any `veripb`
+    /// run, until [`Self::end_activity`]. Returns `false` (and does
+    /// nothing) if an activity is already under way.
+    pub(crate) fn begin_activity(&self, label: &str) -> bool {
+        let Ok(mut slot) = self.activity.lock() else {
+            return false;
+        };
+        if slot.is_some() {
+            return false;
+        }
+        let (Some(layout), Ok((width, _))) = (self.last_layout, crossterm::terminal::size()) else {
+            return false;
+        };
+        *slot = Some(Activity {
+            label: label.to_string(),
+            start: Instant::now(),
+            runs: 0,
+            row: layout.prompt_row,
+            width: usize::from(width).saturating_sub(2),
+            theme: self.theme.theme(),
+        });
+        true
+    }
+
+    /// Ends the activity [`Self::begin_activity`] began, returning how long
+    /// it took.
+    pub(crate) fn end_activity(&self) -> Option<Duration> {
+        let activity = self.activity.lock().ok()?.take()?;
+        Some(activity.start.elapsed())
+    }
+
+    /// Runs one submitted line; see [`Self::execute`].
+    fn execute_line(&mut self, line: &str) -> bool {
         // `:debug` mode, once entered, is checked before anything else:
         // every line typed at the bottom prompt while it's active — a
         // `:step`, a `:show`, `:done`, anything — belongs to
@@ -2422,6 +2543,14 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
 
     let _guard = TerminalGuard::enter()?;
     let mut stdout = io::stdout();
+    let activity = app.activity.clone();
+    progress::set_reporter(Some(Arc::new(move |report| {
+        if let Ok(mut slot) = activity.lock()
+            && let Some(activity) = slot.as_mut()
+        {
+            activity.report(report);
+        }
+    })));
 
     let mut redraw = true;
     loop {
@@ -2740,4 +2869,49 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn digits_are_grouped_in_threes() {
+        assert_eq!(group_digits(0), "0");
+        assert_eq!(group_digits(999), "999");
+        assert_eq!(group_digits(1000), "1,000");
+        assert_eq!(group_digits(2_312_067), "2,312,067");
+    }
+
+    #[test]
+    fn elapsed_times_read_naturally() {
+        assert_eq!(format_elapsed(Duration::from_millis(8_440)), "8.4 s");
+        assert_eq!(format_elapsed(Duration::from_secs(125)), "2 min 5 s");
+    }
+
+    #[test]
+    fn the_progress_line_names_later_runs() {
+        let mut activity = Activity {
+            label: ":check".to_string(),
+            start: Instant::now(),
+            runs: 1,
+            row: 0,
+            width: 80,
+            theme: theme::ThemeName::default().theme(),
+        };
+        let progress = Progress {
+            started: false,
+            line: 1_251_781,
+            total: 2_312_067,
+        };
+        assert_eq!(
+            activity.line(progress),
+            ":check · 0 s · line 1,251,781 of 2,312,067 (54%)"
+        );
+        activity.runs = 2;
+        assert_eq!(
+            activity.line(progress),
+            ":check · 0 s · run 2 · line 1,251,781 of 2,312,067 (54%)"
+        );
+    }
 }

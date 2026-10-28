@@ -456,7 +456,14 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     let debug_ids = app.debug_current_constraint_ids().to_vec();
     let database_shown = shown(Pane::Database);
     let database_db = match &app.session {
-        Some(session) if database_shown => Some(session.database()),
+        Some(session) if database_shown => {
+            let began = app.begin_activity("Updating the Database pane");
+            let database = session.database();
+            if began {
+                app.end_activity();
+            }
+            Some(database)
+        }
         _ => None,
     };
     let (database_total, database) = match (&app.session, &database_db) {
@@ -824,6 +831,24 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     queue!(w, cursor::MoveTo(cursor_x, cursor_y), cursor::Show)?;
     w.flush()?;
     Ok(())
+}
+
+/// Draws `text` on the prompt row, in place of the prompt, while a command
+/// runs (see `tui::Activity`). `width` is the row's width inside the
+/// border.
+pub(crate) fn progress_line(
+    w: &mut impl Write,
+    text: &str,
+    row: u16,
+    width: usize,
+    theme: Theme,
+) -> std::io::Result<()> {
+    let styled = fit(text, width)
+        .with(theme.cursor_accent)
+        .on(theme.bg)
+        .to_string();
+    queue!(w, cursor::Hide, cursor::MoveTo(1, row), Print(styled))?;
+    w.flush()
 }
 
 fn file_name(path: &str) -> &str {

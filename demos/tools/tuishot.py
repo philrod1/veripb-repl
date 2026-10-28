@@ -18,7 +18,8 @@ Script format:
                {"click": ["─ Output", "▭"]}]}
 Keys use JSON escapes: "\\r" Enter, "\\u001b" Esc, "\\u007f" Backspace,
 "\\u001b[3~" Delete, "\\u001b[F" End. A "keys" step waits
-until output has been idle for "settle" seconds (default 0.8). A "click"
+until output has been idle for "settle" seconds (default 0.8), as does a
+"wait" step; a "pause" step reads output for exactly that long. A "click"
 step left-clicks the first occurrence of its second string on the first
 screen row containing its first string (e.g. a pane's zoom button).
 """
@@ -227,8 +228,9 @@ class Screen:
 DECODER = codecs.getincrementaldecoder("utf-8")("replace")
 
 
-def pump(fd, screen, seconds):
-    """Read output until `seconds` pass with nothing new."""
+def pump(fd, screen, seconds, extend=True):
+    """Read output until `seconds` pass with nothing new (or, without
+    `extend`, until `seconds` pass)."""
     deadline = time.time() + seconds
     while True:
         r, _, _ = select.select([fd], [], [], max(0.0, deadline - time.time()))
@@ -241,7 +243,8 @@ def pump(fd, screen, seconds):
         if not data:
             return
         screen.feed(DECODER.decode(data))
-        deadline = time.time() + seconds
+        if extend:
+            deadline = time.time() + seconds
 
 
 def main():
@@ -279,6 +282,8 @@ def main():
             pump(fd, screen, step.get("settle", 0.8))
         elif "wait" in step:
             pump(fd, screen, step["wait"])
+        elif "pause" in step:
+            pump(fd, screen, step["pause"], extend=False)
         elif "snap" in step:
             path = os.path.join(repo, step["snap"])
             with open(path, "w") as f:
