@@ -73,6 +73,8 @@ pub(crate) struct FormulaEditSnapshot {
 /// One REPL session: the loaded formula and the proof buffer (see the module
 /// docs).
 pub struct Session {
+    /// Unique to this session in the process; see [`Self::state_key`].
+    id: u64,
     /// The formula's source path, for display only.
     pub formula_path: String,
     /// The formula's constraint lines, verbatim (including any leading
@@ -134,7 +136,17 @@ pub struct Session {
 struct DatabaseCache {
     generation: u64,
     contents: Result<(checker::Database, ahash::AHashMap<String, isize>), String>,
+    /// [`Session::labels_by_id`], once asked for.
+    labels_by_id: std::cell::OnceCell<std::rc::Rc<LabelsById>>,
+    /// [`Session::live_labels`], once asked for.
+    live_labels: std::cell::OnceCell<std::rc::Rc<Vec<String>>>,
 }
+
+/// Each constraint ID's labels, sorted.
+pub type LabelsById = ahash::AHashMap<isize, Vec<String>>;
+
+/// Source of [`Session::state_key`]'s session part.
+static NEXT_SESSION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// What happened when a freshly-typed line was handed to [`Session::append_line`].
 pub enum AppendOutcome {
@@ -178,6 +190,7 @@ impl Session {
             .with_context(|| format!("failed to read formula file {formula_path}"))?;
 
         Ok(Session {
+            id: NEXT_SESSION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             formula_path: formula_path.to_string(),
             formula: FormulaLines::new(formula),
             objective,
@@ -246,16 +259,56 @@ impl Session {
     }
 
     /// Returns [`Self::label_ids`] inverted: each constraint ID's labels,
-    /// sorted.
-    pub fn labels_by_id(&self) -> ahash::AHashMap<isize, Vec<String>> {
-        let mut by_id: ahash::AHashMap<isize, Vec<String>> = ahash::AHashMap::new();
-        for (name, id) in &self.label_ids() {
-            by_id.entry(*id).or_default().push(name.clone());
+    /// sorted. Cached with [`Self::database`].
+    pub fn labels_by_id(&self) -> std::rc::Rc<LabelsById> {
+        let invert = |labels: &ahash::AHashMap<String, isize>| {
+            let mut by_id = LabelsById::new();
+            for (name, id) in labels {
+                by_id.entry(*id).or_default().push(name.clone());
+            }
+            for names in by_id.values_mut() {
+                names.sort();
+            }
+            std::rc::Rc::new(by_id)
+        };
+        if self.database().is_ok()
+            && let Some(cache) = &*self.database_cache.borrow()
+            && let Ok((_, labels)) = &cache.contents
+        {
+            return cache.labels_by_id.get_or_init(|| invert(labels)).clone();
         }
-        for names in by_id.values_mut() {
-            names.sort();
-        }
-        by_id
+        invert(&self.formula_labels())
+    }
+
+    /// Returns every label naming a live constraint, sorted. Cached with
+    /// [`Self::database`]; empty if that fails.
+    pub fn live_labels(&self) -> std::rc::Rc<Vec<String>> {
+        let Ok(database) = self.database() else {
+            return std::rc::Rc::default();
+        };
+        let labels_by_id = self.labels_by_id();
+        let cache = self.database_cache.borrow();
+        let cache = cache.as_ref().expect("populated by database()");
+        cache
+            .live_labels
+            .get_or_init(|| {
+                let mut labels: Vec<String> = labels_by_id
+                    .iter()
+                    .filter(|(id, _)| {
+                        usize::try_from(**id).is_ok_and(|id| database.get(id).is_some())
+                    })
+                    .flat_map(|(_, names)| names.iter().cloned())
+                    .collect();
+                labels.sort();
+                std::rc::Rc::new(labels)
+            })
+            .clone()
+    }
+
+    /// Identifies the session's state: differs whenever `generation`
+    /// changes, and from every other session's.
+    pub fn state_key(&self) -> (u64, u64) {
+        (self.id, self.generation)
     }
 
     /// Returns the synthesized preamble every replayed proof starts with.
@@ -313,6 +366,8 @@ impl Session {
             *self.database_cache.borrow_mut() = Some(DatabaseCache {
                 generation: self.generation,
                 contents,
+                labels_by_id: std::cell::OnceCell::new(),
+                live_labels: std::cell::OnceCell::new(),
             });
         }
         std::cell::Ref::filter_map(self.database_cache.borrow(), |cache| {

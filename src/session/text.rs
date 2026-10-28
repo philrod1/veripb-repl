@@ -4,6 +4,7 @@
 
 use std::cell::Cell;
 use std::ops::Deref;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::checker;
 
@@ -16,11 +17,42 @@ pub struct ProofBuffer {
     /// The lowest index changed since [`Self::take_changed_from`] last ran;
     /// `usize::MAX` if none.
     changed_from: Cell<usize>,
+    /// [`Self::longest_chars`], or `None` until it is next asked for.
+    longest: Cell<Option<usize>>,
 }
 
 impl ProofBuffer {
     fn changed(&self, idx: usize) {
         self.changed_from.set(self.changed_from.get().min(idx));
+    }
+
+    /// Records that `line` was added.
+    fn added(&self, line: &str) {
+        if let Some(longest) = self.longest.get() {
+            self.longest.set(Some(longest.max(line.chars().count())));
+        }
+    }
+
+    /// Records that `line` was removed.
+    fn removed(&self, line: &str) {
+        if self.longest.get() == Some(line.chars().count()) {
+            self.longest.set(None);
+        }
+    }
+
+    /// Returns the length in characters of the longest line (0 if none).
+    pub fn longest_chars(&self) -> usize {
+        if let Some(longest) = self.longest.get() {
+            return longest;
+        }
+        let longest = self
+            .lines
+            .iter()
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(0);
+        self.longest.set(Some(longest));
+        longest
     }
 
     /// Returns the lowest index changed since the last call, if any, and
@@ -32,23 +64,28 @@ impl ProofBuffer {
 
     pub fn push(&mut self, line: String) {
         self.changed(self.lines.len());
+        self.added(&line);
         self.lines.push(line);
     }
 
     pub fn pop(&mut self) -> Option<String> {
         let line = self.lines.pop()?;
         self.changed(self.lines.len());
+        self.removed(&line);
         Some(line)
     }
 
     pub fn insert(&mut self, idx: usize, line: String) {
         self.changed(idx);
+        self.added(&line);
         self.lines.insert(idx, line);
     }
 
     pub fn remove(&mut self, idx: usize) -> String {
         self.changed(idx);
-        self.lines.remove(idx)
+        let line = self.lines.remove(idx);
+        self.removed(&line);
+        line
     }
 
     /// Replaces line `idx`, returning the old text.
@@ -56,16 +93,21 @@ impl ProofBuffer {
         if self.lines[idx] != line {
             self.changed(idx);
         }
-        std::mem::replace(&mut self.lines[idx], line)
+        self.added(&line);
+        let old = std::mem::replace(&mut self.lines[idx], line);
+        self.removed(&old);
+        old
     }
 
     pub fn clear(&mut self) {
         self.changed(0);
+        self.longest.set(None);
         self.lines.clear();
     }
 
     pub fn extend(&mut self, lines: impl IntoIterator<Item = String>) {
         self.changed(self.lines.len());
+        self.longest.set(None);
         self.lines.extend(lines);
     }
 
@@ -81,6 +123,7 @@ impl ProofBuffer {
         if common < self.lines.len().max(lines.len()) {
             self.changed(common);
         }
+        self.longest.set(None);
         std::mem::replace(&mut self.lines, lines)
     }
 }
@@ -104,13 +147,22 @@ impl From<Vec<String>> for ProofBuffer {
         ProofBuffer {
             lines,
             changed_from: Cell::new(usize::MAX),
+            longest: Cell::new(None),
         }
     }
 }
 
+/// Source of [`FormulaLines::epoch`] values, so no two formulas in the
+/// process share one.
+static NEXT_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+fn next_epoch() -> u64 {
+    NEXT_EPOCH.fetch_add(1, Ordering::Relaxed)
+}
+
 /// The formula's constraint lines, verbatim (including any leading
 /// `@label`s), with each line's first constraint ID. Reads as a `[String]`;
-/// every change goes through a method here, which bumps [`Self::epoch`].
+/// every change goes through a method here, which changes [`Self::epoch`].
 #[derive(Clone)]
 pub struct FormulaLines {
     lines: Vec<String>,
@@ -125,7 +177,7 @@ impl FormulaLines {
         let mut formula = FormulaLines {
             lines,
             first_ids: Vec::new(),
-            epoch: 0,
+            epoch: next_epoch(),
         };
         formula.recount();
         formula
@@ -141,7 +193,8 @@ impl FormulaLines {
         self.first_ids.push(next);
     }
 
-    /// Counts changes: different whenever the lines may differ.
+    /// Identifies these lines: different whenever they may differ, including
+    /// from every other `FormulaLines` in the process.
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
@@ -160,7 +213,7 @@ impl FormulaLines {
     pub fn set(&mut self, idx: usize, line: String) -> String {
         let old = std::mem::replace(&mut self.lines[idx], line);
         self.recount();
-        self.epoch += 1;
+        self.epoch = next_epoch();
         old
     }
 
@@ -168,7 +221,7 @@ impl FormulaLines {
     pub fn replace(&mut self, lines: Vec<String>) -> Vec<String> {
         let old = std::mem::replace(&mut self.lines, lines);
         self.recount();
-        self.epoch += 1;
+        self.epoch = next_epoch();
         old
     }
 }

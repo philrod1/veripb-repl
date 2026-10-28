@@ -13,6 +13,9 @@ anyhow = "1.0.104"
 crossterm = "0.29"
 tempfile = "3"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [lib]
 name = "veripb_repl"
 path = "src/lib.rs"

@@ -4,12 +4,14 @@
 //! - [`types`]: result/data types crossing the boundary.
 //! - [`invoke`]: spawns `veripb` and captures stdout/stderr/exit status.
 //! - [`parse`]: parses `invoke`'s raw output into [`types`].
+//! - [`progress`]: progress reports while `veripb` runs.
 //!
 //! `proof_text` arguments are the complete proof text, preamble included, so
 //! reported line numbers match the REPL's display numbering.
 
 pub mod invoke;
 pub mod parse;
+pub mod progress;
 pub mod types;
 
 use std::path::Path;

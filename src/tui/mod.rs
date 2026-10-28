@@ -24,6 +24,7 @@ mod layout;
 mod theme;
 
 use std::io;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -32,6 +33,7 @@ use crossterm::{
     execute, terminal,
 };
 
+use crate::checker::progress::{self, Progress};
 use crate::commands::{self, Flow, debug, edit, formula, help};
 use crate::output::Output;
 use crate::session::Session;
@@ -99,24 +101,117 @@ pub enum Zoom {
     Full,
 }
 
+/// A command that took at least this long says so when it finishes.
+const SHOW_ELAPSED_AFTER: Duration = Duration::from_secs(1);
+
+/// `elapsed` as `8.4 s` or `2 min 5 s`.
+fn format_elapsed(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs_f64();
+    if secs < 60.0 {
+        format!("{secs:.1} s")
+    } else {
+        let whole = elapsed.as_secs();
+        format!("{} min {} s", whole / 60, whole % 60)
+    }
+}
+
+/// `n` with its digits grouped in threes: `2,312,067`.
+fn group_digits(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// A command (or the Database pane's refresh) under way: shown on the
+/// prompt row, with the progress of each `veripb` run it makes, by the
+/// reporter `run` installs (see `checker::progress`).
+pub(crate) struct Activity {
+    label: String,
+    start: Instant,
+    /// `veripb` runs started so far.
+    runs: usize,
+    /// The prompt row, and the width inside the border.
+    row: u16,
+    width: usize,
+    theme: theme::Theme,
+}
+
+impl Activity {
+    /// The progress line for `progress`: `:verify · 4 s · line 1,251,781 of
+    /// 2,312,067 (54%)`, naming the run when there has been more than one.
+    fn line(&self, progress: Progress) -> String {
+        let run = if self.runs > 1 {
+            format!("run {} · ", self.runs)
+        } else {
+            String::new()
+        };
+        format!(
+            "{} · {} s · {run}line {} of {} ({}%)",
+            self.label,
+            self.start.elapsed().as_secs(),
+            group_digits(progress.line),
+            group_digits(progress.total),
+            progress.line * 100 / progress.total.max(1)
+        )
+    }
+
+    fn report(&mut self, progress: Progress) {
+        if progress.started {
+            self.runs += 1;
+        }
+        let line = self.line(progress);
+        let _ = draw::progress_line(&mut io::stdout(), &line, self.row, self.width, self.theme);
+    }
+}
+
 /// Bottom-pane transcript of everything commands and the checker have
 /// emitted, plus an echo of each submitted line. The TUI's `Output` sink.
 pub struct Scrollback {
-    lines: Vec<String>,
+    lines: std::collections::VecDeque<String>,
+    /// [`Self::longest_chars`], or `None` until it is next asked for.
+    longest: Option<usize>,
 }
 
 impl Scrollback {
     fn new() -> Self {
-        Scrollback { lines: Vec::new() }
+        Scrollback {
+            lines: std::collections::VecDeque::new(),
+            longest: Some(0),
+        }
     }
 
-    pub fn lines(&self) -> &[String] {
-        &self.lines
+    pub(crate) fn len(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// Lines `range` (oldest first).
+    pub(crate) fn range(&self, range: std::ops::Range<usize>) -> impl Iterator<Item = &String> {
+        self.lines.range(range)
+    }
+
+    /// Returns the length in characters of the longest line.
+    pub(crate) fn longest_chars(&mut self) -> usize {
+        *self.longest.get_or_insert_with(|| {
+            self.lines
+                .iter()
+                .map(|l| l.chars().count())
+                .max()
+                .unwrap_or(0)
+        })
     }
 
     fn push(&mut self, text: &str) {
-        if self.lines.len() == SCROLLBACK_CAP {
-            self.lines.remove(0);
+        if self.lines.len() == SCROLLBACK_CAP
+            && let Some(dropped) = self.lines.pop_front()
+            && self.longest == Some(dropped.chars().count())
+        {
+            self.longest = None;
         }
         // A literal tab (e.g. `CheckingLineError`'s own `Display`, which
         // hand-indents its detail line with one) is one character by
@@ -132,7 +227,11 @@ impl Scrollback {
         // `output::error`'s own docs) — sidestepped the same way, by
         // never letting the raw control character reach the terminal.
         // A fixed run of spaces reads as "indented" without the hazard.
-        self.lines.push(text.replace('\t', "    "));
+        let line = text.replace('\t', "    ");
+        if let Some(longest) = &mut self.longest {
+            *longest = (*longest).max(line.chars().count());
+        }
+        self.lines.push_back(line);
     }
 }
 
@@ -261,6 +360,12 @@ pub struct App {
     /// same reasoning as `proof_content_h`, for `snap_database_to_row` to
     /// map a row index onto a scroll offset.
     pub database_content_h: usize,
+    /// The top panes' line widths, kept between frames; see
+    /// `draw::PaneWidths`.
+    pane_widths: draw::PaneWidths,
+    /// What is under way, if anything; see `Activity`. Shared with the
+    /// progress reporter's thread.
+    activity: Arc<Mutex<Option<Activity>>>,
     /// Position and time of the last left-click, for double-click
     /// detection — a second click on the same cell within
     /// `DOUBLE_CLICK_WINDOW` opens `:edit` on whatever Proof line is
@@ -295,6 +400,12 @@ pub struct App {
     /// `refresh_candidates` after every keystroke — shared between the
     /// event loop (arrows, Tab, Enter) and the drawn strip.
     pub candidates: Vec<complete::Candidate>,
+    /// Further matches counted but not in `candidates` (see
+    /// `complete::Suggestions`).
+    pub omitted_candidates: usize,
+    /// The longest common prefix of every match's line: what an ambiguous
+    /// Tab completes to.
+    common_candidate_line: String,
     /// The buffer text `candidates` was computed for.
     candidates_for: String,
     /// Index into `candidates` of the highlighted suggestion, if the user
@@ -346,11 +457,15 @@ impl App {
             proof_content_h: 0,
             formula_content_h: 0,
             database_content_h: 0,
+            pane_widths: draw::PaneWidths::default(),
+            activity: Arc::new(Mutex::new(None)),
             last_click: None,
             vim: None,
             formula_browse: None,
             debug: None,
             candidates: Vec::new(),
+            omitted_candidates: 0,
+            common_candidate_line: String::new(),
             candidates_for: String::new(),
             selected: None,
             theme: theme::ThemeName::default(),
@@ -731,11 +846,14 @@ impl App {
         } else {
             None
         };
-        self.candidates = if self.editor.browsing_history() {
-            Vec::new()
+        let suggestions = if self.editor.browsing_history() {
+            complete::Suggestions::default()
         } else {
             complete::suggestions(&text, self.session.as_ref(), mode_vocabulary.as_deref())
         };
+        self.common_candidate_line = suggestions.common_line_prefix().to_string();
+        self.omitted_candidates = suggestions.omitted;
+        self.candidates = suggestions.candidates;
         if let Some(s) = self.selected
             && s >= self.candidates.len()
         {
@@ -811,13 +929,13 @@ impl App {
         }
         match self.candidates.len() {
             0 => {}
-            1 => {
+            1 if self.omitted_candidates == 0 => {
                 let line = self.candidates[0].line.clone();
                 self.editor.set_text(&line);
             }
             _ => {
-                let lcp = complete::common_line_prefix(&self.candidates).to_string();
-                if !lcp.is_empty() {
+                if !self.common_candidate_line.is_empty() {
+                    let lcp = self.common_candidate_line.clone();
                     self.editor.set_text(&lcp);
                 }
             }
@@ -1847,6 +1965,14 @@ impl App {
     /// — none of which fire a `MouseEventKind` of their own to hang an
     /// update off of. A purely event-driven update would go stale in
     /// exactly those cases; this can't.
+    /// Whether `event` is mouse motion that changes nothing drawn: the
+    /// breakpoint hover (the only thing motion affects) stays as it is.
+    fn is_idle_motion(&self, event: &Event) -> bool {
+        matches!(event, Event::Mouse(mouse)
+            if mouse.kind == MouseEventKind::Moved
+                && self.proof_marker_at(mouse.column, mouse.row) == self.bp_hover)
+    }
+
     pub(crate) fn recompute_bp_hover(&mut self) {
         self.bp_hover = self
             .mouse_pos
@@ -2155,6 +2281,52 @@ impl App {
     /// non-interactive in both frontends, so it just flows through
     /// `dispatch` normally.
     fn execute(&mut self, line: &str) -> bool {
+        let label = line.split_whitespace().next().unwrap_or(line);
+        let began = self.begin_activity(label);
+        let keep_going = self.execute_line(line);
+        if began
+            && let Some(elapsed) = self.end_activity()
+            && elapsed >= SHOW_ELAPSED_AFTER
+        {
+            self.scrollback
+                .push(&format!("({label} took {})", format_elapsed(elapsed)));
+        }
+        keep_going
+    }
+
+    /// Shows `label` on the prompt row, with the progress of any `veripb`
+    /// run, until [`Self::end_activity`]. Returns `false` (and does
+    /// nothing) if an activity is already under way.
+    pub(crate) fn begin_activity(&self, label: &str) -> bool {
+        let Ok(mut slot) = self.activity.lock() else {
+            return false;
+        };
+        if slot.is_some() {
+            return false;
+        }
+        let (Some(layout), Ok((width, _))) = (self.last_layout, crossterm::terminal::size()) else {
+            return false;
+        };
+        *slot = Some(Activity {
+            label: label.to_string(),
+            start: Instant::now(),
+            runs: 0,
+            row: layout.prompt_row,
+            width: usize::from(width).saturating_sub(2),
+            theme: self.theme.theme(),
+        });
+        true
+    }
+
+    /// Ends the activity [`Self::begin_activity`] began, returning how long
+    /// it took.
+    pub(crate) fn end_activity(&self) -> Option<Duration> {
+        let activity = self.activity.lock().ok()?.take()?;
+        Some(activity.start.elapsed())
+    }
+
+    /// Runs one submitted line; see [`Self::execute`].
+    fn execute_line(&mut self, line: &str) -> bool {
         // `:debug` mode, once entered, is checked before anything else:
         // every line typed at the bottom prompt while it's active — a
         // `:step`, a `:show`, `:done`, anything — belongs to
@@ -2371,11 +2543,27 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
 
     let _guard = TerminalGuard::enter()?;
     let mut stdout = io::stdout();
+    let activity = app.activity.clone();
+    progress::set_reporter(Some(Arc::new(move |report| {
+        if let Ok(mut slot) = activity.lock()
+            && let Some(activity) = slot.as_mut()
+        {
+            activity.report(report);
+        }
+    })));
 
+    let mut redraw = true;
     loop {
-        draw::draw(&mut stdout, &mut app)?;
+        // Draw once no more events are waiting: events can arrive faster
+        // than frames are drawn (mouse motion especially).
+        if redraw && !event::poll(Duration::ZERO)? {
+            draw::draw(&mut stdout, &mut app)?;
+            redraw = false;
+        }
 
-        match event::read()? {
+        let event = event::read()?;
+        redraw |= !app.is_idle_motion(&event);
+        match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 match key.code {
                     // Vim `Insert` sub-mode: Esc commits and returns to
@@ -2681,4 +2869,49 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn digits_are_grouped_in_threes() {
+        assert_eq!(group_digits(0), "0");
+        assert_eq!(group_digits(999), "999");
+        assert_eq!(group_digits(1000), "1,000");
+        assert_eq!(group_digits(2_312_067), "2,312,067");
+    }
+
+    #[test]
+    fn elapsed_times_read_naturally() {
+        assert_eq!(format_elapsed(Duration::from_millis(8_440)), "8.4 s");
+        assert_eq!(format_elapsed(Duration::from_secs(125)), "2 min 5 s");
+    }
+
+    #[test]
+    fn the_progress_line_names_later_runs() {
+        let mut activity = Activity {
+            label: ":check".to_string(),
+            start: Instant::now(),
+            runs: 1,
+            row: 0,
+            width: 80,
+            theme: theme::ThemeName::default().theme(),
+        };
+        let progress = Progress {
+            started: false,
+            line: 1_251_781,
+            total: 2_312_067,
+        };
+        assert_eq!(
+            activity.line(progress),
+            ":check · 0 s · line 1,251,781 of 2,312,067 (54%)"
+        );
+        activity.runs = 2;
+        assert_eq!(
+            activity.line(progress),
+            ":check · 0 s · run 2 · line 1,251,781 of 2,312,067 (54%)"
+        );
+    }
 }

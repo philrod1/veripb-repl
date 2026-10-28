@@ -18,6 +18,43 @@ use crate::commands::{expand_tilde, help};
 use crate::session::Session;
 use crate::tui::theme::ThemeName;
 
+/// The most candidates [`reference_candidates`] builds: a large proof's
+/// database can match millions. The rest are only counted.
+const REFERENCE_CANDIDATE_CAP: usize = 1000;
+
+/// What the current line could become: the candidates, in order, plus any
+/// further matches counted but not built (see [`REFERENCE_CANDIDATE_CAP`]).
+#[derive(Default)]
+pub struct Suggestions {
+    pub candidates: Vec<Candidate>,
+    /// Matches after `candidates`, not built.
+    pub omitted: usize,
+    /// When `omitted > 0`: the longest common prefix of every match's line.
+    common_line: String,
+}
+
+impl From<Vec<Candidate>> for Suggestions {
+    fn from(candidates: Vec<Candidate>) -> Self {
+        Suggestions {
+            candidates,
+            omitted: 0,
+            common_line: String::new(),
+        }
+    }
+}
+
+impl Suggestions {
+    /// Longest common prefix of every match's line — what an ambiguous Tab
+    /// completes to. See [`common_line_prefix`].
+    pub fn common_line_prefix(&self) -> &str {
+        if self.omitted == 0 {
+            common_line_prefix(&self.candidates)
+        } else {
+            &self.common_line
+        }
+    }
+}
+
 /// One way the current line could be completed.
 pub struct Candidate {
     /// The full input line after choosing this candidate.
@@ -86,13 +123,13 @@ pub fn suggestions(
     text: &str,
     session: Option<&Session>,
     mode_vocabulary: Option<&[&Topic]>,
-) -> Vec<Candidate> {
+) -> Suggestions {
     let trimmed = text.trim_start();
     if trimmed.is_empty() {
-        return Vec::new();
+        return Suggestions::default();
     }
     let Some((first, rest)) = trimmed.split_once(char::is_whitespace) else {
-        return first_token(trimmed, session, mode_vocabulary);
+        return first_token(trimmed, session, mode_vocabulary).into();
     };
 
     if let Some(cmd) = first.strip_prefix(':') {
@@ -100,14 +137,15 @@ pub fn suggestions(
         if partial.contains(char::is_whitespace) {
             // Past the first argument (or a path with spaces, which this
             // completer doesn't handle).
-            return Vec::new();
+            return Suggestions::default();
         }
         return match accepted_suffixes(cmd) {
             Some(suffixes) => file_candidates(first, Some(suffixes), partial),
             None if cmd == "help" => topic_candidates(first, partial),
             None if cmd == "theme" => theme_candidates(first, partial),
             None => Vec::new(),
-        };
+        }
+        .into();
     }
 
     // A bare proof-rule line, past its keyword — unlike a `:`-command,
@@ -117,13 +155,13 @@ pub fn suggestions(
     // still-ambiguous or unrecognized one. Suppressed outright while a
     // narrower mode vocabulary is live — see this function's own docs.
     if mode_vocabulary.is_some() {
-        return Vec::new();
+        return Suggestions::default();
     }
     let Some(session) = session else {
-        return Vec::new();
+        return Suggestions::default();
     };
     if !help::RULES.iter().any(|t| t.name == first) {
-        return Vec::new();
+        return Suggestions::default();
     }
     let partial = trimmed.rsplit(char::is_whitespace).next().unwrap_or("");
     let kept = &trimmed[..trimmed.len() - partial.len()];
@@ -397,54 +435,353 @@ fn rule_ref_kind(rule: &str) -> RefKind {
 /// itself, prefix-matched against live constraint IDs, live labels, and
 /// variable names (both bare and negated, since either can appear as a
 /// literal) depending on what `rule_ref_kind` says `rule` takes.
-fn reference_candidates(
-    kept: &str,
-    rule: &str,
-    partial: &str,
-    session: &Session,
-) -> Vec<Candidate> {
-    let mut out = Vec::new();
+///
+/// In string order. At most [`REFERENCE_CANDIDATE_CAP`] are built; the
+/// rest are counted, without being listed, so this costs about the same
+/// however large the database is.
+fn reference_candidates(kept: &str, rule: &str, partial: &str, session: &Session) -> Suggestions {
+    let cap = REFERENCE_CANDIDATE_CAP;
     let kind = rule_ref_kind(rule);
+    let mut groups = Vec::new();
 
     if matches!(kind, RefKind::Constraint | RefKind::Both)
         && let Ok(database) = session.database()
     {
-        let labels_by_id = session.labels_by_id();
-        for entry in &database.entries {
-            let id_str = entry.id.to_string();
-            if id_str.starts_with(partial) {
-                out.push(Candidate {
-                    line: format!("{kept}{id_str}"),
-                    left: id_str.clone(),
-                    right: String::new(),
-                });
-            }
-            for name in labels_by_id.get(&(entry.id as isize)).into_iter().flatten() {
-                if name.starts_with(partial) {
-                    out.push(Candidate {
-                        line: format!("{kept}{name}"),
-                        left: name.clone(),
-                        right: String::new(),
-                    });
-                }
-            }
-        }
+        groups.push(id_matches(
+            &database.entries,
+            |entry| entry.id as u64,
+            partial,
+            cap,
+        ));
+        groups.push(sorted_matches(&session.live_labels(), partial, cap));
     }
 
     if matches!(kind, RefKind::Variable | RefKind::Both) {
-        for name in session.variables.names() {
-            for candidate in [name.to_string(), format!("~{name}")] {
-                if candidate.starts_with(partial) {
-                    out.push(Candidate {
-                        line: format!("{kept}{candidate}"),
-                        left: candidate.clone(),
-                        right: String::new(),
-                    });
+        let bare = session
+            .variables
+            .names()
+            .filter(|name| name.starts_with(partial));
+        let negated = partial
+            .strip_prefix('~')
+            .or(partial.is_empty().then_some(""))
+            .into_iter()
+            .flat_map(|rest| {
+                session
+                    .variables
+                    .names()
+                    .filter(move |name| name.starts_with(rest))
+                    .map(|name| format!("~{name}"))
+            });
+        let mut literals: Vec<String> = bare.map(str::to_string).chain(negated).collect();
+        literals.sort();
+        groups.push(sorted_matches(&literals, partial, cap));
+    }
+
+    // Each group is in string order, so the first `cap` of all of them are
+    // among the groups' first `cap`, and every match lies between the
+    // first and the last.
+    let mut lefts: Vec<String> = groups
+        .iter()
+        .flat_map(|g| g.first.iter().cloned())
+        .collect();
+    lefts.sort();
+    lefts.truncate(cap);
+    let total: usize = groups.iter().map(|g| g.count).sum();
+    let common_line = match (
+        lefts.first(),
+        groups.iter().filter_map(|g| g.last.as_ref()).max(),
+    ) {
+        (Some(first), Some(last)) => format!("{kept}{}", common_prefix(first, last)),
+        _ => String::new(),
+    };
+    Suggestions {
+        omitted: total - lefts.len(),
+        candidates: lefts
+            .into_iter()
+            .map(|left| Candidate {
+                line: format!("{kept}{left}"),
+                left,
+                right: String::new(),
+            })
+            .collect(),
+        common_line,
+    }
+}
+
+/// Some matches of a prefix, in string order: the first few, how many
+/// there are in all, and the last.
+struct Matches {
+    first: Vec<String>,
+    count: usize,
+    last: Option<String>,
+}
+
+/// The longest common prefix of `a` and `b`.
+fn common_prefix<'a>(a: &'a str, b: &str) -> &'a str {
+    let len = a
+        .char_indices()
+        .zip(b.chars())
+        .find(|((_, x), y)| x != y)
+        .map_or(a.len().min(b.len()), |((i, _), _)| i);
+    &a[..len]
+}
+
+/// The strings in `sorted` starting with `prefix`: the first `cap`, the
+/// count and the last.
+fn sorted_matches(sorted: &[String], prefix: &str, cap: usize) -> Matches {
+    let lo = sorted.partition_point(|s| s.as_str() < prefix);
+    let count = sorted[lo..].partition_point(|s| s.starts_with(prefix));
+    let matching = &sorted[lo..lo + count];
+    Matches {
+        first: matching.iter().take(cap).cloned().collect(),
+        count,
+        last: matching.last().cloned(),
+    }
+}
+
+/// The IDs of `items` (by `id`, ascending) whose decimal form starts with
+/// `prefix`, in string order (`1`, `10`, `100`, `11`, ...): the first
+/// `cap`, the count and the last. Walks the decimal digits, counting each
+/// branch by binary search, rather than every ID.
+fn id_matches<T>(items: &[T], id: impl Fn(&T) -> u64, prefix: &str, cap: usize) -> Matches {
+    let none = Matches {
+        first: Vec::new(),
+        count: 0,
+        last: None,
+    };
+    let Some(max) = items.last().map(&id) else {
+        return none;
+    };
+    let below = |n: u64| items.partition_point(|item| id(item) < n);
+    // The IDs written `n` followed by `k` more digits, for every `k`.
+    let count_from = |n: u64| -> usize {
+        let mut count = 0;
+        let (mut lo, mut width) = (n, 1u64);
+        while lo <= max {
+            let hi = lo.saturating_add(width);
+            count += below(hi) - below(lo);
+            let (Some(next_lo), Some(next_width)) = (lo.checked_mul(10), width.checked_mul(10))
+            else {
+                break;
+            };
+            (lo, width) = (next_lo, next_width);
+        }
+        count
+    };
+    let live = |n: u64| below(n) < items.len() && id(&items[below(n)]) == n;
+    // The branches below `n` (or the first digits, for `None`) that hold an
+    // ID, in string order.
+    let children = |n: Option<u64>| -> Vec<u64> {
+        let digits = if n.is_none() { 1..=9 } else { 0..=9 };
+        digits
+            .filter_map(|d| match n {
+                None => Some(d),
+                Some(n) => n.checked_mul(10)?.checked_add(d),
+            })
+            .filter(|&c| c <= max && count_from(c) > 0)
+            .collect()
+    };
+
+    let start = if prefix.is_empty() {
+        None
+    } else if prefix.starts_with('0') {
+        return none;
+    } else {
+        match prefix.parse::<u64>() {
+            Ok(n) if prefix.bytes().all(|b| b.is_ascii_digit()) => Some(n),
+            _ => return none,
+        }
+    };
+    let count = start.map_or(items.len(), count_from);
+    if count == 0 {
+        return none;
+    }
+
+    let mut first = Vec::new();
+    let mut stack: Vec<u64> = match start {
+        Some(n) => vec![n],
+        None => children(None).into_iter().rev().collect(),
+    };
+    while let Some(n) = stack.pop() {
+        if first.len() == cap {
+            break;
+        }
+        if live(n) {
+            first.push(n.to_string());
+        }
+        stack.extend(children(Some(n)).into_iter().rev());
+    }
+
+    // The last in string order: the highest branch, all the way down.
+    let mut last = match start {
+        Some(n) => n,
+        None => *children(None).last().expect("count > 0"),
+    };
+    while let Some(&child) = children(Some(last)).last() {
+        last = child;
+    }
+
+    Matches {
+        first,
+        count,
+        last: Some(last.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `id_matches` the slow way: every ID as a string, filtered and sorted.
+    fn brute_force(ids: &[u64], prefix: &str, cap: usize) -> (Vec<String>, usize, Option<String>) {
+        let mut all: Vec<String> = ids
+            .iter()
+            .map(u64::to_string)
+            .filter(|s| s.starts_with(prefix))
+            .collect();
+        all.sort();
+        let last = all.last().cloned();
+        (all.iter().take(cap).cloned().collect(), all.len(), last)
+    }
+
+    #[test]
+    fn id_matches_agree_with_sorting_every_id() {
+        // Deterministic gaps, as deletions leave them.
+        let mut seed = 7u64;
+        let ids: Vec<u64> = (1..=25_000u64)
+            .filter(|_| {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                seed >> 61 != 0
+            })
+            .collect();
+        for prefix in [
+            "", "1", "2", "19", "100", "2499", "25000", "7", "0", "x", "1x", "99999",
+        ] {
+            for cap in [1, 6, 1000] {
+                let matches = id_matches(&ids, |&id| id, prefix, cap);
+                let (first, count, last) = brute_force(&ids, prefix, cap);
+                assert_eq!(matches.first, first, "{prefix:?} cap {cap}");
+                assert_eq!(matches.count, count, "{prefix:?}");
+                assert_eq!(matches.last, last, "{prefix:?}");
+            }
+        }
+        assert_eq!(id_matches(&[] as &[u64], |&id| id, "", 5).count, 0);
+    }
+
+    #[test]
+    fn sorted_matches_take_the_prefix_range() {
+        let sorted: Vec<String> = ["@a", "@ab", "@abc", "@b", "x1", "x10", "x2"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let m = sorted_matches(&sorted, "@a", 2);
+        assert_eq!(m.first, ["@a", "@ab"]);
+        assert_eq!(m.count, 3);
+        assert_eq!(m.last.as_deref(), Some("@abc"));
+        assert_eq!(sorted_matches(&sorted, "y", 2).count, 0);
+        assert_eq!(sorted_matches(&sorted, "", 10).count, sorted.len());
+    }
+
+    /// `reference_candidates` as it was before it bounded its work: every
+    /// match built, then sorted.
+    fn every_reference(kept: &str, rule: &str, partial: &str, session: &Session) -> Vec<Candidate> {
+        let mut out = Vec::new();
+        let kind = rule_ref_kind(rule);
+        let candidate = |left: String| Candidate {
+            line: format!("{kept}{left}"),
+            left,
+            right: String::new(),
+        };
+        if matches!(kind, RefKind::Constraint | RefKind::Both)
+            && let Ok(database) = session.database()
+        {
+            let labels_by_id = session.labels_by_id();
+            for entry in &database.entries {
+                let id_str = entry.id.to_string();
+                if id_str.starts_with(partial) {
+                    out.push(candidate(id_str));
+                }
+                for name in labels_by_id.get(&(entry.id as isize)).into_iter().flatten() {
+                    if name.starts_with(partial) {
+                        out.push(candidate(name.clone()));
+                    }
                 }
             }
         }
+        if matches!(kind, RefKind::Variable | RefKind::Both) {
+            for name in session.variables.names() {
+                for literal in [name.to_string(), format!("~{name}")] {
+                    if literal.starts_with(partial) {
+                        out.push(candidate(literal));
+                    }
+                }
+            }
+        }
+        out.sort_by(|a, b| a.left.cmp(&b.left));
+        out
     }
 
-    out.sort_by(|a, b| a.left.cmp(&b.left));
-    out
+    #[test]
+    fn reference_candidates_agree_with_building_every_match() {
+        if std::env::var_os("VERIPB_REPL_VERIPB_BIN").is_none() {
+            eprintln!("skipping: VERIPB_REPL_VERIPB_BIN not set");
+            return;
+        }
+        use std::io::Write as _;
+        let n = 1500;
+        let mut formula = String::new();
+        for i in 1..n {
+            let label = if i % 3 == 0 {
+                format!("@c{i} ")
+            } else {
+                String::new()
+            };
+            formula.push_str(&format!("{label}1 ~x{i} 1 x{} >= 1 ;\n", i + 1));
+        }
+        let mut file = tempfile::NamedTempFile::with_suffix(".opb").unwrap();
+        file.write_all(formula.as_bytes()).unwrap();
+        let session = Session::load(file.path().to_str().unwrap()).unwrap();
+
+        for (rule, partial) in [
+            ("pol", ""),
+            ("pol", "1"),
+            ("pol", "14"),
+            ("pol", "@c1"),
+            ("pol", "~x1"),
+            ("pol", "x14"),
+            ("del", "@"),
+            ("rup", "9999"),
+            ("red", "x"),
+        ] {
+            let kept = format!("{rule} 1 ");
+            let got = reference_candidates(&kept, rule, partial, &session);
+            let all = every_reference(&kept, rule, partial, &session);
+            let lefts = |c: &[Candidate]| c.iter().map(|c| c.left.clone()).collect::<Vec<_>>();
+            assert_eq!(
+                lefts(&got.candidates),
+                lefts(&all[..all.len().min(REFERENCE_CANDIDATE_CAP)]),
+                "{rule} {partial:?}"
+            );
+            assert_eq!(
+                got.candidates.len() + got.omitted,
+                all.len(),
+                "{rule} {partial:?}"
+            );
+            assert_eq!(
+                got.common_line_prefix(),
+                common_line_prefix(&all),
+                "{rule} {partial:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn common_prefix_stops_at_the_first_difference() {
+        assert_eq!(common_prefix("1234", "1299"), "12");
+        assert_eq!(common_prefix("12", "1234"), "12");
+        assert_eq!(common_prefix("@é1", "@é2"), "@é");
+        assert_eq!(common_prefix("a", "b"), "");
+    }
 }

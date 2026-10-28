@@ -142,6 +142,14 @@ pane at the same level.
 
 Every command produces the same output lines in both frontends.
 
+**Progress.** While a command runs veripb, the prompt row shows the
+command, the time so far, which run it is on (when it makes more than one)
+and the proof line veripb has reached, e.g. `:verify · 4 s · line
+1,251,781 of 2,312,067 (54%)`. The same line shows while the Database pane
+is brought up to date. A command that takes a second or more ends with its
+time in the Output pane, e.g. `(:verify took 8.4 s)`. Unix only; elsewhere
+nothing shows while veripb runs.
+
 **Prompt line editing.** ←/→, Home/End (or Ctrl-A/Ctrl-E), ↑/↓ history,
 Ctrl-U/Ctrl-K kill to start/end of line, Ctrl-C clears the line, Ctrl-D on
 an empty line exits. Ctrl+←/→ (or Alt+←/→) move to the start of the
@@ -166,6 +174,9 @@ formula is loaded.
 - ↑/↓ move a highlight through the candidates (wrapping). Enter or Tab
   inserts the highlighted candidate; Esc drops the highlight. Enter
   submits the line only when nothing is highlighted.
+- A rule's arguments list at most the first 1000 matches; the rest are
+  counted in the strip's `(+N more)` row, and Tab's common prefix covers
+  them all.
 - With no highlight, Tab completes a single match outright, else to the
   longest common prefix. A completed command or rule name gets a trailing
   space. A common prefix ending in a bare `.` (e.g. `foo.opb` and

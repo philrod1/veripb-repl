@@ -366,6 +366,7 @@ dependencies = [
  "ahash",
  "anyhow",
  "crossterm",
+ "libc",
  "tempfile",
 ]
 

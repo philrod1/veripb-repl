@@ -72,6 +72,25 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    let extra_args: Vec<OsString> = extra_args
+        .into_iter()
+        .map(|s| s.as_ref().to_os_string())
+        .collect();
+
+    #[cfg(unix)]
+    if let Some(reporter) = super::progress::reporter()
+        && let Ok(pipe) = NamedPipe::new()
+    {
+        return run_through_pipe(
+            pipe,
+            formula_path,
+            proof_text,
+            extra_args,
+            &mut consume,
+            reporter,
+        );
+    }
+
     let mut proof_file = tempfile::Builder::new()
         .suffix(".pbp")
         .tempfile()
@@ -87,7 +106,7 @@ where
         formula_path.as_os_str().to_os_string(),
         proof_file_path.as_os_str().to_os_string(),
     ];
-    args.extend(extra_args.into_iter().map(|s| s.as_ref().to_os_string()));
+    args.extend(extra_args);
     let output = run_veripb(&args, &mut consume)?;
 
     Ok(RawInvocation {
@@ -96,6 +115,118 @@ where
         success: output.success,
         code: output.code,
         proof_file_path,
+        formula_file_path: formula_path.to_path_buf(),
+    })
+}
+
+/// A named pipe in a temp directory of its own (removed on drop).
+#[cfg(unix)]
+struct NamedPipe {
+    _dir: tempfile::TempDir,
+    path: PathBuf,
+}
+
+#[cfg(unix)]
+impl NamedPipe {
+    fn new() -> std::io::Result<Self> {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::Builder::new().prefix(".veripb-repl").tempdir()?;
+        let path = dir.path().join("proof.pbp");
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+        // SAFETY: `c_path` is a NUL-terminated path.
+        if unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(NamedPipe { _dir: dir, path })
+    }
+}
+
+/// [`run_streaming`], handing `proof_text` to `veripb` through `pipe` and
+/// reporting progress to `reporter` (see [`super::progress`]).
+#[cfg(unix)]
+fn run_through_pipe(
+    pipe: NamedPipe,
+    formula_path: &Path,
+    proof_text: &str,
+    extra_args: Vec<OsString>,
+    consume: &mut dyn FnMut(&str) -> bool,
+    reporter: super::progress::Reporter,
+) -> anyhow::Result<RawInvocation> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use super::progress::{INTERVAL, Progress};
+
+    let mut args: Vec<OsString> = vec![
+        formula_path.as_os_str().to_os_string(),
+        pipe.path.as_os_str().to_os_string(),
+    ];
+    args.extend(extra_args);
+    let newlines = |bytes: &[u8]| bytes.iter().filter(|&&b| b == b'\n').count();
+    let total = newlines(proof_text.as_bytes())
+        + usize::from(!proof_text.is_empty() && !proof_text.ends_with('\n'));
+    let written = AtomicUsize::new(0);
+    let done = AtomicBool::new(false);
+
+    let output = std::thread::scope(|scope| {
+        let (written, done, path) = (&written, &done, &pipe.path);
+        let writer = scope.spawn(move || {
+            // Blocks until `veripb` opens the pipe (or `done` is set and the
+            // main thread opens it instead).
+            let Ok(mut file) = std::fs::OpenOptions::new().write(true).open(path) else {
+                return;
+            };
+            for chunk in proof_text.as_bytes().chunks(8192) {
+                // A write fails once `veripb` has exited, unless the main
+                // thread has the pipe open by then: `done` stops it.
+                if done.load(Ordering::Relaxed) || file.write_all(chunk).is_err() {
+                    return;
+                }
+                written.fetch_add(newlines(chunk), Ordering::Relaxed);
+            }
+        });
+        scope.spawn(move || {
+            let mut started = true;
+            while !done.load(Ordering::Relaxed) {
+                let line = written.load(Ordering::Relaxed).min(total);
+                reporter(Progress {
+                    started,
+                    line,
+                    total,
+                });
+                started = false;
+                let next = std::time::Instant::now() + INTERVAL;
+                while !done.load(Ordering::Relaxed) && std::time::Instant::now() < next {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        });
+
+        let output = run_veripb(&args, consume);
+        done.store(true, Ordering::Relaxed);
+        // `veripb` has exited, maybe without opening the pipe or reading
+        // all of it: open it and read it out until the writer has stopped.
+        let mut drain = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .ok();
+        let mut buf = [0u8; 8192];
+        while !writer.is_finished() {
+            if let Some(drain) = &mut drain {
+                let _ = drain.read(&mut buf);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        output
+    })?;
+
+    Ok(RawInvocation {
+        stdout: output.stdout,
+        stderr: output.stderr,
+        success: output.success,
+        code: output.code,
+        proof_file_path: pipe.path.clone(),
         formula_file_path: formula_path.to_path_buf(),
     })
 }
