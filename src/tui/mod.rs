@@ -1148,13 +1148,12 @@ impl App {
         };
         // Its own independently-undoable action, same as every other Vim-
         // mode commit here — see `vim_commit_insert`'s identical pattern.
-        let undo_before = (session.change_stamp(), session.snapshot());
-        if let Err(err) = session.insert_line(insert_idx, "") {
+        session.begin_undo_point();
+        let result = session.insert_line(insert_idx, "");
+        session.end_undo_point();
+        if let Err(err) = result {
             self.scrollback.push(&format!("Error: {err:#}"));
             return;
-        }
-        if session.change_stamp() != undo_before.0 {
-            session.push_undo(undo_before.1);
         }
         self.start_vim(n);
         self.scrollback
@@ -1430,13 +1429,12 @@ impl App {
             return;
         };
         let insert_idx = if below { idx + 1 } else { idx };
-        let undo_before = (session.change_stamp(), session.snapshot());
-        if let Err(err) = session.insert_line(insert_idx, "") {
+        session.begin_undo_point();
+        let result = session.insert_line(insert_idx, "");
+        session.end_undo_point();
+        if let Err(err) = result {
             self.scrollback.push(&format!("Error: {err:#}"));
             return;
-        }
-        if session.change_stamp() != undo_before.0 {
-            session.push_undo(undo_before.1);
         }
         let new_line = session.display_line(insert_idx);
         if let Some(vim) = &mut self.vim {
@@ -1471,13 +1469,12 @@ impl App {
         }
         chars.remove(col);
         let new_text: String = chars.into_iter().collect();
-        let undo_before = (session.change_stamp(), session.snapshot());
-        if let Err(err) = session.set_line(idx, &new_text) {
+        session.begin_undo_point();
+        let result = session.set_line(idx, &new_text);
+        session.end_undo_point();
+        if let Err(err) = result {
             self.scrollback.push(&format!("Error: {err:#}"));
             return;
-        }
-        if session.change_stamp() != undo_before.0 {
-            session.push_undo(undo_before.1);
         }
         let new_len = new_text.chars().count();
         if let Some(vim) = &mut self.vim {
@@ -1553,13 +1550,12 @@ impl App {
             ));
             return;
         };
-        let undo_before = (session.change_stamp(), session.snapshot());
-        if let Err(err) = session.delete_line(idx) {
+        session.begin_undo_point();
+        let result = session.delete_line(idx);
+        session.end_undo_point();
+        if let Err(err) = result {
             self.scrollback.push(&format!("Error: {err:#}"));
             return;
-        }
-        if session.change_stamp() != undo_before.0 {
-            session.push_undo(undo_before.1);
         }
         self.vim_settle_cursor();
     }
@@ -1635,13 +1631,11 @@ impl App {
             return;
         };
 
-        let undo_before = (session.change_stamp(), session.snapshot());
+        session.begin_undo_point();
         let result = session
             .set_line(idx, &before)
             .and_then(|()| session.insert_line(idx + 1, &after));
-        if session.change_stamp() != undo_before.0 {
-            session.push_undo(undo_before.1);
-        }
+        session.end_undo_point();
         if let Err(err) = result {
             self.scrollback.push(&format!("Error: {err:#}"));
             return;
@@ -1695,13 +1689,11 @@ impl App {
         let join_col = upper_text.chars().count();
         let merged = format!("{upper_text}{lower_text}");
 
-        let undo_before = (session.change_stamp(), session.snapshot());
+        session.begin_undo_point();
         let result = session
             .set_line(upper, &merged)
             .and_then(|()| session.delete_line(upper + 1));
-        if session.change_stamp() != undo_before.0 {
-            session.push_undo(undo_before.1);
-        }
+        session.end_undo_point();
         if let Err(err) = result {
             self.scrollback.push(&format!("Error: {err:#}"));
             return;
@@ -1740,13 +1732,12 @@ impl App {
         };
 
         if session.buffer[current_idx] != text {
-            let undo_before = (session.change_stamp(), session.snapshot());
-            if let Err(err) = session.set_line(current_idx, &text) {
+            session.begin_undo_point();
+            let result = session.set_line(current_idx, &text);
+            session.end_undo_point();
+            if let Err(err) = result {
                 self.scrollback.push(&format!("Error: {err:#}"));
                 return;
-            }
-            if session.change_stamp() != undo_before.0 {
-                session.push_undo(undo_before.1);
             }
         }
 
@@ -1827,11 +1818,11 @@ impl App {
             return;
         };
         if session.buffer[idx] != text {
-            let undo_before = (session.change_stamp(), session.snapshot());
-            if let Err(err) = session.set_line(idx, &text) {
+            session.begin_undo_point();
+            let result = session.set_line(idx, &text);
+            session.end_undo_point();
+            if let Err(err) = result {
                 self.scrollback.push(&format!("Error: {err:#}"));
-            } else if session.change_stamp() != undo_before.0 {
-                session.push_undo(undo_before.1);
             }
         }
         self.editor.set_text("");
@@ -2204,15 +2195,13 @@ impl App {
             // commits — see `VimState`) —
             // tracked individually rather than bundled into one
             // mode-wide entry.
-            let undo_before = (session.change_stamp(), session.snapshot());
+            session.begin_undo_point();
             self.scrollback.push(&format!("opb> {trimmed}"));
             let n = session.formula_first_ids()[cursor - 1];
             if let Err(err) = formula::commit(session, n, &trimmed, &mut self.scrollback) {
                 self.scrollback.push(&format!("Error: {err:#}"));
             }
-            if session.change_stamp() != undo_before.0 {
-                session.push_undo(undo_before.1);
-            }
+            session.end_undo_point();
         }
 
         self.settle_formula_browse_cursor();

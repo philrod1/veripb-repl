@@ -1,62 +1,56 @@
-//! `:undo [n]` — undo the last `n` actions (default 1), restoring the
-//! session to exactly the state from `n` actions ago. "Action" here means
-//! whatever `commands::dispatch` pushed onto `Session::undo_stack` — one
-//! bare proof line, one `:delete`, a whole `:source`'d file, an entire
-//! `:edit`/`:formula` session, one TUI browse-mode commit, and so on; see
-//! `dispatch`'s own docs for exactly what gets pushed and when. Popping
-//! more than one entry (`n > 1`) discards the intermediate ones and
-//! restores only the state from the final pop — jumping back `n` actions,
-//! not replaying through each one.
-//!
-//! This used to mean something narrower — "remove the last n accepted
-//! *lines*" — before the undo stack existed. `:delete <n>-<m>` remains
-//! the precise, line-numbered way to remove specific lines; this command
-//! is now about undoing recent actions, not addressing lines by count.
+//! `:undo [n]` — undo the last `n` actions (default 1), and `:redo [n]` —
+//! redo the last `n` actions `:undo` undid. An action is whatever
+//! `commands::dispatch` makes one undo point for: one bare proof line, one
+//! `:delete`, a whole `:source`'d file, an entire `:edit`/`:formula`
+//! session, one TUI browse-mode commit, and so on. `:delete <n>-<m>` is the
+//! line-numbered way to remove specific lines.
 
 use crate::output::{Output, outln};
 use crate::session::Session;
 
-pub fn run(session: &mut Session, args: &str, out: &mut dyn Output) {
+/// Parses the optional count (default 1), printing a usage error for
+/// `command` if it isn't a non-negative integer.
+fn count(command: &str, args: &str, out: &mut dyn Output) -> Option<usize> {
     let args = args.trim();
-    let n = if args.is_empty() {
-        1
-    } else {
-        match args.parse::<usize>() {
-            Ok(n) => n,
-            Err(_) => {
-                outln!(
-                    out,
-                    "Error: usage :undo [n] (n must be a non-negative integer)"
-                );
-                return;
-            }
-        }
-    };
-
-    let mut last = None;
-    let mut undone = 0;
-    for _ in 0..n {
-        match session.pop_undo() {
-            Some(snapshot) => {
-                last = Some(snapshot);
-                undone += 1;
-            }
-            None => break,
-        }
+    if args.is_empty() {
+        return Some(1);
     }
-    let Some(snapshot) = last else {
-        outln!(out, "(nothing to undo)");
-        return;
-    };
-
-    match session.restore_snapshot(snapshot) {
-        Ok(()) => {
+    match args.parse::<usize>() {
+        Ok(n) => Some(n),
+        Err(_) => {
             outln!(
                 out,
-                "Undid {undone} action(s); {} proof line(s) remain.",
-                session.buffer.len()
+                "Error: usage :{command} [n] (n must be a non-negative integer)"
             );
+            None
         }
-        Err(err) => outln!(out, "Error: {err:#}"),
+    }
+}
+
+pub fn run(session: &mut Session, args: &str, out: &mut dyn Output) {
+    let Some(n) = count("undo", args, out) else {
+        return;
+    };
+    match session.undo(n) {
+        0 => outln!(out, "(nothing to undo)"),
+        undone => outln!(
+            out,
+            "Undid {undone} action(s); {} proof line(s) remain.",
+            session.buffer.len()
+        ),
+    }
+}
+
+pub fn run_redo(session: &mut Session, args: &str, out: &mut dyn Output) {
+    let Some(n) = count("redo", args, out) else {
+        return;
+    };
+    match session.redo(n) {
+        0 => outln!(out, "(nothing to redo)"),
+        redone => outln!(
+            out,
+            "Redid {redone} action(s); {} proof line(s) now.",
+            session.buffer.len()
+        ),
     }
 }

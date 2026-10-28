@@ -23,6 +23,7 @@ use std::{
 use anyhow::Context as _;
 
 mod text;
+use text::Hunk;
 pub use text::{FormulaLines, ProofBuffer};
 
 use crate::checker::{self, CheckOutcome, ProofText};
@@ -42,20 +43,54 @@ pub const FULL_TRACE_MAX_LINES: usize = 10_000;
 /// the first labelled line to the last.
 const MAX_TRACE_RANGES: usize = 1_000;
 
-/// One `:undo`-stack entry: the state `restore_snapshot` restores.
-pub(crate) struct Snapshot {
-    formula: Vec<String>,
-    objective: Option<String>,
-    preserved: Option<String>,
-    buffer: Vec<String>,
+/// What an `:undo` or `:redo` entry restores besides the lines.
+struct PointState {
     checked_len: usize,
     known_bad: Option<String>,
     last_step_constraint_ids: Vec<usize>,
 }
 
+/// One `:undo` or `:redo` entry: a state to return to, and the hunks that
+/// take the lines there from the state of the entry above it. The top
+/// `:undo` entry's hunks are the ones `buffer` and `formula` are recording,
+/// from the current lines.
+struct UndoEntry {
+    state: PointState,
+    buffer: Hunk,
+    formula: Hunk,
+    /// `buffer.bytes() + formula.bytes()`.
+    bytes: usize,
+}
+
+impl UndoEntry {
+    fn new(state: PointState, buffer: Hunk, formula: Hunk) -> Self {
+        let bytes = buffer.bytes() + formula.bytes();
+        UndoEntry {
+            state,
+            buffer,
+            formula,
+            bytes,
+        }
+    }
+}
+
+/// An action's undo point, from [`Session::begin_undo_point`] until
+/// [`Session::end_undo_point`] decides whether to keep it.
+struct PendingPoint {
+    stamp: (u64, u64),
+    state: PointState,
+    /// The changes recorded before the action, which belong to the entry
+    /// below.
+    buffer: Hunk,
+    formula: Hunk,
+}
+
 /// Maximum `Session::undo_stack` entries; the oldest is dropped beyond this.
-/// Each entry clones the whole buffer, so the stack must stay bounded.
 const UNDO_STACK_CAP: usize = 200;
+
+/// Most bytes of replaced lines the undo stack keeps (see [`Hunk::bytes`]);
+/// the oldest entries are dropped beyond this, though never the newest.
+const UNDO_BYTES_CAP: usize = 256 << 20;
 
 /// A `:formula` edit's undo point. Set by `replace_formula_constraint`,
 /// consumed by `:formula cancel`, invalidated by any other command (see
@@ -117,10 +152,17 @@ pub struct Session {
     /// changes nothing, but its start is still an undo point. See
     /// [`Self::change_stamp`].
     undo_marker: u64,
-    /// Pre-action snapshots, most recent last; capped at `UNDO_STACK_CAP`.
-    pub(crate) undo_stack: VecDeque<Snapshot>,
+    /// The states before each undoable action, most recent last; capped at
+    /// `UNDO_STACK_CAP` entries and `UNDO_BYTES_CAP` bytes.
+    undo_stack: VecDeque<UndoEntry>,
+    /// The states `:undo` left, most recently undone last.
+    redo_stack: Vec<UndoEntry>,
+    /// [`Self::change_stamp`] after the last `:undo` or `:redo`; any other
+    /// change since makes `redo_stack` stale.
+    redo_stamp: (u64, u64),
+    pending_point: Option<PendingPoint>,
     /// Buffer indices with a breakpoint. Not proof state: excluded from
-    /// `Snapshot` and `generation`, ignored by `:verify`. Shifted by
+    /// undo entries and `generation`, ignored by `:verify`. Shifted by
     /// [`Self::insert_line`]/[`Self::delete_line`]; cleared by
     /// [`Self::reset`].
     pub breakpoints: BTreeSet<usize>,
@@ -207,6 +249,9 @@ impl Session {
             generation: 0,
             undo_marker: 0,
             undo_stack: VecDeque::new(),
+            redo_stack: Vec::new(),
+            redo_stamp: (0, 0),
+            pending_point: None,
             breakpoints: BTreeSet::new(),
             database_cache: std::cell::RefCell::new(None),
             formula_file: std::cell::RefCell::new(None),
@@ -745,16 +790,16 @@ impl Session {
         Ok(())
     }
 
-    /// Clears the buffer, breakpoints, and undo stack, leaving
-    /// `formula`/`variables` alone.
+    /// Clears the buffer, breakpoints, and undo history (see
+    /// [`Self::clear_undo_history`]), leaving `formula`/`variables` alone.
     pub fn reset(&mut self) -> anyhow::Result<()> {
+        self.clear_undo_history();
         self.buffer.clear();
         self.checked_len = 0;
         self.known_bad = None;
         self.last_step_constraint_ids = Vec::new();
         self.breakpoints.clear();
         self.generation += 1;
-        self.undo_stack.clear();
         Ok(())
     }
 
@@ -824,65 +869,201 @@ impl Session {
     }
 
     /// Marks an undo point without changing anything: [`Self::change_stamp`]
-    /// differs afterwards, so the caller records the state before as one
-    /// undo step.
+    /// differs afterwards, so [`Self::end_undo_point`] keeps the state before
+    /// as one undo step.
     pub(crate) fn mark_undo_point(&mut self) {
         self.undo_marker += 1;
     }
 
     /// Differs whenever the state changed or [`Self::mark_undo_point`] ran:
-    /// compared before and after an action to decide whether to push an undo
-    /// entry.
+    /// compared before and after an action to decide whether to keep its undo
+    /// point.
     pub(crate) fn change_stamp(&self) -> (u64, u64) {
         (self.generation, self.undo_marker)
     }
 
-    /// Captures the current state for [`Self::restore_snapshot`].
-    pub(crate) fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            formula: self.formula.to_vec(),
-            objective: self.objective.clone(),
-            preserved: self.preserved.clone(),
-            buffer: self.buffer.to_vec(),
+    fn point_state(&self) -> PointState {
+        PointState {
             checked_len: self.checked_len,
             known_bad: self.known_bad.clone(),
             last_step_constraint_ids: self.last_step_constraint_ids.clone(),
         }
     }
 
-    /// Pushes `snapshot` onto the undo stack, dropping the oldest entry at
-    /// `UNDO_STACK_CAP`.
-    pub(crate) fn push_undo(&mut self, snapshot: Snapshot) {
-        if self.undo_stack.len() == UNDO_STACK_CAP {
-            self.undo_stack.pop_front();
+    fn set_point_state(&mut self, state: PointState) {
+        self.checked_len = state.checked_len;
+        self.known_bad = state.known_bad;
+        self.last_step_constraint_ids = state.last_step_constraint_ids;
+    }
+
+    /// Records the hunks that undo the lines' changes from now on, or stops
+    /// recording if `None`.
+    fn record(&mut self, hunks: Option<(Hunk, Hunk)>) {
+        let (buffer, formula) = hunks.unzip();
+        self.buffer.record(buffer);
+        self.formula.record(formula);
+    }
+
+    /// Returns the hunks recorded since the last call.
+    fn take_hunks(&mut self) -> (Hunk, Hunk) {
+        (self.buffer.take_hunk(), self.formula.take_hunk())
+    }
+
+    /// Sets the top `:undo` entry's hunks, if there is one.
+    fn set_top_hunks(&mut self, (buffer, formula): (Hunk, Hunk)) {
+        if let Some(top) = self.undo_stack.back_mut() {
+            top.bytes = buffer.bytes() + formula.bytes();
+            top.buffer = buffer;
+            top.formula = formula;
         }
-        self.undo_stack.push_back(snapshot);
     }
 
-    /// Pops the most recent undo-stack entry, if any.
-    pub(crate) fn pop_undo(&mut self) -> Option<Snapshot> {
-        self.undo_stack.pop_back()
+    /// Starts an undo point for the action about to run: if the action
+    /// changes [`Self::change_stamp`], [`Self::end_undo_point`] makes the
+    /// state before it an `:undo` entry. Ends any point still open.
+    pub(crate) fn begin_undo_point(&mut self) {
+        self.end_undo_point();
+        let (buffer, formula) = self.take_hunks();
+        self.record(Some(Default::default()));
+        self.pending_point = Some(PendingPoint {
+            stamp: self.change_stamp(),
+            state: self.point_state(),
+            buffer,
+            formula,
+        });
     }
 
-    /// Restores the state `snapshot` captured and clears
-    /// `last_formula_edit`/`recoverable_buffer`.
-    pub(crate) fn restore_snapshot(&mut self, snapshot: Snapshot) -> anyhow::Result<()> {
-        if *self.formula != snapshot.formula
-            || self.objective != snapshot.objective
-            || self.preserved != snapshot.preserved
+    /// Ends the point [`Self::begin_undo_point`] started, keeping it as an
+    /// `:undo` entry if anything changed since. Clears the redo history if
+    /// so.
+    pub(crate) fn end_undo_point(&mut self) {
+        let Some(point) = self.pending_point.take() else {
+            return;
+        };
+        let changes = self.take_hunks();
+        if self.change_stamp() != point.stamp || !changes.0.is_empty() || !changes.1.is_empty() {
+            self.set_top_hunks((point.buffer, point.formula));
+            self.undo_stack.push_back(UndoEntry::new(
+                point.state,
+                Hunk::default(),
+                Hunk::default(),
+            ));
+            self.record(Some(changes));
+            self.redo_stack.clear();
+            self.trim_undo_stack();
+        } else {
+            let recording = !self.undo_stack.is_empty();
+            self.record(recording.then_some((point.buffer, point.formula)));
+        }
+    }
+
+    /// Drops the oldest `:undo` entries beyond `UNDO_STACK_CAP` and
+    /// `UNDO_BYTES_CAP`.
+    fn trim_undo_stack(&mut self) {
+        let mut bytes: usize = self.undo_stack.iter().map(|entry| entry.bytes).sum();
+        while self.undo_stack.len() > UNDO_STACK_CAP
+            || (self.undo_stack.len() > 1 && bytes > UNDO_BYTES_CAP)
         {
-            self.formula.replace(snapshot.formula);
-            self.objective = snapshot.objective;
-            self.preserved = snapshot.preserved;
+            let dropped = self.undo_stack.pop_front().expect("not empty");
+            bytes -= dropped.bytes;
         }
-        self.buffer.replace(snapshot.buffer);
-        self.checked_len = snapshot.checked_len;
-        self.known_bad = snapshot.known_bad;
-        self.last_step_constraint_ids = snapshot.last_step_constraint_ids;
+    }
+
+    /// Forgets every `:undo` and `:redo` entry. An undo point still open
+    /// stays open, as the first entry to come.
+    pub(crate) fn clear_undo_history(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        match &mut self.pending_point {
+            Some(point) => {
+                point.buffer = Hunk::default();
+                point.formula = Hunk::default();
+                self.take_hunks();
+            }
+            None => self.record(None),
+        }
+    }
+
+    /// `:undo [n]`: returns to the state before each of the last `n`
+    /// actions in turn, keeping them for [`Self::redo`]. Returns how many
+    /// it undid.
+    pub(crate) fn undo(&mut self, n: usize) -> usize {
+        self.end_undo_point();
+        self.drop_stale_redo();
+        let mut undone = 0;
+        while undone < n {
+            let Some(entry) = self.undo_stack.pop_back() else {
+                break;
+            };
+            let (buffer, formula) = self.take_hunks();
+            let state = self.point_state();
+            let redo = UndoEntry::new(
+                state,
+                self.buffer.apply(buffer),
+                self.formula.apply(formula),
+            );
+            self.set_point_state(entry.state);
+            self.redo_stack.push(redo);
+            // The entry below is now the top, so its hunks are recorded on.
+            let below = self.undo_stack.back_mut().map(|top| {
+                top.bytes = 0;
+                (
+                    std::mem::take(&mut top.buffer),
+                    std::mem::take(&mut top.formula),
+                )
+            });
+            self.record(below);
+            undone += 1;
+        }
+        if undone > 0 {
+            self.undone_or_redone();
+        }
+        undone
+    }
+
+    /// `:redo [n]`: redoes the last `n` actions `:undo` undid, if nothing
+    /// else changed since. Returns how many it redid.
+    pub(crate) fn redo(&mut self, n: usize) -> usize {
+        self.end_undo_point();
+        self.drop_stale_redo();
+        let mut redone = 0;
+        while redone < n {
+            let Some(entry) = self.redo_stack.pop() else {
+                break;
+            };
+            let below = self.take_hunks();
+            self.set_top_hunks(below);
+            let state = self.point_state();
+            let undo = (
+                self.buffer.apply(entry.buffer),
+                self.formula.apply(entry.formula),
+            );
+            self.set_point_state(entry.state);
+            self.undo_stack
+                .push_back(UndoEntry::new(state, Hunk::default(), Hunk::default()));
+            self.record(Some(undo));
+            redone += 1;
+        }
+        if redone > 0 {
+            self.trim_undo_stack();
+            self.undone_or_redone();
+        }
+        redone
+    }
+
+    /// Forgets the `:redo` entries if anything but `:undo` or `:redo` changed
+    /// the session since they were made.
+    fn drop_stale_redo(&mut self) {
+        if self.change_stamp() != self.redo_stamp {
+            self.redo_stack.clear();
+        }
+    }
+
+    fn undone_or_redone(&mut self) {
         self.last_formula_edit = None;
         self.recoverable_buffer = None;
         self.generation += 1;
-        Ok(())
+        self.redo_stamp = self.change_stamp();
     }
 
     /// Replaces the formula line holding constraint ID `n` with `new_text`.
@@ -1206,3 +1387,139 @@ fn write_formula_temp_file(
     Ok(file)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A small deterministic generator (xorshift), so failures reproduce.
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n.max(1) as u64) as usize
+        }
+    }
+
+    type State = (Vec<String>, Vec<String>, usize);
+
+    fn state(session: &Session) -> State {
+        (
+            session.formula.to_vec(),
+            session.buffer.to_vec(),
+            session.checked_len,
+        )
+    }
+
+    /// One random change through `Session`'s own methods.
+    fn change(session: &mut Session, rng: &mut Rng, log: &mut Vec<String>) {
+        let text = ["a", "b", "c"][rng.below(3)];
+        let len = session.buffer.len();
+        let op = rng.below(7);
+        log.push(format!("  change {op} on {:?}", session.buffer.to_vec()));
+        match op {
+            0 if len > 0 => session.set_line(rng.below(len), text).unwrap(),
+            1 => session.insert_line(rng.below(len + 1), text).unwrap(),
+            2 if len > 0 => session.delete_line(rng.below(len)).unwrap(),
+            3 => {
+                let lines = (0..rng.below(6)).map(|i| ["a", "b"][i % 2].to_string());
+                session.replace_buffer_unchecked(lines.collect());
+            }
+            4 => {
+                // As a verify that accepts every line.
+                session.checked_len = len;
+                session.generation += 1;
+            }
+            5 => {
+                let idx = rng.below(session.formula.len());
+                session.restore_formula_line(idx, format!("1 x{} >= 1 ;", rng.below(3) + 1));
+            }
+            _ => session.mark_undo_point(),
+        }
+    }
+
+    /// Random actions, edits outside any action (as in `:edit` mode),
+    /// `undo` and `redo`, against a model that keeps a full copy of every
+    /// state.
+    #[test]
+    fn undo_and_redo_agree_with_copying_every_state() {
+        let mut file = tempfile::Builder::new().suffix(".opb").tempfile().unwrap();
+        writeln!(file, "1 x1 >= 1 ;\n1 x2 >= 1 ;").unwrap();
+        let path = file.path().to_str().unwrap().to_string();
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        for _ in 0..200 {
+            let mut session = Session::load(&path).unwrap();
+            let (mut undo, mut redo): (Vec<State>, Vec<State>) = (Vec::new(), Vec::new());
+            let mut log = Vec::new();
+            for _ in 0..rng.below(40) {
+                let arm = rng.below(6);
+                log.push(format!("arm {arm}"));
+                match arm {
+                    0 | 1 => {
+                        let before = state(&session);
+                        let stamp = session.change_stamp();
+                        session.begin_undo_point();
+                        for _ in 0..rng.below(3) + 1 {
+                            change(&mut session, &mut rng, &mut log);
+                        }
+                        session.end_undo_point();
+                        if session.change_stamp() != stamp {
+                            undo.push(before);
+                            redo.clear();
+                        }
+                    }
+                    2 => {
+                        let stamp = session.change_stamp();
+                        change(&mut session, &mut rng, &mut log);
+                        if session.change_stamp() != stamp {
+                            redo.clear();
+                        }
+                    }
+                    3 | 4 => {
+                        let n = rng.below(3) + 1;
+                        let mut current = state(&session);
+                        for _ in 0..n.min(undo.len()) {
+                            redo.push(current);
+                            current = undo.pop().unwrap();
+                        }
+                        session.undo(n);
+                        assert_eq!(state(&session), current, "after undo {n}: {log:#?}");
+                    }
+                    _ => {
+                        let n = rng.below(3) + 1;
+                        let mut current = state(&session);
+                        for _ in 0..n.min(redo.len()) {
+                            undo.push(current);
+                            current = redo.pop().unwrap();
+                        }
+                        session.redo(n);
+                        assert_eq!(state(&session), current, "after redo {n}: {log:#?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn edits_to_a_large_buffer_keep_only_their_lines() {
+        let mut file = tempfile::Builder::new().suffix(".opb").tempfile().unwrap();
+        writeln!(file, "1 x1 >= 1 ;").unwrap();
+        let mut session = Session::load(file.path().to_str().unwrap()).unwrap();
+        session
+            .replace_buffer_unchecked((0..100_000).map(|i| format!("rup 1 x{i} >= 1 ;")).collect());
+        for i in 0..100 {
+            session.begin_undo_point();
+            session.set_line(i * 997, "rup 1 x1 >= 1 ;").unwrap();
+            session.end_undo_point();
+        }
+        session.begin_undo_point();
+        session.end_undo_point();
+        assert_eq!(session.undo_stack.len(), 100);
+        let bytes: usize = session.undo_stack.iter().map(|entry| entry.bytes).sum();
+        assert!(bytes < 100 * 64, "{bytes} bytes");
+        assert_eq!(session.undo(100), 100);
+        assert_eq!(session.buffer[997], "rup 1 x997 >= 1 ;");
+    }
+}

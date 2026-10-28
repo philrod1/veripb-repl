@@ -83,8 +83,8 @@ fn setting_a_line_to_its_own_text_changes_nothing() {
 #[test]
 fn replace_keeps_the_common_prefix() {
     let mut b = buffer(&["a", "b", "c"]);
-    let old = b.replace(lines(&["a", "b", "x", "y"]));
-    assert_eq!(old, lines(&["a", "b", "c"]));
+    b.replace(lines(&["a", "b", "x", "y"]));
+    assert_eq!(&*b, &lines(&["a", "b", "x", "y"])[..]);
     assert_eq!(b.take_changed_from(), Some(2));
 
     b.replace(lines(&["a", "b"]));
