@@ -77,8 +77,12 @@ pub fn run(session: &Session, args: &str, out: &mut dyn Output) -> anyhow::Resul
         }
     };
 
-    let text = session.listing(&conclusion);
-    match fs::write(path, text) {
+    let written = fs::File::create(path).and_then(|file| {
+        let mut writer = std::io::BufWriter::new(file);
+        session.write_listing(&conclusion, &mut writer)?;
+        std::io::Write::flush(&mut writer)
+    });
+    match written {
         Ok(()) => outln!(
             out,
             "Saved {} line(s) to {path} (conclusion {conclusion}).",

@@ -25,7 +25,7 @@ use anyhow::Context as _;
 mod text;
 pub use text::{FormulaLines, ProofBuffer};
 
-use crate::checker::{self, CheckOutcome};
+use crate::checker::{self, CheckOutcome, ProofText};
 use crate::varnames::VarNames;
 
 /// Lines in a synthesized v3 proof preamble.
@@ -128,6 +128,8 @@ pub struct Session {
     /// refreshed lazily by [`Self::database`]. A `RefCell` so read-only
     /// (`&Session`) contexts can populate it.
     database_cache: std::cell::RefCell<Option<DatabaseCache>>,
+    /// [`Self::formula_temp_file`]'s file, for a `FormulaLines::epoch`.
+    formula_file: std::cell::RefCell<Option<(u64, std::rc::Rc<tempfile::NamedTempFile>)>>,
 }
 
 /// One refresh of [`Session::database`]: the generation it was computed
@@ -207,6 +209,7 @@ impl Session {
             undo_stack: VecDeque::new(),
             breakpoints: BTreeSet::new(),
             database_cache: std::cell::RefCell::new(None),
+            formula_file: std::cell::RefCell::new(None),
         })
     }
 
@@ -321,35 +324,34 @@ impl Session {
         ]
     }
 
-    /// Returns the preamble followed by `lines`, newline-terminated, ready
-    /// for [`checker::check`] and friends.
-    fn preamble_and_lines(&self, lines: &[String]) -> String {
-        let mut text = String::new();
-        for line in self.preamble_lines() {
-            text.push_str(&line);
-            text.push('\n');
+    /// The current formula in a temp `.opb` file, written once per
+    /// `FormulaLines::epoch`.
+    fn formula_temp_file(&self) -> anyhow::Result<std::rc::Rc<tempfile::NamedTempFile>> {
+        let epoch = self.formula.epoch();
+        let mut cached = self.formula_file.borrow_mut();
+        if let Some((cached_epoch, file)) = &*cached
+            && *cached_epoch == epoch
+        {
+            return Ok(file.clone());
         }
-        for line in lines {
-            text.push_str(line);
-            text.push('\n');
-        }
-        text
+        let file = std::rc::Rc::new(write_formula_temp_file(
+            &self.formula,
+            &self.objective,
+            &self.preserved,
+        )?);
+        *cached = Some((epoch, file.clone()));
+        Ok(file)
     }
 
-    /// Writes the current formula to a fresh temp `.opb` file.
-    fn formula_temp_file(&self) -> anyhow::Result<tempfile::NamedTempFile> {
-        write_formula_temp_file(&self.formula, &self.objective, &self.preserved)
-    }
-
-    /// Checks `text` against the current formula, tracing `trace_range`
+    /// Checks `proof` against the current formula, tracing `trace_range`
     /// (display lines, inclusive).
     fn check(
         &self,
-        text: &str,
+        proof: ProofText,
         trace_range: Option<(usize, usize)>,
     ) -> anyhow::Result<CheckOutcome> {
         let formula_file = self.formula_temp_file()?;
-        checker::check(formula_file.path(), text, trace_range)
+        checker::check(formula_file.path(), proof, trace_range)
     }
 
     /// Returns the live database for `buffer[..checked_len]`, re-running
@@ -391,7 +393,8 @@ impl Session {
     fn compute_database(
         &self,
     ) -> anyhow::Result<(checker::Database, ahash::AHashMap<String, isize>)> {
-        let text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
+        let preamble = self.preamble_lines();
+        let proof = proof(&preamble, &self.buffer[..self.checked_len], &[]);
         let formula_file = self.formula_temp_file()?;
         // Trace the checked labelled lines too, to learn which IDs they
         // derived. The trace is read as veripb writes it, keeping only the
@@ -404,7 +407,7 @@ impl Session {
         };
         let mut ids = checker::parse::ConstraintIdsByLine::new(labelled);
         let (_, database) =
-            checker::check_with_database(formula_file.path(), &text, &trace_ranges, |line| {
+            checker::check_with_database(formula_file.path(), proof, &trace_ranges, |line| {
                 ids.feed(line)
             })?;
         let ids_by_line = ids.finish();
@@ -444,9 +447,10 @@ impl Session {
     /// Returns the best-known objective bounds for `buffer[..checked_len]`.
     /// Uncached: one `veripb` call per call.
     pub fn objective_bounds(&self) -> anyhow::Result<checker::ObjectiveBounds> {
-        let text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
+        let preamble = self.preamble_lines();
+        let proof = proof(&preamble, &self.buffer[..self.checked_len], &[]);
         let formula_file = self.formula_temp_file()?;
-        checker::show_objective_bounds(formula_file.path(), &text)
+        checker::show_objective_bounds(formula_file.path(), proof)
     }
 
     /// Returns the preserved set as of the checked prefix: the declared set
@@ -472,8 +476,11 @@ impl Session {
         };
 
         let line = self.display_line(idx);
-        let text = self.preamble_and_lines(&self.buffer[..=idx]);
-        let current = match self.check(&text, Some((line, line)))? {
+        let preamble = self.preamble_lines();
+        let current = match self.check(
+            proof(&preamble, &self.buffer[..=idx], &[]),
+            Some((line, line)),
+        )? {
             CheckOutcome::Accepted { trace } => checker::parse::last_preserved_set(&trace)
                 .with_context(|| {
                     format!(
@@ -498,14 +505,13 @@ impl Session {
     /// trace and the rejection message, if any. Panics if
     /// `checked_len == buffer.len()`.
     fn verify_next(&mut self) -> anyhow::Result<(String, Option<String>)> {
-        let candidate_line = self.buffer[self.checked_len].clone();
-        let mut text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
-        text.push_str(&candidate_line);
-        text.push('\n');
+        // The checked prefix and the candidate line.
+        let preamble = self.preamble_lines();
+        let proof = proof(&preamble, &self.buffer[..=self.checked_len], &[]);
 
         // Trace only the new line; the prefix was traced when accepted.
         let candidate_line_no = PREAMBLE_LINES + self.checked_len + 1;
-        let outcome = self.check(&text, Some((candidate_line_no, candidate_line_no)))?;
+        let outcome = self.check(proof, Some((candidate_line_no, candidate_line_no)))?;
 
         match outcome {
             CheckOutcome::Accepted { trace } => {
@@ -549,8 +555,9 @@ impl Session {
         } else {
             PREAMBLE_LINES + self.checked_len + 1
         };
-        let text = self.preamble_and_lines(&self.buffer[..boundary]);
-        let outcome = self.check(&text, Some((candidate_start, candidate_end)))?;
+        let preamble = self.preamble_lines();
+        let proof = proof(&preamble, &self.buffer[..boundary], &[]);
+        let outcome = self.check(proof, Some((candidate_start, candidate_end)))?;
         let rejected_idx = match outcome {
             CheckOutcome::Accepted { trace } => {
                 self.checked_len = boundary;
@@ -955,15 +962,17 @@ impl Session {
         Ok(())
     }
 
-    /// Returns the full `.pbp` text: preamble, the whole buffer (checked or
-    /// not), and `output NONE; conclusion <conclusion>; end pseudo-Boolean
-    /// proof;`. Not checked; see [`Self::dry_run_conclusion`].
-    pub fn listing(&self, conclusion: &str) -> String {
-        let mut text = self.preamble_and_lines(&self.buffer);
-        text.push_str("output NONE;\n");
-        text.push_str(&format!("conclusion {conclusion};\n"));
-        text.push_str("end pseudo-Boolean proof;\n");
-        text
+    /// Writes the full `.pbp` text to `w`: preamble, the whole buffer
+    /// (checked or not), and `output NONE; conclusion <conclusion>; end
+    /// pseudo-Boolean proof;`. Not checked; see [`Self::dry_run_conclusion`].
+    pub fn write_listing(
+        &self,
+        conclusion: &str,
+        w: &mut impl std::io::Write,
+    ) -> std::io::Result<()> {
+        let preamble = self.preamble_lines();
+        let tail = closing_lines(conclusion);
+        proof(&preamble, &self.buffer, &tail).write_to(w, || true)
     }
 
     /// Checks whether the checked prefix plus `output NONE; conclusion
@@ -974,12 +983,12 @@ impl Session {
         &self,
         conclusion: &str,
     ) -> anyhow::Result<(String, Result<(), String>)> {
-        let mut text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
-        text.push_str("output NONE;\n");
-        text.push_str(&format!("conclusion {conclusion};\n"));
-        text.push_str("end pseudo-Boolean proof;\n");
-
-        match self.check(&text, None)? {
+        let preamble = self.preamble_lines();
+        let tail = closing_lines(conclusion);
+        match self.check(
+            proof(&preamble, &self.buffer[..self.checked_len], &tail),
+            None,
+        )? {
             CheckOutcome::Accepted { trace } => Ok((trace, Ok(()))),
             CheckOutcome::Rejected { message, trace, .. } => Ok((trace, Err(message))),
         }
@@ -992,9 +1001,12 @@ impl Session {
             return Ok(Err(unchecked_or_out_of_range(self, display_line)));
         };
 
-        let text = self.preamble_and_lines(&self.buffer[..=idx]);
+        let preamble = self.preamble_lines();
         let formula_file = self.formula_temp_file()?;
-        match checker::explain_line(formula_file.path(), &text)? {
+        match checker::explain_line(
+            formula_file.path(),
+            proof(&preamble, &self.buffer[..=idx], &[]),
+        )? {
             CheckOutcome::Accepted { trace } => Ok(Ok(trace)),
             CheckOutcome::Rejected { message, .. } => Ok(Err(format!(
                 "internal error: replaying line {display_line}, which should already be \
@@ -1013,9 +1025,12 @@ impl Session {
             return Ok(Err(unchecked_or_out_of_range(self, display_line)));
         };
 
-        let text = self.preamble_and_lines(&self.buffer[..=idx]);
+        let preamble = self.preamble_lines();
         let formula_file = self.formula_temp_file()?;
-        match checker::elaborate_rup(formula_file.path(), &text)? {
+        match checker::elaborate_rup(
+            formula_file.path(),
+            proof(&preamble, &self.buffer[..=idx], &[]),
+        )? {
             Ok(Some(hints)) => Ok(Ok(hints)),
             Ok(None) => Ok(Err(format!(
                 "line {display_line} doesn't look like a `rup` step — no hints to show."
@@ -1064,10 +1079,11 @@ impl Session {
         let missing_ids = ids.into_iter().filter(|id| database.get(*id).is_none()).collect();
         drop(database);
 
-        let mut text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
-        text.push_str(&format!("{prefix} ;\n"));
+        let preamble = self.preamble_lines();
+        let tail = [format!("{prefix} ;")];
         let formula_file = self.formula_temp_file()?;
-        let without_hints = match checker::elaborate_rup(formula_file.path(), &text)? {
+        let proof = proof(&preamble, &self.buffer[..self.checked_len], &tail);
+        let without_hints = match checker::elaborate_rup(formula_file.path(), proof)? {
             Ok(hints) => Ok(hints.unwrap_or_default()),
             Err(message) => Err(message),
         };
@@ -1146,6 +1162,24 @@ fn read_formula_lines(path: &str) -> anyhow::Result<(Vec<String>, Option<String>
     Ok((formula, objective, preserved))
 }
 
+/// The proof `preamble`, `body`, `tail`, for [`checker`].
+fn proof<'a>(preamble: &'a [String], body: &'a [String], tail: &'a [String]) -> ProofText<'a> {
+    ProofText::Lines {
+        preamble,
+        body,
+        tail,
+    }
+}
+
+/// A proof's closing lines, concluding `conclusion`.
+fn closing_lines(conclusion: &str) -> [String; 3] {
+    [
+        "output NONE;".to_string(),
+        format!("conclusion {conclusion};"),
+        "end pseudo-Boolean proof;".to_string(),
+    ]
+}
+
 /// Writes `objective`, `preserved`, then `formula` to a fresh temp `.opb`
 /// file.
 fn write_formula_temp_file(
@@ -1157,15 +1191,18 @@ fn write_formula_temp_file(
         .suffix(".opb")
         .tempfile()
         .context("failed to create a temp file for the formula")?;
-    if let Some(objective) = objective {
-        writeln!(file, "{objective}").context("failed to write the temp formula file")?;
+    let mut writer = std::io::BufWriter::new(file.as_file_mut());
+    let lines = objective
+        .iter()
+        .chain(preserved.iter())
+        .chain(formula.iter());
+    for line in lines {
+        writeln!(writer, "{line}").context("failed to write the temp formula file")?;
     }
-    if let Some(preserved) = preserved {
-        writeln!(file, "{preserved}").context("failed to write the temp formula file")?;
-    }
-    for line in formula {
-        writeln!(file, "{line}").context("failed to write the temp formula file")?;
-    }
+    writer
+        .flush()
+        .context("failed to write the temp formula file")?;
+    drop(writer);
     Ok(file)
 }
 
