@@ -339,6 +339,11 @@ impl<F: Fn(usize) -> bool> ConstraintIdsByLine<F> {
         }
     }
 
+    /// The proof line of the latest `line <N>:` marker fed, if any.
+    pub fn current_line(&self) -> Option<usize> {
+        self.current.map(|(n, _)| n)
+    }
+
     /// What each wanted proof line derived.
     pub fn finish(self) -> std::collections::BTreeMap<usize, Vec<usize>> {
         self.by_line

@@ -17,12 +17,19 @@ fn veripb_binary() -> std::ffi::OsString {
 
 thread_local! {
     static INVOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DATABASE_DUMPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Returns how many times this thread has run `veripb`.
 #[doc(hidden)]
 pub fn invocation_count() -> usize {
     INVOCATIONS.with(std::cell::Cell::get)
+}
+
+/// Returns how many of [`invocation_count`]'s runs dumped the database.
+#[doc(hidden)]
+pub fn database_dump_count() -> usize {
+    DATABASE_DUMPS.with(std::cell::Cell::get)
 }
 
 /// The raw output of one `veripb` invocation.
@@ -348,6 +355,7 @@ where
 {
     let scratch = tempfile::NamedTempFile::new()
         .context("failed to create a scratch file for the database dump")?;
+    DATABASE_DUMPS.with(|dumps| dumps.set(dumps.get() + 1));
     let mut args: Vec<std::ffi::OsString> = vec!["--dump-database".into(), scratch.path().into()];
     args.extend(extra_args.into_iter().map(|s| s.as_ref().to_os_string()));
 

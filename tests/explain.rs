@@ -79,7 +79,7 @@ fn reject_pending(session: &mut Session, line: &str) {
     session
         .insert_line(session.buffer.len(), line)
         .expect("insert should not fail");
-    session.step().expect("step should not fail to invoke");
+    session.step(1).expect("step should not fail to invoke");
     assert!(
         session.known_bad.is_some(),
         "{line:?} was unexpectedly accepted"
