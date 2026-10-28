@@ -1320,7 +1320,7 @@ fn formula_content<'a>(
 /// step) are marked `debug_current`. On error, one pinned error line.
 fn database_content<'a>(
     session: &'a Session,
-    database: &'a anyhow::Result<std::cell::Ref<'a, Database>>,
+    database: &'a anyhow::Result<std::rc::Rc<Database>>,
     hint_vars: &'a [String],
     debug_ids: &'a [usize],
     widths: &mut PaneWidths,
