@@ -22,7 +22,9 @@ use std::{
 
 use anyhow::Context as _;
 
+mod line_ids;
 mod text;
+use line_ids::LineIds;
 use text::Hunk;
 pub use text::{FormulaLines, ProofBuffer};
 
@@ -170,6 +172,8 @@ pub struct Session {
     /// refreshed lazily by [`Self::database`]. A `RefCell` so read-only
     /// (`&Session`) contexts can populate it.
     database_cache: std::cell::RefCell<Option<DatabaseCache>>,
+    /// See [`Self::line_ids`]. A `RefCell` as `database_cache` is.
+    line_ids: std::cell::RefCell<LineIds>,
     /// [`Self::formula_temp_file`]'s file, for a `FormulaLines::epoch`.
     formula_file: std::cell::RefCell<Option<(u64, std::rc::Rc<tempfile::NamedTempFile>)>>,
 }
@@ -179,11 +183,26 @@ pub struct Session {
 /// the error computing them.
 struct DatabaseCache {
     generation: u64,
-    contents: Result<(checker::Database, ahash::AHashMap<String, isize>), String>,
+    contents: Result<
+        (
+            std::rc::Rc<checker::Database>,
+            ahash::AHashMap<String, isize>,
+        ),
+        String,
+    >,
     /// [`Session::labels_by_id`], once asked for.
     labels_by_id: std::cell::OnceCell<std::rc::Rc<LabelsById>>,
     /// [`Session::live_labels`], once asked for.
     live_labels: std::cell::OnceCell<std::rc::Rc<Vec<String>>>,
+}
+
+/// Where a constraint came from (see [`Session::constraint_source`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstraintSource {
+    /// Formula line `line` (an index into `Session::formula`).
+    Formula { line: usize },
+    /// The checked proof line at `display_line`.
+    Proof { display_line: usize },
 }
 
 /// Each constraint ID's labels, sorted.
@@ -254,6 +273,7 @@ impl Session {
             pending_point: None,
             breakpoints: BTreeSet::new(),
             database_cache: std::cell::RefCell::new(None),
+            line_ids: std::cell::RefCell::default(),
             formula_file: std::cell::RefCell::new(None),
         })
     }
@@ -402,81 +422,146 @@ impl Session {
     /// Returns the live database for `buffer[..checked_len]`, re-running
     /// `veripb` only if `generation` changed since it was cached. Unchecked
     /// lines are not reflected. Takes `&self` so read-only contexts can call
-    /// it; the returned `Ref` derefs to `checker::Database`.
-    pub fn database(&self) -> anyhow::Result<std::cell::Ref<'_, checker::Database>> {
+    /// it.
+    pub fn database(&self) -> anyhow::Result<std::rc::Rc<checker::Database>> {
         let fresh = matches!(
             &*self.database_cache.borrow(),
             Some(cache) if cache.generation == self.generation
         );
         if !fresh {
-            let contents = self.compute_database().map_err(|err| format!("{err:#}"));
-            *self.database_cache.borrow_mut() = Some(DatabaseCache {
-                generation: self.generation,
-                contents,
-                labels_by_id: std::cell::OnceCell::new(),
-                live_labels: std::cell::OnceCell::new(),
-            });
+            self.refresh_database(&[]);
         }
-        std::cell::Ref::filter_map(self.database_cache.borrow(), |cache| {
-            cache
-                .as_ref()?
-                .contents
-                .as_ref()
-                .ok()
-                .map(|(database, _)| database)
-        })
-        .map_err(|cache| {
-            let message = cache
-                .as_ref()
-                .and_then(|cache| cache.contents.as_ref().err());
-            anyhow::anyhow!("{}", message.expect("just populated above"))
-        })
+        match &self
+            .database_cache
+            .borrow()
+            .as_ref()
+            .expect("just populated")
+            .contents
+        {
+            Ok((database, _)) => Ok(database.clone()),
+            Err(message) => Err(anyhow::anyhow!("{message}")),
+        }
+    }
+
+    /// Recomputes the database cache, tracing buffer lines `extra` too if
+    /// their IDs aren't kept (see [`Self::line_ids`]).
+    fn refresh_database(&self, extra: &[usize]) {
+        let contents = self
+            .compute_database(extra)
+            .map_err(|err| format!("{err:#}"));
+        *self.database_cache.borrow_mut() = Some(DatabaseCache {
+            generation: self.generation,
+            contents,
+            labels_by_id: std::cell::OnceCell::new(),
+            live_labels: std::cell::OnceCell::new(),
+        });
     }
 
     /// Runs `veripb` over `buffer[..checked_len]` for [`Self::database`]:
-    /// the database and every label's constraint ID.
+    /// the database and every label's constraint ID. Traces the checked
+    /// labelled lines whose IDs aren't kept, and the checked lines of
+    /// `extra`, keeping what they derived.
     fn compute_database(
         &self,
-    ) -> anyhow::Result<(checker::Database, ahash::AHashMap<String, isize>)> {
+        extra: &[usize],
+    ) -> anyhow::Result<(
+        std::rc::Rc<checker::Database>,
+        ahash::AHashMap<String, isize>,
+    )> {
+        let checked = &self.buffer[..self.checked_len];
+        let wanted = self.lines_to_trace(extra);
+
         let preamble = self.preamble_lines();
-        let proof = proof(&preamble, &self.buffer[..self.checked_len], &[]);
+        let proof = proof(&preamble, checked, &[]);
         let formula_file = self.formula_temp_file()?;
-        // Trace the checked labelled lines too, to learn which IDs they
-        // derived. The trace is read as veripb writes it, keeping only the
-        // labelled lines' IDs: it can be several times the proof's size.
-        let trace_ranges = self.labelled_line_ranges();
-        let labelled = |n: usize| {
+        // The trace is read as veripb writes it, keeping only the wanted
+        // lines' IDs: it can be several times the proof's size.
+        let is_wanted = |n: usize| {
             n.checked_sub(PREAMBLE_LINES + 1)
-                .and_then(|idx| self.buffer[..self.checked_len].get(idx))
-                .is_some_and(|line| !checker::parse::leading_labels(line).is_empty())
+                .is_some_and(|idx| wanted.binary_search(&idx).is_ok())
         };
-        let mut ids = checker::parse::ConstraintIdsByLine::new(labelled);
-        let (_, database) =
-            checker::check_with_database(formula_file.path(), proof, &trace_ranges, |line| {
-                ids.feed(line)
-            })?;
-        let ids_by_line = ids.finish();
+        let mut traced = checker::parse::ConstraintIdsByLine::new(is_wanted);
+        let (_, database) = checker::check_with_database(
+            formula_file.path(),
+            proof,
+            &self.trace_ranges(&wanted),
+            |line| traced.feed(line),
+        )?;
+        let mut ids = self.line_ids();
+        ids.insert(
+            traced
+                .finish()
+                .into_iter()
+                .map(|(n, ids)| (n - PREAMBLE_LINES - 1, ids)),
+        );
+
         let mut labels = self.formula_labels();
-        for (idx, line) in self.buffer[..self.checked_len].iter().enumerate() {
-            let Some(ids) = ids_by_line.get(&self.display_line(idx)) else {
+        for (idx, line) in checked.iter().enumerate() {
+            let names = checker::parse::leading_labels(line);
+            if names.is_empty() {
+                continue;
+            }
+            let Some(line_ids) = ids.get(idx) else {
                 continue;
             };
-            for (label, id) in checker::parse::leading_labels(line).into_iter().zip(ids) {
+            for (label, id) in names.into_iter().zip(line_ids) {
                 labels.insert(label.to_string(), *id as isize);
             }
         }
-        Ok((database, labels))
+        Ok((std::rc::Rc::new(database), labels))
     }
 
-    /// The display-line ranges of the checked lines with leading `@label`s,
+    /// The checked lines whose IDs aren't kept that are labelled or in
+    /// `extra`, ascending: what [`Self::compute_database`] traces.
+    fn lines_to_trace(&self, extra: &[usize]) -> Vec<usize> {
+        let checked = &self.buffer[..self.checked_len];
+        let ids = self.line_ids();
+        let mut wanted: Vec<usize> = checked
+            .iter()
+            .enumerate()
+            .filter(|(idx, line)| {
+                !ids.contains(*idx) && !checker::parse::leading_labels(line).is_empty()
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+        wanted.extend(
+            extra
+                .iter()
+                .filter(|&&idx| idx < self.checked_len && !ids.contains(idx)),
+        );
+        wanted.sort_unstable();
+        wanted.dedup();
+        wanted
+    }
+
+    /// What proof lines derived, as far as it is known, with what edits
+    /// since made stale dropped.
+    fn line_ids(&self) -> std::cell::RefMut<'_, LineIds> {
+        let mut ids = self.line_ids.borrow_mut();
+        ids.sync(self.formula.epoch(), self.buffer.take_changed_from());
+        ids
+    }
+
+    /// Keeps what each line traced in `trace` (a checker's output for the
+    /// current buffer) derived.
+    fn keep_traced_ids(&self, trace: &str) {
+        let mut traced = checker::parse::ConstraintIdsByLine::new(|_| true);
+        for line in trace.lines() {
+            traced.feed(line);
+        }
+        let traced = traced
+            .finish()
+            .into_iter()
+            .filter_map(|(n, ids)| n.checked_sub(PREAMBLE_LINES + 1).map(|idx| (idx, ids)));
+        self.line_ids().insert(traced);
+    }
+
+    /// The display-line ranges of buffer lines `lines` (ascending),
     /// consecutive lines merged; one range from the first to the last if
     /// there would be more than [`MAX_TRACE_RANGES`].
-    fn labelled_line_ranges(&self) -> Vec<(usize, usize)> {
+    fn trace_ranges(&self, lines: &[usize]) -> Vec<(usize, usize)> {
         let mut ranges: Vec<(usize, usize)> = Vec::new();
-        for (idx, line) in self.buffer[..self.checked_len].iter().enumerate() {
-            if checker::parse::leading_labels(line).is_empty() {
-                continue;
-            }
+        for &idx in lines {
             let n = self.display_line(idx);
             match ranges.last_mut() {
                 Some((_, hi)) if *hi + 1 == n => *hi = n,
@@ -487,6 +572,54 @@ impl Session {
             ranges = vec![(ranges[0].0, ranges[ranges.len() - 1].1)];
         }
         ranges
+    }
+
+    /// Returns the constraint IDs checked line `display_line` derived, or
+    /// `None` if it isn't a checked proof line. Kept once known; else one
+    /// `veripb` run, which also refreshes [`Self::database`].
+    pub fn line_constraint_ids(&self, display_line: usize) -> anyhow::Result<Option<Vec<usize>>> {
+        let Some(idx) = self.checked_index(display_line) else {
+            return Ok(None);
+        };
+        if let Some(ids) = self.line_ids().get(idx) {
+            return Ok(Some(ids.to_vec()));
+        }
+        self.refresh_database(&[idx]);
+        self.database()?;
+        Ok(self.line_ids().get(idx).map(<[usize]>::to_vec))
+    }
+
+    /// Returns where constraint `id` came from: a formula line, or the
+    /// checked proof line that derived it. `None` if neither. Kept once
+    /// known; else one `veripb` run tracing every checked line whose IDs
+    /// aren't kept, which also refreshes [`Self::database`].
+    pub fn constraint_source(&self, id: usize) -> anyhow::Result<Option<ConstraintSource>> {
+        if (1..=self.formula_constraint_count()).contains(&id) {
+            return Ok(self
+                .formula_index(id)
+                .map(|line| ConstraintSource::Formula { line }));
+        }
+        let to_proof_line = |idx: usize| ConstraintSource::Proof {
+            display_line: self.display_line(idx),
+        };
+        if let Some(idx) = self.line_ids().line_of(id, self.checked_len) {
+            return Ok(Some(to_proof_line(idx)));
+        }
+        let unkept: Vec<usize> = {
+            let ids = self.line_ids();
+            (0..self.checked_len)
+                .filter(|&idx| !ids.contains(idx))
+                .collect()
+        };
+        if unkept.is_empty() {
+            return Ok(None);
+        }
+        self.refresh_database(&unkept);
+        self.database()?;
+        Ok(self
+            .line_ids()
+            .line_of(id, self.checked_len)
+            .map(to_proof_line))
     }
 
     /// Returns the best-known objective bounds for `buffer[..checked_len]`.
@@ -560,6 +693,7 @@ impl Session {
 
         match outcome {
             CheckOutcome::Accepted { trace } => {
+                self.keep_traced_ids(&trace);
                 self.checked_len += 1;
                 self.known_bad = None;
                 self.last_step_constraint_ids = checker::parse::last_line_constraint_ids(&trace);
@@ -605,6 +739,7 @@ impl Session {
         let outcome = self.check(proof, Some((candidate_start, candidate_end)))?;
         let rejected_idx = match outcome {
             CheckOutcome::Accepted { trace } => {
+                self.keep_traced_ids(&trace);
                 self.checked_len = boundary;
                 self.known_bad = None;
                 self.last_step_constraint_ids = checker::parse::last_line_constraint_ids(&trace);
@@ -1521,5 +1656,209 @@ mod tests {
         assert!(bytes < 100 * 64, "{bytes} bytes");
         assert_eq!(session.undo(100), 100);
         assert_eq!(session.buffer[997], "rup 1 x997 >= 1 ;");
+    }
+
+    /// Whether `$VERIPB_REPL_VERIPB_BIN` is set, so `veripb` can run.
+    fn have_veripb() -> bool {
+        let set = std::env::var_os("VERIPB_REPL_VERIPB_BIN").is_some();
+        if !set {
+            eprintln!("skipping: VERIPB_REPL_VERIPB_BIN not set");
+        }
+        set
+    }
+
+    const CHAIN: usize = 8;
+
+    /// x1 -> x2 -> ... -> x8 (labelled @c<i>) and ~x8, so every
+    /// `rup 1 ~x<i> >= 1 ;` holds.
+    fn chain_session() -> (tempfile::NamedTempFile, Session) {
+        let mut file = tempfile::Builder::new().suffix(".opb").tempfile().unwrap();
+        for i in 1..CHAIN {
+            writeln!(file, "@c{i} 1 ~x{i} 1 x{} >= 1 ;", i + 1).unwrap();
+        }
+        writeln!(file, "1 ~x{CHAIN} >= 1 ;").unwrap();
+        let session = Session::load(file.path().to_str().unwrap()).unwrap();
+        (file, session)
+    }
+
+    /// A proof line: mostly a `rup` that holds, often labelled, sometimes
+    /// one that doesn't, or a comment (which shifts the IDs after it).
+    fn random_line(rng: &mut Rng) -> String {
+        let label = ["", "@a ", "@b ", "@c "][rng.below(4)];
+        match rng.below(8) {
+            0 => format!("{label}rup 1 x1 >= 1 ;"),
+            1 | 2 => "% derives nothing".to_string(),
+            _ => format!("{label}rup 1 ~x{} >= 1 ;", rng.below(CHAIN) + 1),
+        }
+    }
+
+    /// What every checked line derived, from one run tracing them all.
+    fn traced_ids(session: &Session) -> std::collections::BTreeMap<usize, Vec<usize>> {
+        if session.checked_len == 0 {
+            return Default::default();
+        }
+        let preamble = session.preamble_lines();
+        let range = (PREAMBLE_LINES + 1, PREAMBLE_LINES + session.checked_len);
+        let outcome = session
+            .check(
+                proof(&preamble, &session.buffer[..session.checked_len], &[]),
+                Some(range),
+            )
+            .unwrap();
+        let CheckOutcome::Accepted { trace } = outcome else {
+            panic!("the checked lines were rejected");
+        };
+        let mut traced = checker::parse::ConstraintIdsByLine::new(|_| true);
+        for line in trace.lines() {
+            traced.feed(line);
+        }
+        traced
+            .finish()
+            .into_iter()
+            .map(|(n, ids)| (n - PREAMBLE_LINES - 1, ids))
+            .collect()
+    }
+
+    /// The labels [`Session::label_ids`] should give, from `traced_ids`.
+    fn traced_labels(session: &Session) -> ahash::AHashMap<String, isize> {
+        let traced = traced_ids(session);
+        let mut labels = session.formula_labels();
+        for (idx, line) in session.buffer[..session.checked_len].iter().enumerate() {
+            for (label, id) in checker::parse::leading_labels(line)
+                .into_iter()
+                .zip(traced.get(&idx).into_iter().flatten())
+            {
+                labels.insert(label.to_string(), *id as isize);
+            }
+        }
+        labels
+    }
+
+    /// Random edits, checks, steps back, formula changes and undos: the
+    /// kept IDs and the labels always match a run tracing every line.
+    #[test]
+    fn kept_ids_agree_with_tracing_every_line() {
+        if !have_veripb() {
+            return;
+        }
+        let mut rng = Rng(0x853c_49e6_748f_ea9b);
+        for _ in 0..12 {
+            let (_file, mut session) = chain_session();
+            for _ in 0..25 {
+                let len = session.buffer.len();
+                let op = rng.below(9);
+                if op == 8 {
+                    session.undo(1);
+                } else {
+                    session.begin_undo_point();
+                    match op {
+                        0 | 1 => {
+                            session.append_line(&random_line(&mut rng)).unwrap();
+                        }
+                        2 if len > 0 => session
+                            .set_line(rng.below(len), &random_line(&mut rng))
+                            .unwrap(),
+                        3 => session
+                            .insert_line(rng.below(len + 1), &random_line(&mut rng))
+                            .unwrap(),
+                        4 if len > 0 => session.delete_line(rng.below(len)).unwrap(),
+                        6 => {
+                            session.step_back().unwrap();
+                        }
+                        7 => {
+                            let i = rng.below(CHAIN - 1) + 1;
+                            let k = rng.below(2) + 1;
+                            let text = format!("@c{i} {k} ~x{i} {k} x{} >= {k} ;", i + 1);
+                            session.restore_formula_line(i - 1, text);
+                        }
+                        _ => {
+                            session.drive_forward().unwrap();
+                        }
+                    }
+                    session.end_undo_point();
+                }
+
+                let labels = session.label_ids();
+                let traced = traced_ids(&session);
+                let ids = session.line_ids();
+                for (idx, expected) in &traced {
+                    if let Some(kept) = ids.get(*idx) {
+                        assert_eq!(
+                            kept,
+                            &expected[..],
+                            "line {idx} of {:?}",
+                            &session.buffer[..]
+                        );
+                    }
+                }
+                drop(ids);
+                assert_eq!(labels, traced_labels(&session), "{:?}", &session.buffer[..]);
+                assert!(session.lines_to_trace(&[]).is_empty());
+            }
+        }
+    }
+
+    fn verified_chain() -> (tempfile::NamedTempFile, Session) {
+        let (file, mut session) = chain_session();
+        for i in (1..=CHAIN).rev() {
+            session.buffer.push(format!("@u{i} rup 1 ~x{i} >= 1 ;"));
+        }
+        session.buffer.push("rup 1 ~x1 >= 1 ;".to_string());
+        session.drive_forward().unwrap();
+        assert_eq!(session.checked_len, CHAIN + 1);
+        (file, session)
+    }
+
+    #[test]
+    fn verified_lines_need_no_trace_later() {
+        if !have_veripb() {
+            return;
+        }
+        let (_file, mut session) = verified_chain();
+        assert!(session.lines_to_trace(&[]).is_empty(), "kept by :verify");
+        let runs = checker::invoke::invocation_count();
+        assert_eq!(
+            session.line_constraint_ids(3).unwrap(),
+            Some(vec![CHAIN + 1])
+        );
+        assert_eq!(checker::invoke::invocation_count(), runs);
+
+        session.database().unwrap();
+        session.step_back().unwrap();
+        session.restart().unwrap();
+        session.drive_forward().unwrap();
+        assert!(
+            session.lines_to_trace(&[]).is_empty(),
+            "kept across :restart"
+        );
+        assert_eq!(session.label_ids()["@u1"], (2 * CHAIN) as isize);
+
+        session.set_line(2, "@u6 rup 1 ~x2 >= 1 ;").unwrap();
+        session.drive_forward().unwrap();
+        session.database().unwrap();
+        assert_eq!(session.label_ids()["@u6"], (CHAIN + 3) as isize);
+    }
+
+    #[test]
+    fn constraint_sources_are_found_and_kept() {
+        if !have_veripb() {
+            return;
+        }
+        let (_file, session) = verified_chain();
+        assert_eq!(
+            session.constraint_source(2).unwrap(),
+            Some(ConstraintSource::Formula { line: 1 })
+        );
+        assert_eq!(
+            session.constraint_source(CHAIN + 2).unwrap(),
+            Some(ConstraintSource::Proof { display_line: 4 })
+        );
+        assert_eq!(session.constraint_source(1000).unwrap(), None);
+        let runs = checker::invoke::invocation_count();
+        assert_eq!(
+            session.constraint_source(CHAIN + 3).unwrap(),
+            Some(ConstraintSource::Proof { display_line: 5 })
+        );
+        assert_eq!(checker::invoke::invocation_count(), runs);
     }
 }
