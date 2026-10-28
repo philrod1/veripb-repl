@@ -144,18 +144,8 @@ fn parse_count(cmd: &str, args: &str, out: &mut dyn Output) -> Option<usize> {
 /// or the end of the buffer.
 fn step_forward(session: &mut Session, n: usize, out: &mut dyn Output) -> anyhow::Result<()> {
     with_undo(session, |session| {
-        let mut captured_all = String::new();
-        for _ in 0..n {
-            let Some((captured, rejection)) = session.step()? else {
-                break;
-            };
-            captured_all.push_str(&captured);
-            if rejection.is_some() {
-                report_position(session, &captured_all, rejection, out);
-                return Ok(());
-            }
-        }
-        report_position(session, &captured_all, None, out);
+        let (captured, rejection) = session.step(n)?.unwrap_or_default();
+        report_position(session, &captured, rejection, out);
         Ok(())
     })
 }
