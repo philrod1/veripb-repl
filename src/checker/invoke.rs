@@ -13,6 +13,16 @@ fn veripb_binary() -> std::ffi::OsString {
     std::env::var_os("VERIPB_REPL_VERIPB_BIN").unwrap_or_else(|| "veripb".into())
 }
 
+thread_local! {
+    static INVOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Returns how many times this thread has run `veripb`.
+#[doc(hidden)]
+pub fn invocation_count() -> usize {
+    INVOCATIONS.with(std::cell::Cell::get)
+}
+
 /// The raw output of one `veripb` invocation.
 pub struct RawInvocation {
     pub stdout: String,
@@ -102,6 +112,7 @@ struct Output {
 /// Runs `veripb` with `args`, reading its stdout a line at a time as it is
 /// written (see [`keep_lines`]) and its stderr whole.
 fn run_veripb(args: &[OsString], consume: &mut dyn FnMut(&str) -> bool) -> anyhow::Result<Output> {
+    INVOCATIONS.with(|count| count.set(count.get() + 1));
     let mut child = std::process::Command::new(veripb_binary())
         .args(args)
         .stdout(std::process::Stdio::piped())

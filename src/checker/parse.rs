@@ -493,6 +493,11 @@ pub fn parse_database_dump(dump: &str) -> anyhow::Result<Database> {
     let entries = lines
         .map(parse_database_dump_line)
         .collect::<anyhow::Result<Vec<DatabaseEntry>>>()?;
+    anyhow::ensure!(
+        entries.windows(2).all(|pair| pair[0].id < pair[1].id),
+        "database dump IDs are not in ascending order — the core binary's dump format may have \
+         changed since this parser was written",
+    );
 
     Ok(Database { entries })
 }

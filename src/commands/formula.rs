@@ -142,11 +142,9 @@ pub fn start(session: &mut Session, args: &str, out: &mut dyn Output) -> Option<
     // Formula mode entry doesn't otherwise mutate anything — a constraint
     // is only ever replaced once actually retyped, the same shape as
     // `:edit`'s queue entry, which likewise leaves every line alone until
-    // one is. Bump the generation counter as a deliberate marker anyway,
-    // purely so `commands::dispatch`'s undo-stack tracking notices a mode
-    // began and pushes the pre-mode checkpoint; nothing else reads this
-    // bump.
-    session.generation += 1;
+    // one is. Marked as an undo point anyway, so `commands::dispatch`
+    // pushes the pre-mode checkpoint.
+    session.mark_undo_point();
     if is_range {
         outln!(
             out,
@@ -261,7 +259,7 @@ pub(crate) fn cancel(session: &mut Session, out: &mut dyn Output) -> anyhow::Res
     let idx = session
         .formula_index(snapshot.n)
         .expect("constraint count is invariant under a formula edit");
-    session.formula[idx] = snapshot.constraint;
+    session.restore_formula_line(idx, snapshot.constraint);
     let (captured, rejection) = session.replace_buffer_and_verify(snapshot.buffer)?;
     output::text(out, &captured);
     if let Some(err) = rejection {

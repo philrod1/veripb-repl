@@ -90,15 +90,15 @@ pub fn start(session: &Session, out: &mut dyn Output) -> Option<DebugState> {
     Some(DebugState)
 }
 
-/// Runs `f` and pushes an undo snapshot iff it bumped `session.generation`
+/// Runs `f` and pushes an undo snapshot iff `session.change_stamp()` changed
 /// (the same check `commands::dispatch` does).
 fn with_undo<T>(
     session: &mut Session,
     f: impl FnOnce(&mut Session) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    let before = (session.generation, session.snapshot());
+    let before = (session.change_stamp(), session.snapshot());
     let result = f(session)?;
-    if session.generation != before.0 {
+    if session.change_stamp() != before.0 {
         session.push_undo(before.1);
     }
     Ok(result)
