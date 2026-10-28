@@ -22,11 +22,25 @@ use std::{
 
 use anyhow::Context as _;
 
+mod text;
+pub use text::{FormulaLines, ProofBuffer};
+
 use crate::checker::{self, CheckOutcome};
 use crate::varnames::VarNames;
 
 /// Lines in a synthesized v3 proof preamble.
 const PREAMBLE_LINES: usize = 2;
+
+/// The most lines a batched check (`:verify`, `:continue`) traces in full.
+/// veripb's trace runs to several times the proof's size, and is read whole
+/// and printed; past this, only the batch's last line is traced (what
+/// `last_step_constraint_ids` needs).
+pub const FULL_TRACE_MAX_LINES: usize = 10_000;
+
+/// The most separate line ranges `database()` passes to `--trace-lines`
+/// (each a few bytes of veripb's command line); past this, one range from
+/// the first labelled line to the last.
+const MAX_TRACE_RANGES: usize = 1_000;
 
 /// One `:undo`-stack entry: the state `restore_snapshot` restores.
 pub(crate) struct Snapshot {
@@ -59,13 +73,15 @@ pub(crate) struct FormulaEditSnapshot {
 /// One REPL session: the loaded formula and the proof buffer (see the module
 /// docs).
 pub struct Session {
+    /// Unique to this session in the process; see [`Self::state_key`].
+    id: u64,
     /// The formula's source path, for display only.
     pub formula_path: String,
     /// The formula's constraint lines, verbatim (including any leading
     /// `@label`s). A line may load as two constraints (see
     /// `checker::parse::formula_line_constraints`); [`Self::formula_first_ids`]
     /// gives each line's first constraint ID.
-    pub formula: Vec<String>,
+    pub formula: FormulaLines,
     /// The formula's `min:`/`max:` objective line, verbatim, if any.
     pub objective: Option<String>,
     /// The formula's `preserved: <var> ...;` line, verbatim, if any.
@@ -73,7 +89,7 @@ pub struct Session {
     pub variables: VarNames,
     /// Every proof line, in order, checked or not. A failed check never
     /// truncates it.
-    pub buffer: Vec<String>,
+    pub buffer: ProofBuffer,
     /// Number of verified lines at the front of `buffer`; also the index of
     /// the first unchecked line.
     pub checked_len: usize,
@@ -95,9 +111,12 @@ pub struct Session {
     /// or any other command (see `commands::dispatch`).
     pub(crate) recoverable_buffer: Option<Vec<String>>,
     /// Bumped on every successful mutation of `formula`/`objective`/`buffer`/
-    /// `checked_len`. `commands::dispatch` uses it to decide whether to push
-    /// an undo entry; `database_cache` is refreshed only when it changes.
+    /// `checked_len`. `database_cache` is refreshed only when it changes.
     pub(crate) generation: u64,
+    /// Bumped by [`Self::mark_undo_point`]: a command that starts a mode
+    /// changes nothing, but its start is still an undo point. See
+    /// [`Self::change_stamp`].
+    undo_marker: u64,
     /// Pre-action snapshots, most recent last; capped at `UNDO_STACK_CAP`.
     pub(crate) undo_stack: VecDeque<Snapshot>,
     /// Buffer indices with a breakpoint. Not proof state: excluded from
@@ -112,12 +131,22 @@ pub struct Session {
 }
 
 /// One refresh of [`Session::database`]: the generation it was computed
-/// for, the database, and every label's constraint ID at that point.
+/// for, and the database with every label's constraint ID at that point, or
+/// the error computing them.
 struct DatabaseCache {
     generation: u64,
-    database: checker::Database,
-    labels: ahash::AHashMap<String, isize>,
+    contents: Result<(checker::Database, ahash::AHashMap<String, isize>), String>,
+    /// [`Session::labels_by_id`], once asked for.
+    labels_by_id: std::cell::OnceCell<std::rc::Rc<LabelsById>>,
+    /// [`Session::live_labels`], once asked for.
+    live_labels: std::cell::OnceCell<std::rc::Rc<Vec<String>>>,
 }
+
+/// Each constraint ID's labels, sorted.
+pub type LabelsById = ahash::AHashMap<isize, Vec<String>>;
+
+/// Source of [`Session::state_key`]'s session part.
+static NEXT_SESSION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// What happened when a freshly-typed line was handed to [`Session::append_line`].
 pub enum AppendOutcome {
@@ -161,18 +190,20 @@ impl Session {
             .with_context(|| format!("failed to read formula file {formula_path}"))?;
 
         Ok(Session {
+            id: NEXT_SESSION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             formula_path: formula_path.to_string(),
-            formula,
+            formula: FormulaLines::new(formula),
             objective,
             preserved,
             variables,
-            buffer: Vec::new(),
+            buffer: ProofBuffer::default(),
             checked_len: 0,
             known_bad: None,
             last_step_constraint_ids: Vec::new(),
             last_formula_edit: None,
             recoverable_buffer: None,
             generation: 0,
+            undo_marker: 0,
             undo_stack: VecDeque::new(),
             breakpoints: BTreeSet::new(),
             database_cache: std::cell::RefCell::new(None),
@@ -182,23 +213,12 @@ impl Session {
     /// Returns the total number of constraints veripb loads from the
     /// formula (what `f N;` must say).
     pub fn formula_constraint_count(&self) -> usize {
-        self.formula
-            .iter()
-            .map(|line| checker::parse::formula_line_constraints(line))
-            .sum()
+        self.formula.constraint_count()
     }
 
     /// Returns the first constraint ID of each formula line, in order.
-    pub fn formula_first_ids(&self) -> Vec<usize> {
-        let mut next = 1;
-        self.formula
-            .iter()
-            .map(|line| {
-                let first = next;
-                next += checker::parse::formula_line_constraints(line);
-                first
-            })
-            .collect()
+    pub fn formula_first_ids(&self) -> &[usize] {
+        self.formula.first_ids()
     }
 
     /// Returns formula line `idx`'s constraint ID, or ID range for a line
@@ -215,7 +235,7 @@ impl Session {
     /// `@label`s, the i-th naming its i-th constraint).
     fn formula_labels(&self) -> ahash::AHashMap<String, isize> {
         let mut labels = ahash::AHashMap::new();
-        for (line, first) in self.formula.iter().zip(self.formula_first_ids()) {
+        for (line, &first) in self.formula.iter().zip(self.formula_first_ids()) {
             for (i, label) in checker::parse::leading_labels(line).into_iter().enumerate() {
                 labels.insert(label.to_string(), (first + i) as isize);
             }
@@ -230,27 +250,65 @@ impl Session {
     /// name an existing constraint rather than derive one) are not tracked.
     pub fn label_ids(&self) -> ahash::AHashMap<String, isize> {
         match self.database() {
-            Ok(_) => self
-                .database_cache
-                .borrow()
-                .as_ref()
-                .map(|cache| cache.labels.clone())
-                .unwrap_or_default(),
+            Ok(_) => match self.database_cache.borrow().as_ref().map(|c| &c.contents) {
+                Some(Ok((_, labels))) => labels.clone(),
+                _ => self.formula_labels(),
+            },
             Err(_) => self.formula_labels(),
         }
     }
 
     /// Returns [`Self::label_ids`] inverted: each constraint ID's labels,
-    /// sorted.
-    pub fn labels_by_id(&self) -> ahash::AHashMap<isize, Vec<String>> {
-        let mut by_id: ahash::AHashMap<isize, Vec<String>> = ahash::AHashMap::new();
-        for (name, id) in &self.label_ids() {
-            by_id.entry(*id).or_default().push(name.clone());
+    /// sorted. Cached with [`Self::database`].
+    pub fn labels_by_id(&self) -> std::rc::Rc<LabelsById> {
+        let invert = |labels: &ahash::AHashMap<String, isize>| {
+            let mut by_id = LabelsById::new();
+            for (name, id) in labels {
+                by_id.entry(*id).or_default().push(name.clone());
+            }
+            for names in by_id.values_mut() {
+                names.sort();
+            }
+            std::rc::Rc::new(by_id)
+        };
+        if self.database().is_ok()
+            && let Some(cache) = &*self.database_cache.borrow()
+            && let Ok((_, labels)) = &cache.contents
+        {
+            return cache.labels_by_id.get_or_init(|| invert(labels)).clone();
         }
-        for names in by_id.values_mut() {
-            names.sort();
-        }
-        by_id
+        invert(&self.formula_labels())
+    }
+
+    /// Returns every label naming a live constraint, sorted. Cached with
+    /// [`Self::database`]; empty if that fails.
+    pub fn live_labels(&self) -> std::rc::Rc<Vec<String>> {
+        let Ok(database) = self.database() else {
+            return std::rc::Rc::default();
+        };
+        let labels_by_id = self.labels_by_id();
+        let cache = self.database_cache.borrow();
+        let cache = cache.as_ref().expect("populated by database()");
+        cache
+            .live_labels
+            .get_or_init(|| {
+                let mut labels: Vec<String> = labels_by_id
+                    .iter()
+                    .filter(|(id, _)| {
+                        usize::try_from(**id).is_ok_and(|id| database.get(id).is_some())
+                    })
+                    .flat_map(|(_, names)| names.iter().cloned())
+                    .collect();
+                labels.sort();
+                std::rc::Rc::new(labels)
+            })
+            .clone()
+    }
+
+    /// Identifies the session's state: differs whenever `generation`
+    /// changes, and from every other session's.
+    pub fn state_key(&self) -> (u64, u64) {
+        (self.id, self.generation)
     }
 
     /// Returns the synthesized preamble every replayed proof starts with.
@@ -304,36 +362,83 @@ impl Session {
             Some(cache) if cache.generation == self.generation
         );
         if !fresh {
-            let text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
-            let formula_file = self.formula_temp_file()?;
-            // Trace the checked lines too, to learn which IDs labelled lines
-            // derived.
-            let trace_range = (self.checked_len > 0)
-                .then(|| (PREAMBLE_LINES + 1, PREAMBLE_LINES + self.checked_len));
-            let (outcome, database) =
-                checker::check_with_database(formula_file.path(), &text, trace_range)?;
-            let trace = match outcome {
-                CheckOutcome::Accepted { trace } | CheckOutcome::Rejected { trace, .. } => trace,
-            };
-            let ids_by_line = checker::parse::constraint_ids_by_line(&trace);
-            let mut labels = self.formula_labels();
-            for (idx, line) in self.buffer[..self.checked_len].iter().enumerate() {
-                let Some(ids) = ids_by_line.get(&self.display_line(idx)) else {
-                    continue;
-                };
-                for (label, id) in checker::parse::leading_labels(line).into_iter().zip(ids) {
-                    labels.insert(label.to_string(), *id as isize);
-                }
-            }
+            let contents = self.compute_database().map_err(|err| format!("{err:#}"));
             *self.database_cache.borrow_mut() = Some(DatabaseCache {
                 generation: self.generation,
-                database,
-                labels,
+                contents,
+                labels_by_id: std::cell::OnceCell::new(),
+                live_labels: std::cell::OnceCell::new(),
             });
         }
-        Ok(std::cell::Ref::map(self.database_cache.borrow(), |cache| {
-            &cache.as_ref().expect("just populated above").database
-        }))
+        std::cell::Ref::filter_map(self.database_cache.borrow(), |cache| {
+            cache
+                .as_ref()?
+                .contents
+                .as_ref()
+                .ok()
+                .map(|(database, _)| database)
+        })
+        .map_err(|cache| {
+            let message = cache
+                .as_ref()
+                .and_then(|cache| cache.contents.as_ref().err());
+            anyhow::anyhow!("{}", message.expect("just populated above"))
+        })
+    }
+
+    /// Runs `veripb` over `buffer[..checked_len]` for [`Self::database`]:
+    /// the database and every label's constraint ID.
+    fn compute_database(
+        &self,
+    ) -> anyhow::Result<(checker::Database, ahash::AHashMap<String, isize>)> {
+        let text = self.preamble_and_lines(&self.buffer[..self.checked_len]);
+        let formula_file = self.formula_temp_file()?;
+        // Trace the checked labelled lines too, to learn which IDs they
+        // derived. The trace is read as veripb writes it, keeping only the
+        // labelled lines' IDs: it can be several times the proof's size.
+        let trace_ranges = self.labelled_line_ranges();
+        let labelled = |n: usize| {
+            n.checked_sub(PREAMBLE_LINES + 1)
+                .and_then(|idx| self.buffer[..self.checked_len].get(idx))
+                .is_some_and(|line| !checker::parse::leading_labels(line).is_empty())
+        };
+        let mut ids = checker::parse::ConstraintIdsByLine::new(labelled);
+        let (_, database) =
+            checker::check_with_database(formula_file.path(), &text, &trace_ranges, |line| {
+                ids.feed(line)
+            })?;
+        let ids_by_line = ids.finish();
+        let mut labels = self.formula_labels();
+        for (idx, line) in self.buffer[..self.checked_len].iter().enumerate() {
+            let Some(ids) = ids_by_line.get(&self.display_line(idx)) else {
+                continue;
+            };
+            for (label, id) in checker::parse::leading_labels(line).into_iter().zip(ids) {
+                labels.insert(label.to_string(), *id as isize);
+            }
+        }
+        Ok((database, labels))
+    }
+
+    /// The display-line ranges of the checked lines with leading `@label`s,
+    /// consecutive lines merged; one range from the first to the last if
+    /// there would be more than [`MAX_TRACE_RANGES`].
+    fn labelled_line_ranges(&self) -> Vec<(usize, usize)> {
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        for (idx, line) in self.buffer[..self.checked_len].iter().enumerate() {
+            if checker::parse::leading_labels(line).is_empty() {
+                continue;
+            }
+            let n = self.display_line(idx);
+            match ranges.last_mut() {
+                Some((_, hi)) if *hi + 1 == n => *hi = n,
+                _ => ranges.push((n, n)),
+            }
+        }
+        if ranges.len() > MAX_TRACE_RANGES {
+            ranges = vec![(ranges[0].0, ranges[ranges.len() - 1].1)];
+        }
+        ranges
     }
 
     /// Returns the best-known objective bounds for `buffer[..checked_len]`.
@@ -411,9 +516,13 @@ impl Session {
                 Ok((trace, None))
             }
             CheckOutcome::Rejected { message, trace, .. } => {
-                // Name any constraint the reason mentions by ID.
-                let message =
-                    checker::parse::annotate_constraint_ids(&message, &self.labels_by_id());
+                // Name any constraint the reason mentions by ID (looking the
+                // labels up can take a veripb run, so only if there is one).
+                let message = if message.contains("ID ") {
+                    checker::parse::annotate_constraint_ids(&message, &self.labels_by_id())
+                } else {
+                    message
+                };
                 self.known_bad = Some(message.clone());
                 Ok((trace, Some(message)))
             }
@@ -421,25 +530,45 @@ impl Session {
     }
 
     /// Advances `checked_len` to `boundary` (`<= buffer.len()`) with one
-    /// batched `veripb` call. If the batch is rejected, its output is
-    /// discarded and [`Self::verify_next`] runs line by line up to
-    /// `boundary` to find the failing line. No-op returning an empty
-    /// capture if `boundary <= checked_len`.
+    /// batched `veripb` call, tracing every new line, or only the last if
+    /// there are more than [`FULL_TRACE_MAX_LINES`]. If the batch is
+    /// rejected, its output is discarded: every line before the one veripb
+    /// names was accepted, so `checked_len` moves to that line and
+    /// [`Self::verify_next`] checks it for the rejection message (going on
+    /// line by line up to `boundary` if it is accepted after all, or if the
+    /// named line is outside the batch). No-op returning an empty capture if
+    /// `boundary <= checked_len`.
     fn verify_forward(&mut self, boundary: usize) -> anyhow::Result<(String, Option<String>)> {
         if boundary <= self.checked_len {
             return Ok((String::new(), None));
         }
 
-        let candidate_start = PREAMBLE_LINES + self.checked_len + 1;
         let candidate_end = PREAMBLE_LINES + boundary;
+        let candidate_start = if boundary - self.checked_len > FULL_TRACE_MAX_LINES {
+            candidate_end
+        } else {
+            PREAMBLE_LINES + self.checked_len + 1
+        };
         let text = self.preamble_and_lines(&self.buffer[..boundary]);
         let outcome = self.check(&text, Some((candidate_start, candidate_end)))?;
-        if let CheckOutcome::Accepted { trace } = outcome {
-            self.checked_len = boundary;
+        let rejected_idx = match outcome {
+            CheckOutcome::Accepted { trace } => {
+                self.checked_len = boundary;
+                self.known_bad = None;
+                self.last_step_constraint_ids = checker::parse::last_line_constraint_ids(&trace);
+                self.generation += 1;
+                return Ok((trace, None));
+            }
+            CheckOutcome::Rejected { line, .. } => line.checked_sub(PREAMBLE_LINES + 1),
+        };
+        if let Some(idx) = rejected_idx
+            && idx > self.checked_len
+            && idx < boundary
+        {
+            self.checked_len = idx;
             self.known_bad = None;
-            self.last_step_constraint_ids = checker::parse::last_line_constraint_ids(&trace);
+            self.last_step_constraint_ids = Vec::new();
             self.generation += 1;
-            return Ok((trace, None));
         }
 
         let mut captured_all = String::new();
@@ -511,7 +640,7 @@ impl Session {
     /// Replaces `buffer[idx]` without checking it. Retracts `checked_len` to
     /// `idx` if `idx` was checked.
     pub fn set_line(&mut self, idx: usize, new_text: &str) -> anyhow::Result<()> {
-        self.buffer[idx] = new_text.to_string();
+        self.buffer.set(idx, new_text.to_string());
         self.checked_len = self.checked_len.min(idx);
         self.known_bad = None;
         self.last_step_constraint_ids = Vec::new();
@@ -569,11 +698,27 @@ impl Session {
         &mut self,
         lines: Vec<String>,
     ) -> anyhow::Result<(String, Option<String>)> {
-        self.buffer = lines;
+        self.replace_buffer_unchecked(lines);
+        self.verify_forward(self.buffer.len())
+    }
+
+    /// Replaces the buffer with `lines`, all unchecked.
+    pub(crate) fn replace_buffer_unchecked(&mut self, lines: Vec<String>) {
+        self.buffer.replace(lines);
         self.checked_len = 0;
         self.known_bad = None;
         self.last_step_constraint_ids = Vec::new();
-        self.verify_forward(self.buffer.len())
+        self.generation += 1;
+    }
+
+    /// Replaces formula line `idx` with `text` (`:formula cancel` restoring
+    /// the replaced constraint). The caller reverifies the buffer.
+    pub(crate) fn restore_formula_line(&mut self, idx: usize, text: String) {
+        self.formula.set(idx, text);
+        self.checked_len = 0;
+        self.known_bad = None;
+        self.last_step_constraint_ids = Vec::new();
+        self.generation += 1;
     }
 
     /// Restores `buffer`/`checked_len`/`known_bad` as given, leaving the
@@ -585,7 +730,7 @@ impl Session {
         checked_len: usize,
         known_bad: Option<String>,
     ) -> anyhow::Result<()> {
-        self.buffer = buffer;
+        self.buffer.replace(buffer);
         self.checked_len = checked_len;
         self.known_bad = known_bad;
         self.last_step_constraint_ids = Vec::new();
@@ -660,24 +805,38 @@ impl Session {
     /// Converts a formula constraint ID (as in `:show`/the Formula pane) to
     /// the index of the `formula` line holding it. `None` if out of range.
     pub(crate) fn formula_index(&self, n: usize) -> Option<usize> {
-        if n == 0 {
+        if n == 0 || n > self.formula_constraint_count() {
             return None;
         }
-        self.formula_first_ids()
-            .iter()
-            .zip(&self.formula)
-            .position(|(first, line)| {
-                (*first..*first + checker::parse::formula_line_constraints(line)).contains(&n)
-            })
+        // The last line starting at or before `n`.
+        Some(
+            self.formula_first_ids()
+                .partition_point(|&first| first <= n)
+                - 1,
+        )
+    }
+
+    /// Marks an undo point without changing anything: [`Self::change_stamp`]
+    /// differs afterwards, so the caller records the state before as one
+    /// undo step.
+    pub(crate) fn mark_undo_point(&mut self) {
+        self.undo_marker += 1;
+    }
+
+    /// Differs whenever the state changed or [`Self::mark_undo_point`] ran:
+    /// compared before and after an action to decide whether to push an undo
+    /// entry.
+    pub(crate) fn change_stamp(&self) -> (u64, u64) {
+        (self.generation, self.undo_marker)
     }
 
     /// Captures the current state for [`Self::restore_snapshot`].
     pub(crate) fn snapshot(&self) -> Snapshot {
         Snapshot {
-            formula: self.formula.clone(),
+            formula: self.formula.to_vec(),
             objective: self.objective.clone(),
             preserved: self.preserved.clone(),
-            buffer: self.buffer.clone(),
+            buffer: self.buffer.to_vec(),
             checked_len: self.checked_len,
             known_bad: self.known_bad.clone(),
             last_step_constraint_ids: self.last_step_constraint_ids.clone(),
@@ -701,10 +860,15 @@ impl Session {
     /// Restores the state `snapshot` captured and clears
     /// `last_formula_edit`/`recoverable_buffer`.
     pub(crate) fn restore_snapshot(&mut self, snapshot: Snapshot) -> anyhow::Result<()> {
-        self.formula = snapshot.formula;
-        self.objective = snapshot.objective;
-        self.preserved = snapshot.preserved;
-        self.buffer = snapshot.buffer;
+        if *self.formula != snapshot.formula
+            || self.objective != snapshot.objective
+            || self.preserved != snapshot.preserved
+        {
+            self.formula.replace(snapshot.formula);
+            self.objective = snapshot.objective;
+            self.preserved = snapshot.preserved;
+        }
+        self.buffer.replace(snapshot.buffer);
         self.checked_len = snapshot.checked_len;
         self.known_bad = snapshot.known_bad;
         self.last_step_constraint_ids = snapshot.last_step_constraint_ids;
@@ -750,7 +914,7 @@ impl Session {
             );
         }
 
-        let mut candidate_formula = self.formula.clone();
+        let mut candidate_formula = self.formula.to_vec();
         candidate_formula[idx] = new_text.clone();
 
         // Validate the candidate formula alone (no proof lines) before
@@ -771,11 +935,11 @@ impl Session {
         // Prefer the fuller buffer an earlier, partially reverified edit kept.
         let base_buffer = match &self.recoverable_buffer {
             Some(b) => b.clone(),
-            None => self.buffer.clone(),
+            None => self.buffer.to_vec(),
         };
 
         // Nothing below this line can fail — commit as one unit.
-        let prior_constraint = std::mem::replace(&mut self.formula[idx], new_text);
+        let prior_constraint = self.formula.set(idx, new_text);
         self.buffer.clear();
         self.checked_len = 0;
         self.known_bad = None;

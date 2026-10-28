@@ -1,8 +1,8 @@
 //! Subprocess plumbing: writes a candidate proof to a temp file, spawns
 //! `veripb`, and returns its raw output.
 
-use std::ffi::OsStr;
-use std::io::Write;
+use std::ffi::{OsStr, OsString};
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -11,6 +11,16 @@ use anyhow::Context;
 /// set, otherwise `"veripb"` resolved via `$PATH`.
 fn veripb_binary() -> std::ffi::OsString {
     std::env::var_os("VERIPB_REPL_VERIPB_BIN").unwrap_or_else(|| "veripb".into())
+}
+
+thread_local! {
+    static INVOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Returns how many times this thread has run `veripb`.
+#[doc(hidden)]
+pub fn invocation_count() -> usize {
+    INVOCATIONS.with(std::cell::Cell::get)
 }
 
 /// The raw output of one `veripb` invocation.
@@ -45,6 +55,23 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    run_streaming(formula_path, proof_text, extra_args, |_| false)
+}
+
+/// Like [`run`], passing each line of `veripb`'s stdout (without its
+/// newline) to `consume` as `veripb` writes it. Lines `consume` returns
+/// `true` for are left out of [`RawInvocation::stdout`]: a trace can run to
+/// several times the proof's size, too much to hold.
+pub fn run_streaming<I, S>(
+    formula_path: &Path,
+    proof_text: &str,
+    extra_args: I,
+    mut consume: impl FnMut(&str) -> bool,
+) -> anyhow::Result<RawInvocation>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let mut proof_file = tempfile::Builder::new()
         .suffix(".pbp")
         .tempfile()
@@ -56,26 +83,87 @@ where
 
     let proof_file_path = proof_file.path().to_path_buf();
 
-    let output = std::process::Command::new(veripb_binary())
-        .arg(formula_path)
-        .arg(&proof_file_path)
-        .args(extra_args)
-        .output()
+    let mut args: Vec<OsString> = vec![
+        formula_path.as_os_str().to_os_string(),
+        proof_file_path.as_os_str().to_os_string(),
+    ];
+    args.extend(extra_args.into_iter().map(|s| s.as_ref().to_os_string()));
+    let output = run_veripb(&args, &mut consume)?;
+
+    Ok(RawInvocation {
+        stdout: output.stdout,
+        stderr: output.stderr,
+        success: output.success,
+        code: output.code,
+        proof_file_path,
+        formula_file_path: formula_path.to_path_buf(),
+    })
+}
+
+/// What [`run_veripb`] returns: stdout without the lines its `consume`
+/// took.
+struct Output {
+    stdout: String,
+    stderr: String,
+    success: bool,
+    code: Option<i32>,
+}
+
+/// Runs `veripb` with `args`, reading its stdout a line at a time as it is
+/// written (see [`keep_lines`]) and its stderr whole.
+fn run_veripb(args: &[OsString], consume: &mut dyn FnMut(&str) -> bool) -> anyhow::Result<Output> {
+    INVOCATIONS.with(|count| count.set(count.get() + 1));
+    let mut child = std::process::Command::new(veripb_binary())
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .with_context(|| {
             format!(
                 "failed to run `{}` — is it installed and on PATH?",
                 veripb_binary().to_string_lossy()
             )
         })?;
-
-    Ok(RawInvocation {
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        success: output.status.success(),
-        code: output.status.code(),
-        proof_file_path,
-        formula_file_path: formula_path.to_path_buf(),
+    // Drain stderr alongside, so a full stderr pipe cannot stall veripb.
+    let mut stderr_pipe = child.stderr.take().expect("stderr is piped");
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr_pipe.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stdout_pipe = child.stdout.take().expect("stdout is piped");
+    let stdout = keep_lines(std::io::BufReader::new(stdout_pipe), consume)
+        .context("failed to read veripb's stdout")?;
+    let status = child.wait().context("failed to wait for veripb")?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("the thread reading veripb's stderr panicked"))?
+        .context("failed to read veripb's stderr")?;
+    Ok(Output {
+        stdout,
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        success: status.success(),
+        code: status.code(),
     })
+}
+
+/// Reads `reader` a line at a time, returning the lines (newlines kept)
+/// that `consume` does not take.
+fn keep_lines(
+    mut reader: impl BufRead,
+    consume: &mut dyn FnMut(&str) -> bool,
+) -> std::io::Result<String> {
+    let mut kept = String::new();
+    let mut bytes = Vec::new();
+    loop {
+        bytes.clear();
+        if reader.read_until(b'\n', &mut bytes)? == 0 {
+            return Ok(kept);
+        }
+        let line = String::from_utf8_lossy(&bytes);
+        if !consume(line.trim_end_matches(['\n', '\r'])) {
+            kept.push_str(&line);
+        }
+    }
 }
 
 /// The result of [`run_with_elaboration`].
@@ -110,12 +198,13 @@ pub struct DatabaseDumpInvocation {
     pub database_dump: String,
 }
 
-/// Runs [`run`] with `--dump-database` plus any `extra_args`, and returns
-/// the database dump it wrote.
+/// Runs [`run_streaming`] with `--dump-database` plus any `extra_args`, and
+/// returns the database dump it wrote.
 pub fn run_with_database_dump<I, S>(
     formula_path: &Path,
     proof_text: &str,
     extra_args: I,
+    consume: impl FnMut(&str) -> bool,
 ) -> anyhow::Result<DatabaseDumpInvocation>
 where
     I: IntoIterator<Item = S>,
@@ -126,7 +215,7 @@ where
     let mut args: Vec<std::ffi::OsString> = vec!["--dump-database".into(), scratch.path().into()];
     args.extend(extra_args.into_iter().map(|s| s.as_ref().to_os_string()));
 
-    let raw = run(formula_path, proof_text, args)?;
+    let raw = run_streaming(formula_path, proof_text, args, consume)?;
     let database_dump = std::fs::read_to_string(scratch.path())
         .context("failed to read back the database dump scratch file")?;
 

@@ -290,17 +290,59 @@ pub fn last_line_constraint_ids(trace: &str) -> Vec<usize> {
 /// `ConstraintId` lines that follow it before the next marker: what each
 /// traced proof line derived, by its line number in the traced proof.
 pub fn constraint_ids_by_line(trace: &str) -> std::collections::BTreeMap<usize, Vec<usize>> {
-    let mut by_line = std::collections::BTreeMap::new();
-    let mut current = None;
+    let mut parser = ConstraintIdsByLine::new(|_| true);
     for line in trace.lines() {
-        if let Some(n) = line_marker_number(line) {
-            current = Some(n);
-            by_line.entry(n).or_insert_with(Vec::new);
-        } else if let (Some(n), Some(id)) = (current, constraint_id_in(line)) {
-            by_line.entry(n).or_insert_with(Vec::new).push(id);
+        parser.feed(line);
+    }
+    parser.finish()
+}
+
+/// Builds [`constraint_ids_by_line`]'s map one trace line at a time, for a
+/// trace too large to hold in memory, keeping only the proof lines `wanted`
+/// accepts.
+pub struct ConstraintIdsByLine<F> {
+    wanted: F,
+    /// The proof line of the latest marker, and whether it is wanted.
+    current: Option<(usize, bool)>,
+    by_line: std::collections::BTreeMap<usize, Vec<usize>>,
+}
+
+impl<F: Fn(usize) -> bool> ConstraintIdsByLine<F> {
+    pub fn new(wanted: F) -> Self {
+        Self {
+            wanted,
+            current: None,
+            by_line: std::collections::BTreeMap::new(),
         }
     }
-    by_line
+
+    /// Takes one line of veripb's output (without its newline). Returns
+    /// whether it was trace: a `line <N>:` marker, or a `ConstraintId` line
+    /// after one. Other lines are not trace and are ignored.
+    pub fn feed(&mut self, line: &str) -> bool {
+        if let Some(n) = line_marker_number(line) {
+            let wanted = (self.wanted)(n);
+            if wanted {
+                self.by_line.entry(n).or_default();
+            }
+            self.current = Some((n, wanted));
+            return true;
+        }
+        match (self.current, constraint_id_in(line)) {
+            (Some((n, wanted)), Some(id)) => {
+                if wanted {
+                    self.by_line.entry(n).or_default().push(id);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// What each wanted proof line derived.
+    pub fn finish(self) -> std::collections::BTreeMap<usize, Vec<usize>> {
+        self.by_line
+    }
 }
 
 /// Rewrites the operand column of a traced `pol` table (`depth  operand
@@ -451,6 +493,11 @@ pub fn parse_database_dump(dump: &str) -> anyhow::Result<Database> {
     let entries = lines
         .map(parse_database_dump_line)
         .collect::<anyhow::Result<Vec<DatabaseEntry>>>()?;
+    anyhow::ensure!(
+        entries.windows(2).all(|pair| pair[0].id < pair[1].id),
+        "database dump IDs are not in ascending order — the core binary's dump format may have \
+         changed since this parser was written",
+    );
 
     Ok(Database { entries })
 }

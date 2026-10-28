@@ -42,13 +42,18 @@ pub struct DatabaseEntry {
 
 /// The checker's constraint database at some point in a replay.
 pub struct Database {
+    /// In ascending `id` order, as `--dump-database` writes them.
     pub entries: Vec<DatabaseEntry>,
 }
 
 impl Database {
     /// Returns the entry with this `id`, if it's still live.
     pub fn get(&self, id: usize) -> Option<&DatabaseEntry> {
-        self.entries.iter().find(|entry| entry.id == id)
+        let idx = self
+            .entries
+            .binary_search_by_key(&id, |entry| entry.id)
+            .ok()?;
+        Some(&self.entries[idx])
     }
 }
 

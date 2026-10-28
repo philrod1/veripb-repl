@@ -139,8 +139,8 @@ pub fn dispatch(
         session.recoverable_buffer = None;
     }
 
-    // A change is detected by `Session::generation` differing afterwards.
-    let before = session.as_ref().map(|s| (s.generation, s.snapshot()));
+    // A change is detected by `Session::change_stamp` differing afterwards.
+    let before = session.as_ref().map(|s| (s.change_stamp(), s.snapshot()));
 
     let result = dispatch_inner(session, line, out);
 
@@ -153,8 +153,8 @@ pub fn dispatch(
         if resolved_cmd == Some("reset") {
             session.undo_stack.clear();
         } else if !no_push
-            && let Some((gen_before, snap_before)) = before
-            && session.generation != gen_before
+            && let Some((stamp_before, snap_before)) = before
+            && session.change_stamp() != stamp_before
         {
             session.push_undo(snap_before);
         }

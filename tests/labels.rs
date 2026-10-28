@@ -110,3 +110,71 @@ fn formula_edits_cannot_change_a_lines_constraint_count() {
         .expect("same count is fine");
     assert_eq!(session.formula[1], "@c 1 ~x3 1 x1 >= 1 ;");
 }
+
+#[test]
+fn a_batch_learns_labels_across_unlabelled_lines() {
+    require_veripb!();
+    let mut session = load();
+    session.buffer.extend(
+        [
+            "@a rup 1 ~x1 >= 1 ;",
+            "rup 1 ~x2 >= 1 ;",
+            "% a note",
+            "@b rup 1 ~x1 1 ~x2 >= 1 ;",
+        ]
+        .map(String::from),
+    );
+    let (_, rejection) = session.drive_forward().expect("verify should run");
+    assert!(rejection.is_none(), "{rejection:?}");
+    let labels = session.label_ids();
+    assert_eq!(labels.get("@a"), Some(&5));
+    assert_eq!(labels.get("@b"), Some(&7));
+}
+
+#[test]
+fn a_long_batch_traces_only_its_last_line() {
+    require_veripb!();
+    let mut session = load();
+    let lines = veripb_repl::session::FULL_TRACE_MAX_LINES + 1;
+    session
+        .buffer
+        .extend((0..lines).map(|_| "rup 1 ~x1 >= 1 ;".to_string()));
+    let (captured, rejection) = session.drive_forward().expect("verify should run");
+    assert!(rejection.is_none(), "{rejection:?}");
+    let markers = captured.lines().filter(|l| l.starts_with("line")).count();
+    assert_eq!(markers, 1, "{captured}");
+    assert_eq!(session.last_step_constraint_ids, vec![4 + lines]);
+}
+
+#[test]
+fn a_rejected_batch_stops_at_the_line_veripb_names() {
+    require_veripb!();
+    let mut session = load();
+    session
+        .buffer
+        .extend((0..50).map(|_| "rup 1 ~x1 >= 1 ;".to_string()));
+    session.buffer.push("rup 1 x1 >= 1 ;".to_string());
+    session.buffer.push("rup 1 ~x2 >= 1 ;".to_string());
+    let (_, rejection) = session.drive_forward().expect("verify should run");
+    assert!(rejection.is_some(), "the bad line should be rejected");
+    assert_eq!(session.checked_len, 50);
+    assert!(session.known_bad.is_some());
+}
+
+#[test]
+fn labels_are_learned_across_many_labelled_ranges() {
+    require_veripb!();
+    let mut session = load();
+    // 1,001 labelled lines each between unlabelled ones: more separate
+    // ranges than are passed to veripb, so the whole span is traced.
+    for i in 0..1001 {
+        session.buffer.push(format!("@l{i} rup 1 ~x1 >= 1 ;"));
+        session.buffer.push("rup 1 ~x2 >= 1 ;".to_string());
+    }
+    let (_, rejection) = session.drive_forward().expect("verify should run");
+    assert!(rejection.is_none(), "{rejection:?}");
+    let labels = session.label_ids();
+    assert_eq!(labels.get("@l0"), Some(&5));
+    assert_eq!(labels.get("@l1000"), Some(&(5 + 2 * 1000)));
+    assert_eq!(labels.get("@c"), Some(&3));
+}

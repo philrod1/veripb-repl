@@ -106,7 +106,7 @@ output NONE;
 conclusion UNSAT;
 end pseudo-Boolean proof;
 ";
-    let (outcome, database) = checker::check_with_database(formula.path(), proof, None)
+    let (outcome, database) = checker::check_with_database(formula.path(), proof, &[], |_| false)
         .expect("check should not fail to invoke");
     assert!(outcome.is_accepted());
     assert_eq!(database.entries.len(), 5);
@@ -128,7 +128,7 @@ pseudo-Boolean proof version 3.0
 f 3;
 rup 1 x2 >= 1 : 99;
 ";
-    let (outcome, database) = checker::check_with_database(formula.path(), proof, None)
+    let (outcome, database) = checker::check_with_database(formula.path(), proof, &[], |_| false)
         .expect("check should not fail to invoke");
     assert!(!outcome.is_accepted());
     assert_eq!(database.entries.len(), 3);

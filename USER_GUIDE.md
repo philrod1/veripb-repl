@@ -166,6 +166,9 @@ formula is loaded.
 - ↑/↓ move a highlight through the candidates (wrapping). Enter or Tab
   inserts the highlighted candidate; Esc drops the highlight. Enter
   submits the line only when nothing is highlighted.
+- A rule's arguments list at most the first 1000 matches; the rest are
+  counted in the strip's `(+N more)` row, and Tab's common prefix covers
+  them all.
 - With no highlight, Tab completes a single match outright, else to the
   longest common prefix. A completed command or rule name gets a trailing
   space. A common prefix ending in a bare `.` (e.g. `foo.opb` and
