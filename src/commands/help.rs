@@ -24,9 +24,10 @@ pub const COMMANDS: &[Topic] = &[
         details: &[
             "With a conclusion (UNSAT, SAT, BOUNDS <lo> <hi>, ...), tests that",
             "one and prints the checker's verdict or error.",
-            "With no argument, tries UNSAT, then SAT, then BOUNDS v v if the",
-            "objective has a best value with checked-deletion guarantees (see",
-            ":objective). Prints the first that verifies, or NOT YET CONCLUDED.",
+            "With no argument, tries UNSAT and SAT, or with an objective only",
+            "BOUNDS v v, once the objective has a best value with",
+            "checked-deletion guarantees (see :objective). Prints the first that",
+            "verifies, or NOT YET CONCLUDED.",
             "Only checked lines are used. Nothing is added to the proof.",
         ],
     },

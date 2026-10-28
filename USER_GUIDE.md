@@ -313,7 +313,7 @@ candidates.
 | *(bare rule text)* | check a v3 proof rule and, if accepted, add it | **Implemented** |
 | `:quit` | exit | **Implemented** |
 | `:theme [<name>]` | TUI only: switch palette (`dark`/`light`/`hi-contrast`/`colorblind`) | **Implemented** |
-| `:check [<conclusion>]` | test whether the checked prefix verifies with a conclusion, without closing the proof; bare: try `UNSAT`, `SAT`, and `BOUNDS v v` | **Implemented** |
+| `:check [<conclusion>]` | test whether the checked prefix verifies with a conclusion, without closing the proof; bare: try `UNSAT` and `SAT`, or `BOUNDS v v` with an objective | **Implemented** |
 | `:explain [<n>]` | show how line `n` was derived, or why it was rejected | **Implemented** |
 | `:list` | print every buffer line, numbered, with `[unchecked]`/`[breakpoint]` tags | **Implemented** |
 | `:load <file>` | load an OPB formula, starting a new session | **Implemented** (OPB only) |
@@ -451,14 +451,20 @@ formulas are not supported.
   syntax: `SAT`, `UNSAT`, `UNSAT : 5`, `BOUNDS 0 10`, `NONE`,
   `ENUMERATION_COMPLETE ...`, etc.
 
-  With **no argument**, `:check` tries these in order and prints the
-  first that verifies:
-  - `UNSAT` — needs a contradicting constraint in the database;
-  - `SAT` — needs no objective and a solution logged by `sol`/`solx`;
-  - `BOUNDS v v` — only when there is an objective and its best value
-    with checked-deletion guarantees (from `veripb --dump-objective`, as
-    `:objective` shows) is known; `v` is that value. The lower bound
-    still has to be derived.
+  With **no argument**, `:check` tries these and prints the first that
+  verifies:
+  - without an objective, `UNSAT` (needs a contradicting constraint in
+    the database) and `SAT` (needs a solution logged by `sol`/`solx`).
+    `SAT` goes first if the database has already been computed and holds
+    no contradicting constraint;
+  - with an objective, only `BOUNDS v v` (`UNSAT` and `SAT` never verify
+    with one), once its best value with checked-deletion guarantees (from
+    `veripb --dump-objective`, as `:objective` shows) is known; `v` is
+    that value. The lower bound still has to be derived.
+
+  Results are kept until the session changes, so repeating `:check`, or
+  a bare `:save` after it, runs nothing again. `:objective` is kept the
+  same way.
 
   Failed candidates print nothing. If none verifies, prints
   `NOT YET CONCLUDED` (not a proof-format result). `BOUNDS lo hi` with
