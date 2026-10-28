@@ -105,6 +105,7 @@ pub enum RupHint {
 }
 
 /// One live (non-deleted) row of the checker's constraint database.
+#[derive(Clone)]
 pub struct DatabaseEntry {
     pub id: usize,
     pub is_core: bool,
@@ -112,6 +113,7 @@ pub struct DatabaseEntry {
 }
 
 /// The checker's constraint database at some point in a replay.
+#[derive(Clone)]
 pub struct Database {
     /// In ascending `id` order, as `--dump-database` writes them.
     pub entries: Vec<DatabaseEntry>,
