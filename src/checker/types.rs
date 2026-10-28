@@ -1,5 +1,76 @@
 //! Plain data types for talking to the `veripb` subprocess.
 
+/// A candidate proof for `veripb`: text as is, or lines written out one at
+/// a time (each followed by a newline) without first joining them.
+#[derive(Clone, Copy)]
+pub enum ProofText<'a> {
+    Text(&'a str),
+    Lines {
+        preamble: &'a [String],
+        body: &'a [String],
+        tail: &'a [String],
+    },
+}
+
+impl<'a> From<&'a str> for ProofText<'a> {
+    fn from(text: &'a str) -> Self {
+        ProofText::Text(text)
+    }
+}
+
+impl<'a> From<&'a String> for ProofText<'a> {
+    fn from(text: &'a String) -> Self {
+        ProofText::Text(text)
+    }
+}
+
+impl ProofText<'_> {
+    /// Lines in all (a last line without a newline counts).
+    pub fn line_count(&self) -> usize {
+        match self {
+            ProofText::Text(text) => text.lines().count(),
+            ProofText::Lines {
+                preamble,
+                body,
+                tail,
+            } => preamble.len() + body.len() + tail.len(),
+        }
+    }
+
+    /// Writes the proof to `w`, calling `after_line` after each line; it
+    /// returns `false` to stop early.
+    pub fn write_to(
+        &self,
+        w: &mut impl std::io::Write,
+        mut after_line: impl FnMut() -> bool,
+    ) -> std::io::Result<()> {
+        match self {
+            ProofText::Text(text) => {
+                for line in text.split_inclusive('\n') {
+                    w.write_all(line.as_bytes())?;
+                    if !after_line() {
+                        break;
+                    }
+                }
+            }
+            ProofText::Lines {
+                preamble,
+                body,
+                tail,
+            } => {
+                for line in preamble.iter().chain(body.iter()).chain(tail.iter()) {
+                    w.write_all(line.as_bytes())?;
+                    w.write_all(b"\n")?;
+                    if !after_line() {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The result of checking a candidate proof.
 pub enum CheckOutcome {
     /// Every line was accepted. `trace` is the checker's stdout.

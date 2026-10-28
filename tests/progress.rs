@@ -154,3 +154,26 @@ fn veripb_stopping_early_does_not_hang() {
         describe(&outcome)
     );
 }
+
+#[test]
+fn a_session_verifies_the_same_through_a_pipe() {
+    require_veripb!();
+    let formula = chain_formula(3000);
+    let proof = chain_proof(3000, Some(2000));
+    let load = || {
+        let mut session =
+            veripb_repl::session::Session::load(formula.path().to_str().unwrap()).unwrap();
+        for line in proof.lines().skip(2) {
+            session.buffer.push(line.to_string());
+        }
+        session
+    };
+    let mut plain = load();
+    let plain_rejection = plain.drive_forward().unwrap().1;
+    let mut piped = load();
+    let (piped_rejection, reports) = with_reports(|| piped.drive_forward().unwrap().1);
+    assert!(plain_rejection.is_some());
+    assert_eq!(piped_rejection, plain_rejection);
+    assert_eq!(piped.checked_len, plain.checked_len);
+    assert!(reports.iter().any(|p| p.started && p.total == 2 + 2999));
+}

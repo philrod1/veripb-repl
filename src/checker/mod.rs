@@ -6,8 +6,8 @@
 //! - [`parse`]: parses `invoke`'s raw output into [`types`].
 //! - [`progress`]: progress reports while `veripb` runs.
 //!
-//! `proof_text` arguments are the complete proof text, preamble included, so
-//! reported line numbers match the REPL's display numbering.
+//! `proof` arguments are the complete proof, preamble included, so reported
+//! line numbers match the REPL's display numbering.
 
 pub mod invoke;
 pub mod parse;
@@ -16,7 +16,7 @@ pub mod types;
 
 use std::path::Path;
 
-pub use types::{CheckOutcome, Database, DatabaseEntry, ObjectiveBounds, RupHint};
+pub use types::{CheckOutcome, Database, DatabaseEntry, ObjectiveBounds, ProofText, RupHint};
 
 /// Returns the `--trace-lines <lo>..=<hi>[,<lo>..=<hi>...]` argument for
 /// `ranges`, or no arguments at all (a silent check) if there are none.
@@ -31,15 +31,15 @@ fn trace_args(ranges: &[(usize, usize)]) -> Vec<String> {
     vec!["--trace-lines".to_string(), list.join(",")]
 }
 
-/// Checks `proof_text` against `formula_path`. `trace_range`, if given,
+/// Checks `proof` against `formula_path`. `trace_range`, if given,
 /// is a 1-based, inclusive line range to trace (the checker's own
 /// `ConstraintId N: ...` confirmations); `None` checks silently.
-pub fn check(
+pub fn check<'a>(
     formula_path: &Path,
-    proof_text: &str,
+    proof: impl Into<ProofText<'a>>,
     trace_range: Option<(usize, usize)>,
 ) -> anyhow::Result<CheckOutcome> {
-    let raw = invoke::run(formula_path, proof_text, trace_args(trace_range.as_slice()))?;
+    let raw = invoke::run(formula_path, proof, trace_args(trace_range.as_slice()))?;
     parse::check_outcome(&raw)
 }
 
@@ -49,44 +49,44 @@ pub fn check(
 /// veripb's output goes to `consume` as it is written; the lines it returns
 /// `true` for are left out of the outcome's trace (see
 /// [`invoke::run_streaming`]).
-pub fn check_with_database(
+pub fn check_with_database<'a>(
     formula_path: &Path,
-    proof_text: &str,
+    proof: impl Into<ProofText<'a>>,
     trace_ranges: &[(usize, usize)],
     consume: impl FnMut(&str) -> bool,
 ) -> anyhow::Result<(CheckOutcome, Database)> {
-    let dump = invoke::run_with_database_dump(
-        formula_path,
-        proof_text,
-        trace_args(trace_ranges),
-        consume,
-    )?;
+    let dump =
+        invoke::run_with_database_dump(formula_path, proof, trace_args(trace_ranges), consume)?;
     let outcome = parse::check_outcome(&dump.raw)?;
     let database = parse::parse_database_dump(&dump.database_dump)?;
     Ok((outcome, database))
 }
 
-/// Returns the trace for the last line of `proof_text`, scoped via
+/// Returns the trace for the last line of `proof`, scoped via
 /// `--trace-lines`/`--trace-pol`.
-pub fn explain_line(formula_path: &Path, proof_text: &str) -> anyhow::Result<CheckOutcome> {
-    let target_line = proof_text.lines().count();
+pub fn explain_line<'a>(
+    formula_path: &Path,
+    proof: impl Into<ProofText<'a>>,
+) -> anyhow::Result<CheckOutcome> {
+    let proof = proof.into();
+    let target_line = proof.line_count();
     let range = format!("{target_line}..={target_line}");
     let raw = invoke::run(
         formula_path,
-        proof_text,
+        proof,
         ["--trace-lines", range.as_str(), "--trace-pol"],
     )?;
     parse::check_outcome(&raw)
 }
 
 /// Returns the minimized RUP-hint list for the last `rup` line in
-/// `proof_text`, or `None` if it has none. `proof_text` must end at the step
+/// `proof`, or `None` if it has none. `proof` must end at the step
 /// being asked about. The inner `Err` is the checker's rejection message.
-pub fn elaborate_rup(
+pub fn elaborate_rup<'a>(
     formula_path: &Path,
-    proof_text: &str,
+    proof: impl Into<ProofText<'a>>,
 ) -> anyhow::Result<Result<Option<Vec<RupHint>>, String>> {
-    let elaborated = invoke::run_with_elaboration(formula_path, proof_text)?;
+    let elaborated = invoke::run_with_elaboration(formula_path, proof)?;
     match parse::check_outcome(&elaborated.raw)? {
         CheckOutcome::Accepted { .. } => {
             Ok(Ok(parse::last_rup_hints(&elaborated.elaborated_proof)))
@@ -95,23 +95,21 @@ pub fn elaborate_rup(
     }
 }
 
-/// Returns the live database after replaying `proof_text`.
-pub fn show_database(formula_path: &Path, proof_text: &str) -> anyhow::Result<Database> {
-    let dump = invoke::run_with_database_dump(
-        formula_path,
-        proof_text,
-        std::iter::empty::<&str>(),
-        |_| false,
-    )?;
+/// Returns the live database after replaying `proof`.
+pub fn show_database<'a>(
+    formula_path: &Path,
+    proof: impl Into<ProofText<'a>>,
+) -> anyhow::Result<Database> {
+    let dump =
+        invoke::run_with_database_dump(formula_path, proof, std::iter::empty::<&str>(), |_| false)?;
     parse::parse_database_dump(&dump.database_dump)
 }
 
-/// Returns the best-known objective bounds after replaying `proof_text`.
-pub fn show_objective_bounds(
+/// Returns the best-known objective bounds after replaying `proof`.
+pub fn show_objective_bounds<'a>(
     formula_path: &Path,
-    proof_text: &str,
+    proof: impl Into<ProofText<'a>>,
 ) -> anyhow::Result<ObjectiveBounds> {
-    let dump =
-        invoke::run_with_objective_dump(formula_path, proof_text, std::iter::empty::<&str>())?;
+    let dump = invoke::run_with_objective_dump(formula_path, proof, std::iter::empty::<&str>())?;
     parse::parse_objective_dump(&dump.objective_dump)
 }

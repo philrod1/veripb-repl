@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
+use super::ProofText;
+
 /// Returns the `veripb` binary to invoke: `$VERIPB_REPL_VERIPB_BIN` if
 /// set, otherwise `"veripb"` resolved via `$PATH`.
 fn veripb_binary() -> std::ffi::OsString {
@@ -29,7 +31,7 @@ pub struct RawInvocation {
     pub stderr: String,
     pub success: bool,
     pub code: Option<i32>,
-    /// The temp file `proof_text` was written to and passed to `veripb`
+    /// The temp file (or pipe) the proof was written to and passed to `veripb`
     /// as its `<DERIVATION>` argument — a rejection's error text names
     /// this path, so `checker::parse` anchors its line-number search to
     /// it.
@@ -39,32 +41,32 @@ pub struct RawInvocation {
     pub formula_file_path: PathBuf,
 }
 
-/// Runs `veripb <formula_path> <proof_text> ...extra_args` and returns
-/// its output. `proof_text` is written to a temp `.pbp` file first.
+/// Runs `veripb <formula_path> <proof> ...extra_args` and returns its
+/// output. `proof` is written to a temp `.pbp` file first.
 ///
 /// Returns `Err` only for an invocation failure — the binary couldn't be
 /// spawned, or the temp file couldn't be written — never because the
 /// proof was rejected; that's a normal outcome captured in
 /// `RawInvocation` for `checker::parse` to interpret.
-pub fn run<I, S>(
+pub fn run<'a, I, S>(
     formula_path: &Path,
-    proof_text: &str,
+    proof: impl Into<ProofText<'a>>,
     extra_args: I,
 ) -> anyhow::Result<RawInvocation>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    run_streaming(formula_path, proof_text, extra_args, |_| false)
+    run_streaming(formula_path, proof, extra_args, |_| false)
 }
 
 /// Like [`run`], passing each line of `veripb`'s stdout (without its
 /// newline) to `consume` as `veripb` writes it. Lines `consume` returns
 /// `true` for are left out of [`RawInvocation::stdout`]: a trace can run to
 /// several times the proof's size, too much to hold.
-pub fn run_streaming<I, S>(
+pub fn run_streaming<'a, I, S>(
     formula_path: &Path,
-    proof_text: &str,
+    proof: impl Into<ProofText<'a>>,
     extra_args: I,
     mut consume: impl FnMut(&str) -> bool,
 ) -> anyhow::Result<RawInvocation>
@@ -72,6 +74,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    let proof = proof.into();
     let extra_args: Vec<OsString> = extra_args
         .into_iter()
         .map(|s| s.as_ref().to_os_string())
@@ -84,7 +87,7 @@ where
         return run_through_pipe(
             pipe,
             formula_path,
-            proof_text,
+            proof,
             extra_args,
             &mut consume,
             reporter,
@@ -96,9 +99,12 @@ where
         .tempfile()
         .context("failed to create a temp file for the candidate proof")?;
 
-    proof_file
-        .write_all(proof_text.as_bytes())
+    let mut writer = std::io::BufWriter::new(proof_file.as_file_mut());
+    proof
+        .write_to(&mut writer, || true)
+        .and_then(|()| writer.flush())
         .context("failed to write the candidate proof to a temp file")?;
+    drop(writer);
 
     let proof_file_path = proof_file.path().to_path_buf();
 
@@ -141,13 +147,13 @@ impl NamedPipe {
     }
 }
 
-/// [`run_streaming`], handing `proof_text` to `veripb` through `pipe` and
+/// [`run_streaming`], handing `proof` to `veripb` through `pipe` and
 /// reporting progress to `reporter` (see [`super::progress`]).
 #[cfg(unix)]
 fn run_through_pipe(
     pipe: NamedPipe,
     formula_path: &Path,
-    proof_text: &str,
+    proof: ProofText<'_>,
     extra_args: Vec<OsString>,
     consume: &mut dyn FnMut(&str) -> bool,
     reporter: super::progress::Reporter,
@@ -162,9 +168,7 @@ fn run_through_pipe(
         pipe.path.as_os_str().to_os_string(),
     ];
     args.extend(extra_args);
-    let newlines = |bytes: &[u8]| bytes.iter().filter(|&&b| b == b'\n').count();
-    let total = newlines(proof_text.as_bytes())
-        + usize::from(!proof_text.is_empty() && !proof_text.ends_with('\n'));
+    let total = proof.line_count();
     let written = AtomicUsize::new(0);
     let done = AtomicBool::new(false);
 
@@ -173,17 +177,18 @@ fn run_through_pipe(
         let writer = scope.spawn(move || {
             // Blocks until `veripb` opens the pipe (or `done` is set and the
             // main thread opens it instead).
-            let Ok(mut file) = std::fs::OpenOptions::new().write(true).open(path) else {
+            let Ok(file) = std::fs::OpenOptions::new().write(true).open(path) else {
                 return;
             };
-            for chunk in proof_text.as_bytes().chunks(8192) {
-                // A write fails once `veripb` has exited, unless the main
-                // thread has the pipe open by then: `done` stops it.
-                if done.load(Ordering::Relaxed) || file.write_all(chunk).is_err() {
-                    return;
-                }
-                written.fetch_add(newlines(chunk), Ordering::Relaxed);
-            }
+            // A write fails once `veripb` has exited, unless the main thread
+            // has the pipe open by then: `done` stops it.
+            let mut writer = std::io::BufWriter::new(file);
+            let _ = proof
+                .write_to(&mut writer, || {
+                    written.fetch_add(1, Ordering::Relaxed);
+                    !done.load(Ordering::Relaxed)
+                })
+                .and_then(|()| writer.flush());
         });
         scope.spawn(move || {
             let mut started = true;
@@ -305,15 +310,15 @@ pub struct ElaboratedInvocation {
 
 /// Runs [`run`] with `--elaborate`, and returns the elaborated proof
 /// text it wrote.
-pub fn run_with_elaboration(
+pub fn run_with_elaboration<'a>(
     formula_path: &Path,
-    proof_text: &str,
+    proof: impl Into<ProofText<'a>>,
 ) -> anyhow::Result<ElaboratedInvocation> {
     let scratch = tempfile::NamedTempFile::new()
         .context("failed to create a scratch file for elaboration output")?;
     let args: Vec<std::ffi::OsString> = vec!["--elaborate".into(), scratch.path().into()];
 
-    let raw = run(formula_path, proof_text, args)?;
+    let raw = run(formula_path, proof, args)?;
     let elaborated_proof = std::fs::read_to_string(scratch.path())
         .context("failed to read back the elaboration scratch file")?;
 
@@ -331,9 +336,9 @@ pub struct DatabaseDumpInvocation {
 
 /// Runs [`run_streaming`] with `--dump-database` plus any `extra_args`, and
 /// returns the database dump it wrote.
-pub fn run_with_database_dump<I, S>(
+pub fn run_with_database_dump<'a, I, S>(
     formula_path: &Path,
-    proof_text: &str,
+    proof: impl Into<ProofText<'a>>,
     extra_args: I,
     consume: impl FnMut(&str) -> bool,
 ) -> anyhow::Result<DatabaseDumpInvocation>
@@ -346,7 +351,7 @@ where
     let mut args: Vec<std::ffi::OsString> = vec!["--dump-database".into(), scratch.path().into()];
     args.extend(extra_args.into_iter().map(|s| s.as_ref().to_os_string()));
 
-    let raw = run_streaming(formula_path, proof_text, args, consume)?;
+    let raw = run_streaming(formula_path, proof, args, consume)?;
     let database_dump = std::fs::read_to_string(scratch.path())
         .context("failed to read back the database dump scratch file")?;
 
@@ -365,9 +370,9 @@ pub struct ObjectiveDumpInvocation {
 
 /// Runs [`run`] with `--dump-objective` plus any `extra_args`, and returns
 /// the objective-bounds dump it wrote.
-pub fn run_with_objective_dump<I, S>(
+pub fn run_with_objective_dump<'a, I, S>(
     formula_path: &Path,
-    proof_text: &str,
+    proof: impl Into<ProofText<'a>>,
     extra_args: I,
 ) -> anyhow::Result<ObjectiveDumpInvocation>
 where
@@ -379,7 +384,7 @@ where
     let mut args: Vec<std::ffi::OsString> = vec!["--dump-objective".into(), scratch.path().into()];
     args.extend(extra_args.into_iter().map(|s| s.as_ref().to_os_string()));
 
-    let raw = run(formula_path, proof_text, args)?;
+    let raw = run(formula_path, proof, args)?;
     let objective_dump = std::fs::read_to_string(scratch.path())
         .context("failed to read back the objective dump scratch file")?;
 
