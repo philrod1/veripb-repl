@@ -126,8 +126,8 @@ pub(crate) fn parse_start_line(args: &str) -> Result<usize, String> {
 }
 
 /// Starts an edit with display lines `lo..=hi` queued for retyping. Leaves the
-/// buffer untouched but bumps `session.generation` so `dispatch` records an
-/// undo point for the edit (later changes go through [`handle`], bypassing
+/// buffer untouched but marks an undo point so `dispatch` records one for
+/// the edit (later changes go through [`handle`], bypassing
 /// `dispatch`). Prints an error and returns `None` on an invalid line; callers
 /// print their own intro.
 fn start_at(
@@ -154,14 +154,14 @@ fn start_at(
         return None;
     };
 
-    session.generation += 1;
+    session.mark_undo_point();
     Some(EditState {
         next: start_idx,
         end: end_idx + 1,
         single_line,
         // Filled in by `start_deassert`.
         deassert_source: None,
-        prior_buffer: session.buffer.clone(),
+        prior_buffer: session.buffer.to_vec(),
         prior_checked_len: session.checked_len,
         prior_known_bad: session.known_bad.clone(),
     })
@@ -439,12 +439,12 @@ pub fn start_insert(session: &mut Session, args: &str, out: &mut dyn Output) -> 
         end: insert_idx,
         single_line: false,
         deassert_source: None,
-        prior_buffer: session.buffer.clone(),
+        prior_buffer: session.buffer.to_vec(),
         prior_checked_len: session.checked_len,
         prior_known_bad: session.known_bad.clone(),
     };
     // Marks an undo point for `dispatch` (see `start_at`).
-    session.generation += 1;
+    session.mark_undo_point();
     outln!(
         out,
         "Inserting before line {n} — type one or more new lines, then :done when finished. \

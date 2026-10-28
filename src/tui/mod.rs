@@ -1030,12 +1030,12 @@ impl App {
         };
         // Its own independently-undoable action, same as every other Vim-
         // mode commit here — see `vim_commit_insert`'s identical pattern.
-        let undo_before = (session.generation, session.snapshot());
+        let undo_before = (session.change_stamp(), session.snapshot());
         if let Err(err) = session.insert_line(insert_idx, "") {
             self.scrollback.push(&format!("Error: {err:#}"));
             return;
         }
-        if session.generation != undo_before.0 {
+        if session.change_stamp() != undo_before.0 {
             session.push_undo(undo_before.1);
         }
         self.start_vim(n);
@@ -1312,12 +1312,12 @@ impl App {
             return;
         };
         let insert_idx = if below { idx + 1 } else { idx };
-        let undo_before = (session.generation, session.snapshot());
+        let undo_before = (session.change_stamp(), session.snapshot());
         if let Err(err) = session.insert_line(insert_idx, "") {
             self.scrollback.push(&format!("Error: {err:#}"));
             return;
         }
-        if session.generation != undo_before.0 {
+        if session.change_stamp() != undo_before.0 {
             session.push_undo(undo_before.1);
         }
         let new_line = session.display_line(insert_idx);
@@ -1353,12 +1353,12 @@ impl App {
         }
         chars.remove(col);
         let new_text: String = chars.into_iter().collect();
-        let undo_before = (session.generation, session.snapshot());
+        let undo_before = (session.change_stamp(), session.snapshot());
         if let Err(err) = session.set_line(idx, &new_text) {
             self.scrollback.push(&format!("Error: {err:#}"));
             return;
         }
-        if session.generation != undo_before.0 {
+        if session.change_stamp() != undo_before.0 {
             session.push_undo(undo_before.1);
         }
         let new_len = new_text.chars().count();
@@ -1435,12 +1435,12 @@ impl App {
             ));
             return;
         };
-        let undo_before = (session.generation, session.snapshot());
+        let undo_before = (session.change_stamp(), session.snapshot());
         if let Err(err) = session.delete_line(idx) {
             self.scrollback.push(&format!("Error: {err:#}"));
             return;
         }
-        if session.generation != undo_before.0 {
+        if session.change_stamp() != undo_before.0 {
             session.push_undo(undo_before.1);
         }
         self.vim_settle_cursor();
@@ -1517,11 +1517,11 @@ impl App {
             return;
         };
 
-        let undo_before = (session.generation, session.snapshot());
+        let undo_before = (session.change_stamp(), session.snapshot());
         let result = session
             .set_line(idx, &before)
             .and_then(|()| session.insert_line(idx + 1, &after));
-        if session.generation != undo_before.0 {
+        if session.change_stamp() != undo_before.0 {
             session.push_undo(undo_before.1);
         }
         if let Err(err) = result {
@@ -1577,11 +1577,11 @@ impl App {
         let join_col = upper_text.chars().count();
         let merged = format!("{upper_text}{lower_text}");
 
-        let undo_before = (session.generation, session.snapshot());
+        let undo_before = (session.change_stamp(), session.snapshot());
         let result = session
             .set_line(upper, &merged)
             .and_then(|()| session.delete_line(upper + 1));
-        if session.generation != undo_before.0 {
+        if session.change_stamp() != undo_before.0 {
             session.push_undo(undo_before.1);
         }
         if let Err(err) = result {
@@ -1622,12 +1622,12 @@ impl App {
         };
 
         if session.buffer[current_idx] != text {
-            let undo_before = (session.generation, session.snapshot());
+            let undo_before = (session.change_stamp(), session.snapshot());
             if let Err(err) = session.set_line(current_idx, &text) {
                 self.scrollback.push(&format!("Error: {err:#}"));
                 return;
             }
-            if session.generation != undo_before.0 {
+            if session.change_stamp() != undo_before.0 {
                 session.push_undo(undo_before.1);
             }
         }
@@ -1709,10 +1709,10 @@ impl App {
             return;
         };
         if session.buffer[idx] != text {
-            let undo_before = (session.generation, session.snapshot());
+            let undo_before = (session.change_stamp(), session.snapshot());
             if let Err(err) = session.set_line(idx, &text) {
                 self.scrollback.push(&format!("Error: {err:#}"));
-            } else if session.generation != undo_before.0 {
+            } else if session.change_stamp() != undo_before.0 {
                 session.push_undo(undo_before.1);
             }
         }
@@ -2078,13 +2078,13 @@ impl App {
             // commits — see `VimState`) —
             // tracked individually rather than bundled into one
             // mode-wide entry.
-            let undo_before = (session.generation, session.snapshot());
+            let undo_before = (session.change_stamp(), session.snapshot());
             self.scrollback.push(&format!("opb> {trimmed}"));
             let n = session.formula_first_ids()[cursor - 1];
             if let Err(err) = formula::commit(session, n, &trimmed, &mut self.scrollback) {
                 self.scrollback.push(&format!("Error: {err:#}"));
             }
-            if session.generation != undo_before.0 {
+            if session.change_stamp() != undo_before.0 {
                 session.push_undo(undo_before.1);
             }
         }
