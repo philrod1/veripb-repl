@@ -139,24 +139,25 @@ pub fn dispatch(
         session.recoverable_buffer = None;
     }
 
-    // A change is detected by `Session::change_stamp` differing afterwards.
-    let before = session.as_ref().map(|s| (s.change_stamp(), s.snapshot()));
+    // Never an undo point for `:undo`/`:redo` or `:formula cancel`
+    // (corrective actions), or for `:load`/`:instance` (they replace the
+    // session, so the state before belongs to a different formula).
+    // `:reset` clears the history.
+    let undoable = !(matches!(
+        resolved_cmd,
+        Some("undo" | "redo" | "load" | "instance" | "reset")
+    ) || (resolved_cmd == Some("formula") && cmd_args_trimmed == "cancel"));
+    if undoable && let Some(session) = session.as_mut() {
+        session.begin_undo_point();
+    }
 
     let result = dispatch_inner(session, line, out);
 
     if let Some(session) = session.as_mut() {
-        // Never push for `:undo` or `:formula cancel` (corrective actions),
-        // or for `:load`/`:instance` (they replace the session, so the old
-        // snapshot belongs to a different formula). `:reset` clears the stack.
-        let no_push = matches!(resolved_cmd, Some("undo") | Some("load") | Some("instance"))
-            || (resolved_cmd == Some("formula") && cmd_args_trimmed == "cancel");
         if resolved_cmd == Some("reset") {
-            session.undo_stack.clear();
-        } else if !no_push
-            && let Some((stamp_before, snap_before)) = before
-            && session.change_stamp() != stamp_before
-        {
-            session.push_undo(snap_before);
+            session.clear_undo_history();
+        } else if undoable {
+            session.end_undo_point();
         }
     }
 
@@ -268,6 +269,7 @@ fn dispatch_inner(
             "preserved" => preserved::run(session, out),
             "list" => list::run(session, out),
             "undo" => undo::run(session, cmd_args, out),
+            "redo" => undo::run_redo(session, cmd_args, out),
             "delete" => edit::start_delete(session, cmd_args, out)?,
             "source" => source::run(session, cmd_args, out)?,
             "verify" => verify::run(session, out)?,

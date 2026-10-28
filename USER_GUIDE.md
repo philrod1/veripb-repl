@@ -323,6 +323,7 @@ candidates.
 | `:preserved` | show the current preserved variable set | **Implemented** |
 | `:goals` | inside a subproof, list remaining proof goals | **Not implemented** |
 | `:undo [n]` | undo the last `n` actions (default 1) | **Implemented** |
+| `:redo [n]` | redo the last `n` actions `:undo` undid (default 1) | **Implemented** |
 | `:source <file.pbp>` | replace the buffer with a proof file's lines, unchecked | **Implemented** |
 | `:verify` | check the buffer's unchecked lines, stopping at the first rejection | **Implemented** |
 | `:save <file.pbp> [<conclusion>]` | write the whole buffer, checked or not, to a `.pbp` file | **Implemented** |
@@ -482,14 +483,19 @@ formulas are not supported.
   Esc, an `Insert` Enter line split, an `Insert` Backspace/Delete line
   join, or an `Insert` arrow move off a changed line). `:undo 3` goes back 3 actions.
 
-  - At most 200 actions are kept.
+  - At most 200 actions are kept, fewer if together they replaced more
+    than 256 MB of lines.
   - `:load` and `:instance` (new session) and `:reset` clear the undo
     history. `:source` into a non-empty buffer also clears it; the
     `:source` itself can still be undone.
-  - `:undo` and `:formula cancel` are not themselves undoable (no redo).
+  - `:formula cancel` is not itself undoable.
   - Breakpoints are not affected by `:undo`.
   - In a `:formula` session, `:formula cancel` undoes the last commit and
     stays in the mode; `:undo` after `:done` undoes the whole session.
+
+- **`:redo [n]`** — redoes the last `n` actions `:undo` undid (default 1),
+  latest undone first. Any other change after the `:undo` discards what is
+  left to redo; `:load`, `:instance` and `:reset` clear it too.
 
 - **`:source <file.pbp>`** — replaces the buffer with the file's non-blank
   derivation lines, **unchecked**; the formula is kept. If the buffer was

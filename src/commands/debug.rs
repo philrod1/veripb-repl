@@ -6,7 +6,7 @@
 //! work.
 //!
 //! All debug state lives on [`Session`]; [`DebugState`] is only the mode's
-//! on/off marker. Line-moving commands push their own undo snapshots (see
+//! on/off marker. Line-moving commands make their own undo points (see
 //! `with_undo`) because `commands::dispatch` does not run inside a mode;
 //! breakpoint changes are not undoable. An empty line is a no-op.
 
@@ -90,18 +90,15 @@ pub fn start(session: &Session, out: &mut dyn Output) -> Option<DebugState> {
     Some(DebugState)
 }
 
-/// Runs `f` and pushes an undo snapshot iff `session.change_stamp()` changed
-/// (the same check `commands::dispatch` does).
+/// Runs `f` as one undoable action, as `commands::dispatch` does.
 fn with_undo<T>(
     session: &mut Session,
     f: impl FnOnce(&mut Session) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    let before = (session.change_stamp(), session.snapshot());
-    let result = f(session)?;
-    if session.change_stamp() != before.0 {
-        session.push_undo(before.1);
-    }
-    Ok(result)
+    session.begin_undo_point();
+    let result = f(session);
+    session.end_undo_point();
+    result
 }
 
 /// Prints the captured checker output, then the rejection, the current
