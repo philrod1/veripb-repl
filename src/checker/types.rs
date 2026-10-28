@@ -131,6 +131,7 @@ impl Database {
 /// The checker's best-known objective bounds at some point in a replay.
 /// Values are unparsed arbitrary-precision integer text, only ever spliced
 /// into proof text.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ObjectiveBounds {
     /// The current objective (`<coeff> <lit> ... <constant>`, unparsed),
     /// reflecting any `obju` updates so far; `None` if there is none.

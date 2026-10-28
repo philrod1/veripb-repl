@@ -459,6 +459,31 @@ fn constraint_id_in(line: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
+/// Whether a database entry's text (`<coeff> <lit> ... >= <degree>`) can
+/// never hold: its coefficients sum to less than its degree, as for
+/// `>= 1`. `false` for text in any other form, or numbers too large to
+/// add up here.
+pub fn is_contradiction(text: &str) -> bool {
+    let Some((terms, degree)) = text.rsplit_once(">=") else {
+        return false;
+    };
+    let Ok(degree) = degree.trim().parse::<i128>() else {
+        return false;
+    };
+    let mut sum: i128 = 0;
+    let mut tokens = terms.split_whitespace();
+    while let Some(coefficient) = tokens.next() {
+        let (Ok(coefficient), Some(_literal)) = (coefficient.parse::<i128>(), tokens.next()) else {
+            return false;
+        };
+        let Some(next) = sum.checked_add(coefficient) else {
+            return false;
+        };
+        sum = next;
+    }
+    sum < degree
+}
+
 /// Strips a dump line's terminating `;`, plus whitespace either side of it.
 fn strip_terminator<'a>(text: &'a str, line: &str) -> anyhow::Result<&'a str> {
     Ok(text

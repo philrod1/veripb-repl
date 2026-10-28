@@ -172,6 +172,11 @@ pub struct Session {
     /// refreshed lazily by [`Self::database`]. A `RefCell` so read-only
     /// (`&Session`) contexts can populate it.
     database_cache: std::cell::RefCell<Option<DatabaseCache>>,
+    /// [`Self::objective_bounds`] for a `generation`.
+    objective_cache: std::cell::RefCell<Option<(u64, checker::ObjectiveBounds)>>,
+    /// [`Self::dry_run_conclusion`]'s results for a `generation`, by
+    /// conclusion.
+    conclusion_cache: std::cell::RefCell<(u64, ahash::AHashMap<String, DryRun>)>,
     /// Set by [`Self::database`], cleared when a verify run refreshes the
     /// cache from its own dump: verify runs dump the database only while it
     /// is in use.
@@ -208,6 +213,16 @@ pub enum ConstraintSource {
     /// The checked proof line at `display_line`.
     Proof { display_line: usize },
 }
+
+/// A verify run's database dump and, if asked for, its objective dump.
+type VerifyDumps = (
+    checker::Database,
+    Option<anyhow::Result<checker::ObjectiveBounds>>,
+);
+
+/// [`Session::dry_run_conclusion`]'s result: the checker's output, and the
+/// rejection message if the conclusion doesn't hold.
+pub type DryRun = (String, Result<(), String>);
 
 /// Each constraint ID's labels, sorted.
 pub type LabelsById = ahash::AHashMap<isize, Vec<String>>;
@@ -277,6 +292,8 @@ impl Session {
             pending_point: None,
             breakpoints: BTreeSet::new(),
             database_cache: std::cell::RefCell::new(None),
+            objective_cache: std::cell::RefCell::new(None),
+            conclusion_cache: std::cell::RefCell::default(),
             database_wanted: std::cell::Cell::new(false),
             line_ids: std::cell::RefCell::default(),
             formula_file: std::cell::RefCell::new(None),
@@ -487,12 +504,16 @@ impl Session {
                 .is_some_and(|idx| wanted.binary_search(&idx).is_ok())
         };
         let mut traced = checker::parse::ConstraintIdsByLine::new(is_wanted);
-        let (_, database) = checker::check_with_database(
+        let (outcome, database, bounds) = checker::check_with_dumps(
             formula_file.path(),
             proof,
             &self.trace_ranges(&wanted),
+            self.objective.is_some(),
             |line| traced.feed(line),
         )?;
+        if outcome.is_accepted() {
+            self.keep_objective_bounds(bounds);
+        }
         self.line_ids().insert(
             traced
                 .finish()
@@ -525,9 +546,11 @@ impl Session {
 
     /// Refreshes the database cache from `database`, the dump of a verify
     /// run over the current checked prefix, if the kept IDs give every
-    /// checked label's.
-    fn fill_database_cache(&self, database: checker::Database) {
+    /// checked label's; and the objective cache from `bounds`, that run's
+    /// objective dump if it made one.
+    fn fill_database_cache(&self, (database, bounds): VerifyDumps) {
         self.database_wanted.set(false);
+        self.keep_objective_bounds(bounds);
         if !self.lines_to_trace(self.checked_len, &[]).is_empty() {
             return;
         }
@@ -647,13 +670,42 @@ impl Session {
             .map(to_proof_line))
     }
 
-    /// Returns the best-known objective bounds for `buffer[..checked_len]`.
-    /// Uncached: one `veripb` call per call.
+    /// Returns the best-known objective bounds for `buffer[..checked_len]`,
+    /// re-running `veripb` only if `generation` changed since they were
+    /// cached (a database refresh fills the cache too).
     pub fn objective_bounds(&self) -> anyhow::Result<checker::ObjectiveBounds> {
+        if let Some((generation, bounds)) = &*self.objective_cache.borrow()
+            && *generation == self.generation
+        {
+            return Ok(bounds.clone());
+        }
         let preamble = self.preamble_lines();
         let proof = proof(&preamble, &self.buffer[..self.checked_len], &[]);
         let formula_file = self.formula_temp_file()?;
-        checker::show_objective_bounds(formula_file.path(), proof)
+        let bounds = checker::show_objective_bounds(formula_file.path(), proof)?;
+        *self.objective_cache.borrow_mut() = Some((self.generation, bounds.clone()));
+        Ok(bounds)
+    }
+
+    /// Caches `bounds`, an objective dump for the current state, unless the
+    /// dump failed or wasn't made.
+    fn keep_objective_bounds(&self, bounds: Option<anyhow::Result<checker::ObjectiveBounds>>) {
+        if let Some(Ok(bounds)) = bounds {
+            *self.objective_cache.borrow_mut() = Some((self.generation, bounds));
+        }
+    }
+
+    /// The database for the current state if it is already cached, without
+    /// running `veripb`.
+    pub(crate) fn cached_database(&self) -> Option<std::rc::Rc<checker::Database>> {
+        match &*self.database_cache.borrow() {
+            Some(DatabaseCache {
+                generation,
+                contents: Ok((database, _)),
+                ..
+            }) if *generation == self.generation => Some(database.clone()),
+            _ => None,
+        }
     }
 
     /// Returns the preserved set as of the checked prefix: the declared set
@@ -706,14 +758,15 @@ impl Session {
     /// One `veripb` run over `buffer[..end]` for a verify step, tracing
     /// display lines `shown`, and keeping what the accepted lines it traced
     /// derived. While the database is in use (see `database_wanted`), also
-    /// dumps it, returned if every line was accepted, and traces the
+    /// dumps it (and the objective bounds, if there is an objective),
+    /// returned if every line was accepted, and traces the
     /// labelled lines before `end` whose IDs aren't kept, so their labels
     /// come with it; only `shown`'s trace is left in the outcome.
     fn verify_run(
         &self,
         end: usize,
         shown: (usize, usize),
-    ) -> anyhow::Result<(CheckOutcome, Option<checker::Database>)> {
+    ) -> anyhow::Result<(CheckOutcome, Option<VerifyDumps>)> {
         let preamble = self.preamble_lines();
         let proof = proof(&preamble, &self.buffer[..end], &[]);
         if !self.database_wanted.get() {
@@ -737,10 +790,13 @@ impl Session {
         let is_shown = |n: usize| (shown.0..=shown.1).contains(&n);
         let mut traced = checker::parse::ConstraintIdsByLine::new(|_| true);
         let formula_file = self.formula_temp_file()?;
-        let (outcome, database) =
-            checker::check_with_database(formula_file.path(), proof, &ranges, |line| {
-                traced.feed(line) && !traced.current_line().is_some_and(is_shown)
-            })?;
+        let (outcome, database, bounds) = checker::check_with_dumps(
+            formula_file.path(),
+            proof,
+            &ranges,
+            self.objective.is_some(),
+            |line| traced.feed(line) && !traced.current_line().is_some_and(is_shown),
+        )?;
         let accepted_before = match &outcome {
             CheckOutcome::Accepted { .. } => usize::MAX,
             CheckOutcome::Rejected { line, .. } => *line,
@@ -752,7 +808,7 @@ impl Session {
                 .filter(|(n, _)| *n < accepted_before)
                 .filter_map(|(n, ids)| n.checked_sub(PREAMBLE_LINES + 1).map(|idx| (idx, ids))),
         );
-        let database = outcome.is_accepted().then_some(database);
+        let database = outcome.is_accepted().then_some((database, bounds));
         Ok((outcome, database))
     }
 
@@ -1374,20 +1430,32 @@ impl Session {
     /// Checks whether the checked prefix plus `output NONE; conclusion
     /// <conclusion>; end pseudo-Boolean proof;` is a complete valid proof,
     /// without changing state. `conclusion` is spliced verbatim (e.g.
-    /// `"UNSAT"`, `"BOUNDS 0 10"`). Returns the trace and the result.
-    pub fn dry_run_conclusion(
-        &self,
-        conclusion: &str,
-    ) -> anyhow::Result<(String, Result<(), String>)> {
+    /// `"UNSAT"`, `"BOUNDS 0 10"`). Returns the trace and the result,
+    /// cached until `generation` changes.
+    pub fn dry_run_conclusion(&self, conclusion: &str) -> anyhow::Result<DryRun> {
+        {
+            let mut cache = self.conclusion_cache.borrow_mut();
+            if cache.0 != self.generation {
+                *cache = (self.generation, ahash::AHashMap::new());
+            }
+            if let Some(result) = cache.1.get(conclusion) {
+                return Ok(result.clone());
+            }
+        }
         let preamble = self.preamble_lines();
         let tail = closing_lines(conclusion);
-        match self.check(
+        let result = match self.check(
             proof(&preamble, &self.buffer[..self.checked_len], &tail),
             None,
         )? {
-            CheckOutcome::Accepted { trace } => Ok((trace, Ok(()))),
-            CheckOutcome::Rejected { message, trace, .. } => Ok((trace, Err(message))),
-        }
+            CheckOutcome::Accepted { trace } => (trace, Ok(())),
+            CheckOutcome::Rejected { message, trace, .. } => (trace, Err(message)),
+        };
+        self.conclusion_cache
+            .borrow_mut()
+            .1
+            .insert(conclusion.to_string(), result.clone());
+        Ok(result)
     }
 
     /// Replays through checked line `display_line` and returns its trace.

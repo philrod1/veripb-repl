@@ -16,6 +16,8 @@ pub mod types;
 
 use std::path::Path;
 
+use anyhow::Context as _;
+
 pub use types::{CheckOutcome, Database, DatabaseEntry, ObjectiveBounds, ProofText, RupHint};
 
 /// Returns the `--trace-lines <lo>..=<hi>[,<lo>..=<hi>...]` argument for
@@ -55,11 +57,47 @@ pub fn check_with_database<'a>(
     trace_ranges: &[(usize, usize)],
     consume: impl FnMut(&str) -> bool,
 ) -> anyhow::Result<(CheckOutcome, Database)> {
-    let dump =
-        invoke::run_with_database_dump(formula_path, proof, trace_args(trace_ranges), consume)?;
+    let (outcome, database, _) =
+        check_with_dumps(formula_path, proof, trace_ranges, false, consume)?;
+    Ok((outcome, database))
+}
+
+/// Like [`check_with_database`], also returning the objective bounds from
+/// the same call if `objective` is set: an `Err` if that dump failed, which
+/// fails nothing else.
+pub fn check_with_dumps<'a>(
+    formula_path: &Path,
+    proof: impl Into<ProofText<'a>>,
+    trace_ranges: &[(usize, usize)],
+    objective: bool,
+    consume: impl FnMut(&str) -> bool,
+) -> anyhow::Result<(
+    CheckOutcome,
+    Database,
+    Option<anyhow::Result<ObjectiveBounds>>,
+)> {
+    let objective_file = objective
+        .then(tempfile::NamedTempFile::new)
+        .transpose()
+        .context("failed to create a scratch file for the objective dump")?;
+    let mut args: Vec<std::ffi::OsString> = trace_args(trace_ranges)
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    if let Some(file) = &objective_file {
+        args.push("--dump-objective".into());
+        args.push(file.path().into());
+    }
+    let dump = invoke::run_with_database_dump(formula_path, proof, args, consume)?;
     let outcome = parse::check_outcome(&dump.raw)?;
     let database = parse::parse_database_dump(&dump.database_dump)?;
-    Ok((outcome, database))
+    let bounds = objective_file.map(|file| {
+        let text = std::fs::read_to_string(file.path())
+            .context("failed to read back the objective dump scratch file")?;
+        anyhow::ensure!(!text.is_empty(), "veripb wrote no objective dump");
+        parse::parse_objective_dump(&text)
+    });
+    Ok((outcome, database, bounds))
 }
 
 /// Returns the trace for the last line of `proof`, scoped via
