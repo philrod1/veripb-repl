@@ -24,6 +24,7 @@ use std::ops::Range;
 
 use crossterm::{cursor, queue, style::Color, style::Print, style::Stylize, terminal};
 
+use crate::checker::Database;
 use crate::commands::edit;
 use crate::session::Session;
 use crate::tui::layout::{self, Layout};
@@ -185,6 +186,7 @@ fn spans_take(spans: &[Span], n: usize) -> Vec<Span> {
 /// One display line of a top panel. Styling priority (resolved in
 /// `panel_cell`): `error` > `debug_current` > `dim` > `cursor` >
 /// `assertion` > `hint` > `core`.
+#[derive(Clone)]
 struct PanelLine {
     /// Line numbering, pinned at the left edge under horizontal scroll;
     /// drawn in the base colours (or the row background).
@@ -246,14 +248,26 @@ fn pinned(text: String) -> PanelLine {
     }
 }
 
-/// A pane's visible window plus where it sits in the full content — the
-/// vertical scrollbar's inputs.
-struct Window {
-    lines: Vec<PanelLine>,
-    /// Index into the full content of the first visible line.
-    top: usize,
-    /// Total content lines, visible or not.
+/// A top pane's content. Only the rows on screen are built, so drawing a
+/// pane costs the same however long its content is.
+struct PaneContent<'a> {
+    /// Content lines, on screen or not.
     total: usize,
+    /// Width of the widest line, prefix included.
+    longest: usize,
+    /// Builds line `i` (`< total`).
+    line: Box<dyn Fn(usize) -> PanelLine + 'a>,
+}
+
+impl PaneContent<'_> {
+    /// Content held whole: placeholders and error lines.
+    fn whole(lines: Vec<PanelLine>) -> Self {
+        PaneContent {
+            total: lines.len(),
+            longest: longest_line(&lines),
+            line: Box::new(move |i| lines[i].clone()),
+        }
+    }
 }
 
 /// A top pane ready to render row by row: visible content plus scrollbar
@@ -273,19 +287,22 @@ struct PaneView {
     h_offset: usize,
 }
 
-/// Resolves one top pane: clamps both offsets (written back), windows the
-/// lines, and decides both scrollbars. The bars' mutual dependency is
-/// broken by assuming the vertical bar from the raw height, deciding the
+/// Resolves one top pane: clamps both offsets (written back), builds the
+/// visible lines, and decides both scrollbars. The bars' mutual dependency
+/// is broken by assuming the vertical bar from the raw height, deciding the
 /// horizontal bar against the reduced width, then finalizing.
 fn pane_view(
-    lines: Vec<PanelLine>,
+    content: PaneContent,
     w: usize,
     h: usize,
     v_offset: &mut usize,
     h_offset: &mut usize,
 ) -> PaneView {
-    let total = lines.len();
-    let longest = longest_line(&lines);
+    let PaneContent {
+        total,
+        longest,
+        line,
+    } = content;
     let vbar_expected = total > h;
     // Pre-pass width (vertical bar assumed from raw height); the clamp and
     // the horizontal-bar decision must both use it so they agree.
@@ -295,13 +312,13 @@ fn pane_view(
     let hbar_on = longest > avail_w;
     let content_h = if hbar_on { h - 1 } else { h };
 
-    let window = window_scrolled(lines, content_h, v_offset);
-    let vbar = vbar(window.top, window.total, content_h);
+    let window = window_range(total, content_h, v_offset);
+    let vbar = vbar(window.start, total, content_h);
     let eff_w = w - (vbar.is_some() as usize);
     let hbar = hbar_on.then(|| hbar_range(eff_w, *h_offset, longest));
 
     PaneView {
-        lines: window.lines,
+        lines: window.map(line).collect(),
         vbar,
         hbar,
         eff_w,
@@ -391,55 +408,90 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     // (`pane_view` underflows on zero height).
     let output_fullscreen = layout.output_fullscreen();
 
-    // Panel content and titles.
-    let (formula_title, formula) = match &app.session {
-        Some(session) => (
-            format!(
-                "Formula: {} ({})",
-                file_name(&session.formula_path),
-                session.formula_constraint_count()
-            ),
-            formula_lines(session, app.formula_browse_cursor()),
-        ),
-        None => (
-            "Formula".to_string(),
-            vec![pinned("(no formula loaded)".to_string())],
-        ),
-    };
+    // Which top panes are shown: a solo-zoomed one gets `inner` width and
+    // the other two aren't built; none are when `output_fullscreen`.
+    let show_top = !output_fullscreen;
+    let shown = |pane| show_top && (zoomed_pane.is_none() || zoomed_pane == Some(pane));
+    let pane_w = |pane, w| if zoomed_pane == Some(pane) { inner } else { w };
+
     // The assertion `:deassert` is replacing, if any; named in the Output
     // and Database headings and drives the Database hint highlighting.
-    let deassert_target = app.vim_deassert_source();
+    let deassert_target = app.vim_deassert_source().map(str::to_string);
+    // Names the assertion being replaced while `:deassert` is active.
+    let output_title = match &deassert_target {
+        Some(source) => format!("Output (deasserting {source})"),
+        None => "Output".to_string(),
+    };
+
+    // Panel content and titles. Only the rows on screen are built (see
+    // `PaneContent`).
+    let formula_title = match &app.session {
+        Some(session) => format!(
+            "Formula: {} ({})",
+            file_name(&session.formula_path),
+            session.formula_constraint_count()
+        ),
+        None => "Formula".to_string(),
+    };
+    let formula_cursor = app.formula_browse_cursor();
+    let formula = shown(Pane::Formula).then(|| {
+        let content = match &app.session {
+            Some(session) => formula_content(session, formula_cursor, &mut app.pane_widths),
+            None => PaneContent::whole(vec![pinned("(no formula loaded)".to_string())]),
+        };
+        pane_view(
+            content,
+            pane_w(Pane::Formula, w1),
+            top_h,
+            &mut app.formula_scroll,
+            &mut app.formula_hscroll,
+        )
+    });
+
     // Variables of the assertion being replaced; see `PanelLine::hint`.
-    let hint_vars = match (&app.session, deassert_target) {
+    let hint_vars = match (&app.session, &deassert_target) {
         (Some(session), Some(source)) => session.variables.mentioned(source),
         _ => Vec::new(),
     };
-    let debug_ids = app.debug_current_constraint_ids();
-    let database = app
-        .session
-        .as_ref()
-        .map_or_else(Vec::new, |s| database_lines(s, &hint_vars, debug_ids));
-    let database_title = match deassert_target {
-        // Same phrasing as the Output heading.
-        Some(source) => format!("Database ({}) (deasserting {source})", database.len()),
-        None => format!("Database ({})", database.len()),
+    let debug_ids = app.debug_current_constraint_ids().to_vec();
+    let database_shown = shown(Pane::Database);
+    let database_db = match &app.session {
+        Some(session) if database_shown => Some(session.database()),
+        _ => None,
     };
-    // In Vim `Insert` mode, the cursor line shows `App::editor`'s
-    // uncommitted text; see `proof_lines`.
-    let vim_live_text: Option<(usize, String)> = app
-        .vim_inserting()
-        .then(|| app.vim_cursor_line().map(|line| (line, app.editor.text())))
-        .flatten();
-    let proof = app.session.as_ref().map_or_else(Vec::new, |s| {
-        proof_lines(
-            s,
-            app.vim_cursor_line(),
-            vim_live_text.as_ref().map(|(l, t)| (*l, t.as_str())),
-            app.bp_hover(),
-            app.debug_current_line(),
-            theme,
-        )
-    });
+    let (database_total, database) = match (&app.session, &database_db) {
+        (Some(session), Some(db)) => {
+            let content =
+                database_content(session, db, &hint_vars, &debug_ids, &mut app.pane_widths);
+            let total = content.total;
+            let view = pane_view(
+                content,
+                pane_w(Pane::Database, w2),
+                top_h,
+                &mut app.database_scroll,
+                &mut app.database_hscroll,
+            );
+            (total, Some(view))
+        }
+        _ => (
+            0,
+            database_shown.then(|| {
+                pane_view(
+                    PaneContent::whole(Vec::new()),
+                    pane_w(Pane::Database, w2),
+                    top_h,
+                    &mut app.database_scroll,
+                    &mut app.database_hscroll,
+                )
+            }),
+        ),
+    };
+    let database_title = match &deassert_target {
+        // Same phrasing as the Output heading.
+        Some(source) => format!("Database ({database_total}) (deasserting {source})"),
+        None => format!("Database ({database_total})"),
+    };
+
     let proof_title = match &app.session {
         Some(session) => {
             let total = session.buffer.len();
@@ -452,50 +504,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
         }
         None => "Proof (0)".to_string(),
     };
-    // Names the assertion being replaced while `:deassert` is active.
-    let output_title = match deassert_target {
-        Some(source) => format!("Output (deasserting {source})"),
-        None => "Output".to_string(),
-    };
-
-    // A solo-zoomed top pane gets `inner` width; the other two get no
-    // `PaneView`. None of the three are built when `output_fullscreen`.
-    let formula_w = if zoomed_pane == Some(Pane::Formula) {
-        inner
-    } else {
-        w1
-    };
-    let database_w = if zoomed_pane == Some(Pane::Database) {
-        inner
-    } else {
-        w2
-    };
-    let proof_w = if zoomed_pane == Some(Pane::Proof) {
-        inner
-    } else {
-        w3
-    };
-    let show_top = !output_fullscreen;
-    let formula =
-        (show_top && (zoomed_pane.is_none() || zoomed_pane == Some(Pane::Formula))).then(|| {
-            pane_view(
-                formula,
-                formula_w,
-                top_h,
-                &mut app.formula_scroll,
-                &mut app.formula_hscroll,
-            )
-        });
-    let database = (show_top && (zoomed_pane.is_none() || zoomed_pane == Some(Pane::Database)))
-        .then(|| {
-            pane_view(
-                database,
-                database_w,
-                top_h,
-                &mut app.database_scroll,
-                &mut app.database_hscroll,
-            )
-        });
+    let proof_w = pane_w(Pane::Proof, w3);
     // Adjust `app.proof_hscroll` to keep the Vim cursor column visible;
     // must run before `pane_view`, which clamps only to content width.
     if let Some((_, col)) = app.vim_cursor() {
@@ -511,24 +520,44 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             app.proof_hscroll = target_col + 1 - avail_w;
         }
     }
-    let proof =
-        (show_top && (zoomed_pane.is_none() || zoomed_pane == Some(Pane::Proof))).then(|| {
-            pane_view(
-                proof,
-                proof_w,
-                top_h,
-                &mut app.proof_scroll,
-                &mut app.proof_hscroll,
-            )
-        });
+    // In Vim `Insert` mode, the cursor line shows `App::editor`'s
+    // uncommitted text; see `proof_content`.
+    let vim_live_text: Option<(usize, String)> = app
+        .vim_inserting()
+        .then(|| app.vim_cursor_line().map(|line| (line, app.editor.text())))
+        .flatten();
+    let (proof_cursor, proof_hover, proof_debug_line) = (
+        app.vim_cursor_line(),
+        app.bp_hover(),
+        app.debug_current_line(),
+    );
+    let proof = shown(Pane::Proof).then(|| {
+        let content = match &app.session {
+            Some(session) => proof_content(
+                session,
+                proof_cursor,
+                vim_live_text.as_ref().map(|(l, t)| (*l, t.as_str())),
+                proof_hover,
+                proof_debug_line,
+                theme,
+            ),
+            None => PaneContent::whole(Vec::new()),
+        };
+        pane_view(
+            content,
+            proof_w,
+            top_h,
+            &mut app.proof_scroll,
+            &mut app.proof_hscroll,
+        )
+    });
 
     // Scrollback view: the tail scrolled up by `scroll_up`, with horizontal
     // offset and scrollbars resolved in the same order as `pane_view`.
     // Horizontal extent is the longest line in the whole scrollback.
     let sb_h = layout.scrollback_h as usize;
-    let sb = app.scrollback.lines();
-    let sb_total = sb.len();
-    let sb_longest = sb.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let sb_total = app.scrollback.len();
+    let sb_longest = app.scrollback.longest_chars();
     let sb_vbar_expected = sb_total > sb_h;
     let sb_avail_w = inner.saturating_sub(sb_vbar_expected as usize);
     app.output_hscroll = clamp_hscroll(app.output_hscroll, sb_longest, sb_avail_w);
@@ -545,7 +574,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     app.scroll_up = app.scroll_up.min(sb_total.saturating_sub(sb_content_h));
     let sb_end = sb_total - app.scroll_up;
     let sb_start = sb_end.saturating_sub(sb_content_h);
-    let visible = &sb[sb_start..sb_end];
+    let visible: Vec<&String> = app.scrollback.range(sb_start..sb_end).collect();
     let output_vbar = vbar(sb_start, sb_total, sb_content_h);
     let sb_eff_w = inner - (output_vbar.is_some() as usize);
     let output_hbar = sb_hbar_on.then(|| hbar_range(sb_eff_w, app.output_hscroll, sb_longest));
@@ -696,7 +725,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             rows.push(format!("{bar}{row}{bar}"));
             continue;
         }
-        let line = visible.get(i).map(String::as_str).unwrap_or("");
+        let line = visible.get(i).map_or("", |line| line.as_str());
         let vars = app.session.as_ref().map(|s| &s.variables);
         let cell = scrollback_cell(line, vars, app.output_hscroll, sb_eff_w, theme);
         rows.push(match &output_vbar {
@@ -748,6 +777,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     }
     for (line, highlighted) in suggestion_rows(
         &app.candidates,
+        app.omitted_candidates,
         app.selected,
         layout.suggestion_rows as usize,
     ) {
@@ -839,10 +869,11 @@ fn longest_line(lines: &[PanelLine]) -> usize {
 /// The suggestion strip: exactly `rows` `(text, is_selected)` entries,
 /// blank-padded, each an aligned left column (usage or file name) plus
 /// summary. With no selection an overflowing list ends in a
-/// `… (+N more)` row; with a selection the window scrolls to keep it
-/// visible.
+/// `… (+N more)` row, counting the `omitted` matches not in `candidates`
+/// too; with a selection the window scrolls to keep it visible.
 fn suggestion_rows(
     candidates: &[crate::tui::complete::Candidate],
+    omitted: usize,
     selected: Option<usize>,
     rows: usize,
 ) -> Vec<(String, bool)> {
@@ -850,7 +881,7 @@ fn suggestion_rows(
         return vec![(String::new(), false); rows];
     }
     let (start, shown, marker) = match selected {
-        None if candidates.len() > rows => (0, rows - 1, true),
+        None if candidates.len() + omitted > rows => (0, rows - 1, true),
         None => (0, candidates.len().min(rows), false),
         Some(s) => {
             let shown = rows.min(candidates.len());
@@ -875,7 +906,10 @@ fn suggestion_rows(
         })
         .collect();
     if marker {
-        out.push((format!(" … (+{} more)", candidates.len() - shown), false));
+        out.push((
+            format!(" … (+{} more)", candidates.len() + omitted - shown),
+            false,
+        ));
     }
     while out.len() < rows {
         out.push((String::new(), false));
@@ -1083,6 +1117,28 @@ fn label_spans(labels_by_id: &ahash::AHashMap<isize, Vec<String>>, id: isize) ->
     spans
 }
 
+/// The width of `label_spans(labels_by_id, id)`.
+fn labels_width(labels_by_id: &ahash::AHashMap<isize, Vec<String>>, id: isize) -> usize {
+    labels_by_id.get(&id).map_or(0, |names| {
+        names.iter().map(|name| name.chars().count() + 1).sum()
+    })
+}
+
+/// The width of `tokenize_constraint(text)`.
+fn constraint_width(text: &str) -> usize {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let terms_len = tokens.len().saturating_sub(2);
+    if tokens.len() < 2 || !terms_len.is_multiple_of(2) {
+        return text.chars().count();
+    }
+    tokens
+        .iter()
+        .map(|token| token.chars().count())
+        .sum::<usize>()
+        + tokens.len()
+        - 1
+}
+
 /// Tokenizes a `ToPrettyString`-formatted constraint
 /// (`"<coeff> <lit> ... >= <degree>"`, as emitted by `veripb-formula`):
 /// variable names coloured, everything else plain. Returns one plain span
@@ -1168,64 +1224,125 @@ fn tokenize_proof_line(line: &str, var_names: &VarNames) -> Vec<Span> {
     spans
 }
 
+/// The top panes' widest lines, kept between frames and recomputed only
+/// when the content changes. The Proof pane's comes from
+/// `ProofBuffer::longest_chars` instead.
+#[derive(Default)]
+pub(crate) struct PaneWidths {
+    /// For a `FormulaLines::epoch`: the ID column's width and the widest
+    /// shown constraint text.
+    formula: Option<(u64, usize, usize)>,
+    /// For a `Session::state_key`: the widest Database line, prefix
+    /// included.
+    database: Option<((u64, u64), usize)>,
+}
+
+/// What the Formula pane shows of formula line `line`: its trailing `;`
+/// (required when re-serialized to a temp .opb file) dropped.
+fn formula_text(line: &str) -> &str {
+    line.trim_end().strip_suffix(';').unwrap_or(line).trim_end()
+}
+
 /// Formula lines, each prefixed by its constraint ID (or ID range, for a
 /// line that loads as two constraints), matching the Database pane. Labels
 /// and variables are coloured by lookup, since formula lines may use
 /// implication syntax. `cursor` (a 1-based line) marks `:formula` browse
 /// mode's row.
-fn formula_lines(session: &Session, cursor: Option<usize>) -> Vec<PanelLine> {
-    let ids: Vec<String> = (0..session.formula.len())
-        .map(|idx| session.formula_line_ids(idx))
-        .collect();
-    let num_w = ids.iter().map(String::len).max().unwrap_or(1);
-    let mut lines: Vec<PanelLine> = session
-        .formula
-        .iter()
-        .zip(&ids)
-        .map(|(c, id)| {
-            // `c` carries its trailing `;` (required when re-serialized to
-            // a temp .opb file); it isn't shown.
-            let text = c.trim_end().strip_suffix(';').unwrap_or(c).trim_end();
-            let spans = tokenize_proof_line(text, &session.variables);
-            content(format!("{id:>num_w$}: "), spans, false)
-        })
-        .collect();
-    if let Some(cursor) = cursor
-        && let Some(entry) = lines.get_mut(cursor.saturating_sub(1))
-    {
-        entry.cursor = true;
+fn formula_content<'a>(
+    session: &'a Session,
+    cursor: Option<usize>,
+    widths: &mut PaneWidths,
+) -> PaneContent<'a> {
+    let epoch = session.formula.epoch();
+    let (num_w, text_w) = match widths.formula {
+        Some((cached, num_w, text_w)) if cached == epoch => (num_w, text_w),
+        _ => {
+            let num_w = (0..session.formula.len())
+                .map(|idx| session.formula_line_ids(idx).len())
+                .max()
+                .unwrap_or(1);
+            let text_w = session
+                .formula
+                .iter()
+                .map(|line| formula_text(line).chars().count())
+                .max()
+                .unwrap_or(0);
+            widths.formula = Some((epoch, num_w, text_w));
+            (num_w, text_w)
+        }
+    };
+    PaneContent {
+        total: session.formula.len(),
+        longest: if session.formula.is_empty() {
+            0
+        } else {
+            num_w + 2 + text_w
+        },
+        line: Box::new(move |idx| {
+            let spans =
+                tokenize_proof_line(formula_text(&session.formula[idx]), &session.variables);
+            let id = session.formula_line_ids(idx);
+            let mut line = content(format!("{id:>num_w$}: "), spans, false);
+            line.cursor = cursor == Some(idx + 1);
+            line
+        }),
     }
-    lines
 }
 
 /// The live constraint database (as `:show` with no filters): core/derived
 /// tagged, labels first. Rows mentioning any of `hint_vars` are marked
 /// `hint`; rows whose ID is in `debug_ids` (produced by the last `:debug`
 /// step) are marked `debug_current`. On error, one pinned error line.
-fn database_lines(session: &Session, hint_vars: &[String], debug_ids: &[usize]) -> Vec<PanelLine> {
-    let database = match session.database() {
+fn database_content<'a>(
+    session: &'a Session,
+    database: &'a anyhow::Result<std::cell::Ref<'a, Database>>,
+    hint_vars: &'a [String],
+    debug_ids: &'a [usize],
+    widths: &mut PaneWidths,
+) -> PaneContent<'a> {
+    let database = match database {
         Ok(database) => database,
-        Err(err) => return vec![pinned(format!("Error: {err:#}"))],
+        Err(err) => return PaneContent::whole(vec![pinned(format!("Error: {err:#}"))]),
     };
     let labels_by_id = session.labels_by_id();
-    let max_id = database.entries.iter().map(|e| e.id).max().unwrap_or(0);
-    let num_w = number_width(max_id);
-    database
-        .entries
-        .iter()
-        .map(|entry| {
+    // Entries are in ascending ID order.
+    let num_w = number_width(database.entries.last().map_or(0, |entry| entry.id));
+    let key = session.state_key();
+    let longest = match widths.database {
+        Some((cached, longest)) if cached == key => longest,
+        _ => {
+            let longest = database
+                .entries
+                .iter()
+                .map(|entry| {
+                    num_w
+                        + 2
+                        + labels_width(&labels_by_id, entry.id as isize)
+                        + constraint_width(&entry.text)
+                })
+                .max()
+                .unwrap_or(0);
+            widths.database = Some((key, longest));
+            longest
+        }
+    };
+    PaneContent {
+        total: database.entries.len(),
+        longest,
+        line: Box::new(move |i| {
+            let entry = &database.entries[i];
             let mut spans = label_spans(&labels_by_id, entry.id as isize);
             spans.extend(tokenize_constraint(&entry.text));
-            let mut panel_line = content(format!("{:>num_w$}: ", entry.id), spans, false);
-            panel_line.core = Some(entry.is_core);
-            panel_line.hint = !hint_vars.is_empty() && {
+            let mut line = content(format!("{:>num_w$}: ", entry.id), spans, false);
+            line.core = Some(entry.is_core);
+            line.hint = !hint_vars.is_empty() && {
                 let mentioned = session.variables.mentioned(&entry.text);
                 mentioned.iter().any(|v| hint_vars.contains(v))
             };
-            panel_line.debug_current = debug_ids.contains(&entry.id);
-            panel_line
-        })
-        .collect()
+            line.debug_current = debug_ids.contains(&entry.id);
+            line
+        }),
+    }
 }
 
 /// The dimmed, untokenized preamble followed by the tokenized buffer lines,
@@ -1234,7 +1351,7 @@ fn database_lines(session: &Session, hint_vars: &[String], debug_ids: &[usize]) 
 /// - `cursor`: Vim mode's display line (1-based), marked `cursor`.
 /// - `editing`: `(display_line, live_text)` in Vim `Insert` mode; that
 ///   line shows `live_text`. Checked/error status still reflects the
-///   committed buffer.
+///   committed buffer. The widest line counts both texts.
 /// - `hover`: buffer index under the mouse in the marker column; affects
 ///   only `breakpoint_marker`.
 /// - `debug_current`: buffer index `:debug` is stopped at; marked
@@ -1243,85 +1360,81 @@ fn database_lines(session: &Session, hint_vars: &[String], debug_ids: &[usize]) 
 /// Checked `a`-rule lines are marked `assertion`. Lines at or past
 /// `session.checked_len` are dimmed, except the `session.known_bad` line
 /// (always at `checked_len`), which is marked `error`.
-fn proof_lines(
-    session: &Session,
+fn proof_content<'a>(
+    session: &'a Session,
     cursor: Option<usize>,
-    editing: Option<(usize, &str)>,
+    editing: Option<(usize, &'a str)>,
     hover: Option<usize>,
     debug_current: Option<usize>,
     theme: Theme,
-) -> Vec<PanelLine> {
-    let var_names = &session.variables;
+) -> PaneContent<'a> {
     let preamble = session.preamble_lines();
     let base = preamble.len();
-    let num_w = number_width(base + session.buffer.len());
-    let mut lines: Vec<PanelLine> = preamble
-        .into_iter()
-        .enumerate()
-        .map(|(i, text)| {
-            let (marker, marker_color) = breakpoint_marker(session, None, false, theme);
-            let mut panel_line = content(
-                format!("{marker} {:>num_w$}: ", i + 1),
-                vec![plain(text)],
-                true,
-            );
-            panel_line.marker_color = marker_color;
-            panel_line
-        })
-        .collect();
-    lines.extend(session.buffer.iter().enumerate().map(|(i, line)| {
-        let display_line = base + i + 1;
-        let text = match editing {
-            Some((edit_line, live)) if edit_line == display_line => live,
-            _ => line.as_str(),
-        };
-        let checked = i < session.checked_len;
-        let (marker, marker_color) = breakpoint_marker(session, Some(i), hover == Some(i), theme);
-        let mut panel_line = content(
-            format!("{marker} {:>num_w$}: ", display_line),
-            tokenize_proof_line(text, var_names),
-            !checked,
-        );
-        panel_line.marker_color = marker_color;
-        panel_line.assertion = checked && edit::is_assertion_line(text);
-        if !checked && i == session.checked_len && session.known_bad.is_some() {
-            panel_line.dim = false;
-            panel_line.error = true;
-        } else if debug_current == Some(i) {
-            panel_line.dim = false;
-            panel_line.debug_current = true;
-        }
-        panel_line
-    }));
-    if let Some(cursor) = cursor
-        && let Some(entry) = lines.get_mut(cursor.saturating_sub(1))
-    {
-        entry.cursor = true;
+    let total = base + session.buffer.len();
+    let num_w = number_width(total);
+    // `tokenize_proof_line` keeps every line's width.
+    let text_w = preamble
+        .iter()
+        .map(|line| line.chars().count())
+        .chain([session.buffer.longest_chars()])
+        .chain(editing.map(|(_, live)| live.chars().count()))
+        .max()
+        .unwrap_or(0);
+    PaneContent {
+        total,
+        longest: proof_prefix_width(num_w) + text_w,
+        line: Box::new(move |i| {
+            let mut line = if i < base {
+                let (marker, marker_color) = breakpoint_marker(session, None, false, theme);
+                let mut line = content(
+                    format!("{marker} {:>num_w$}: ", i + 1),
+                    vec![plain(preamble[i].clone())],
+                    true,
+                );
+                line.marker_color = marker_color;
+                line
+            } else {
+                let idx = i - base;
+                let display_line = i + 1;
+                let text = match editing {
+                    Some((edit_line, live)) if edit_line == display_line => live,
+                    _ => session.buffer[idx].as_str(),
+                };
+                let checked = idx < session.checked_len;
+                let (marker, marker_color) =
+                    breakpoint_marker(session, Some(idx), hover == Some(idx), theme);
+                let mut line = content(
+                    format!("{marker} {display_line:>num_w$}: "),
+                    tokenize_proof_line(text, &session.variables),
+                    !checked,
+                );
+                line.marker_color = marker_color;
+                line.assertion = checked && edit::is_assertion_line(text);
+                if !checked && idx == session.checked_len && session.known_bad.is_some() {
+                    line.dim = false;
+                    line.error = true;
+                } else if debug_current == Some(idx) {
+                    line.dim = false;
+                    line.debug_current = true;
+                }
+                line
+            };
+            line.cursor = cursor == Some(i + 1);
+            line
+        }),
     }
-    lines
 }
 
-/// The `h`-row window of `lines` starting `offset` lines from the top
-/// (top-anchored, so appended content doesn't move the view). Clamps
-/// `offset` to the content and writes it back.
-fn window_scrolled(lines: Vec<PanelLine>, h: usize, offset: &mut usize) -> Window {
-    let n = lines.len();
-    if n <= h {
+/// The rows shown of `total` content lines in an `h`-row window starting
+/// `offset` lines from the top (top-anchored, so appended content doesn't
+/// move the view). Clamps `offset` to the content and writes it back.
+fn window_range(total: usize, h: usize, offset: &mut usize) -> Range<usize> {
+    if total <= h {
         *offset = 0;
-        return Window {
-            lines,
-            top: 0,
-            total: n,
-        };
+        return 0..total;
     }
-    let max = n - h;
-    *offset = (*offset).min(max);
-    let top = *offset;
-    Window {
-        lines: lines.into_iter().skip(top).take(h).collect(),
-        top,
-        total: n,
-    }
+    *offset = (*offset).min(total - h);
+    *offset..*offset + h
 }
 
 /// Pads or truncates `s` to exactly `width` columns, marking truncation
@@ -1436,5 +1549,198 @@ fn zoom_button(glyph: char, active: bool, theme: Theme) -> String {
         text.with(theme.fg).on(theme.bg).reverse().to_string()
     } else {
         chrome(&text, theme)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+
+    use super::*;
+    use crate::tui::theme::ThemeName;
+
+    /// The pane as `pane_view` built it before `PaneContent`: every line,
+    /// then the window.
+    fn eager_pane_view(
+        lines: Vec<PanelLine>,
+        w: usize,
+        h: usize,
+        v_offset: &mut usize,
+        h_offset: &mut usize,
+    ) -> PaneView {
+        let total = lines.len();
+        let longest = longest_line(&lines);
+        let avail_w = w.saturating_sub((total > h) as usize);
+        *h_offset = clamp_hscroll(*h_offset, longest, avail_w);
+        let hbar_on = longest > avail_w;
+        let content_h = if hbar_on { h - 1 } else { h };
+        let top = if total <= content_h {
+            *v_offset = 0;
+            0
+        } else {
+            *v_offset = (*v_offset).min(total - content_h);
+            *v_offset
+        };
+        let vbar = vbar(top, total, content_h);
+        let eff_w = w - (vbar.is_some() as usize);
+        PaneView {
+            lines: lines.into_iter().skip(top).take(content_h).collect(),
+            vbar,
+            hbar: hbar_on.then(|| hbar_range(eff_w, *h_offset, longest)),
+            eff_w,
+            content_h,
+            h_offset: *h_offset,
+        }
+    }
+
+    fn rows(view: &PaneView, h: usize) -> Vec<String> {
+        let theme = ThemeName::default().theme();
+        (0..h).map(|i| pane_row(view, i, theme)).collect()
+    }
+
+    /// Asserts that `content` draws as `all` (every one of its lines) would
+    /// have, at a range of sizes and scroll offsets.
+    fn assert_draws_like(
+        content: impl Fn() -> PaneContent<'static>,
+        all: impl Fn() -> Vec<PanelLine>,
+    ) {
+        assert_eq!(content().total, all().len());
+        assert_eq!(content().longest, longest_line(&all()));
+        for (w, h) in [(10, 3), (30, 5), (80, 20), (5, 40)] {
+            for (v, hs) in [(0, 0), (2, 3), (7, 50), (1000, 1000)] {
+                let (mut v1, mut h1, mut v2, mut h2) = (v, hs, v, hs);
+                let lazy = pane_view(content(), w, h, &mut v1, &mut h1);
+                let eager = eager_pane_view(all(), w, h, &mut v2, &mut h2);
+                assert_eq!((v1, h1), (v2, h2), "offsets at {w}x{h} from ({v}, {hs})");
+                assert_eq!(
+                    rows(&lazy, h),
+                    rows(&eager, h),
+                    "rows at {w}x{h} from ({v}, {hs})"
+                );
+            }
+        }
+    }
+
+    fn sample_lines(n: usize) -> Vec<PanelLine> {
+        (0..n)
+            .map(|i| {
+                content(
+                    format!("{i:>3}: "),
+                    vec![plain("x".repeat(i * 7 % 40))],
+                    i % 3 == 0,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_window_draws_like_the_whole_content() {
+        for n in [0, 1, 4, 25, 200] {
+            assert_draws_like(|| PaneContent::whole(sample_lines(n)), || sample_lines(n));
+        }
+    }
+
+    /// A session leaked for `'static` panes, with `proof` as its buffer.
+    fn session(formula: &str, proof: &[&str]) -> &'static Session {
+        let mut file = tempfile::NamedTempFile::with_suffix(".opb").unwrap();
+        file.write_all(formula.as_bytes()).unwrap();
+        let mut session = Session::load(file.path().to_str().unwrap()).unwrap();
+        for line in proof {
+            session.buffer.push(line.to_string());
+        }
+        session.checked_len = proof.len() / 2;
+        Box::leak(Box::new(session))
+    }
+
+    const FORMULA: &str = "* comment\n@a 1 x1 1 x2 >= 1 ;\n1 x1 1 x2 = 1 ;\n1 ~x1 >= 1 ;\n";
+
+    #[test]
+    fn the_formula_pane_draws_like_every_line() {
+        let session = session(FORMULA, &[]);
+        let content = || formula_content(session, Some(2), &mut PaneWidths::default());
+        let all = || {
+            let c = content();
+            (0..c.total).map(|i| (c.line)(i)).collect()
+        };
+        assert_draws_like(content, all);
+        let lines = all();
+        assert_eq!(lines[1].prefix, "2-3: ", "a two-constraint line");
+        assert!(lines[1].cursor && !lines[0].cursor);
+    }
+
+    #[test]
+    fn the_proof_pane_draws_like_every_line() {
+        let proof = [
+            "rup 1 x2 >= 1 ;",
+            "@l a 1 ~x1 >= 1 ;",
+            "pol 1 2 + ;",
+            "rup >= 1 ;",
+        ];
+        let session = session(FORMULA, &proof);
+        let theme = ThemeName::default().theme();
+        for editing in [None, Some((4, "a much longer line typed in Insert mode ;"))] {
+            let content = || proof_content(session, Some(5), editing, Some(1), None, theme);
+            let all = || {
+                let c = content();
+                (0..c.total).map(|i| (c.line)(i)).collect()
+            };
+            assert_draws_like(content, all);
+        }
+        let c = proof_content(session, Some(5), None, None, None, theme);
+        assert_eq!(c.total, 2 + proof.len());
+        assert!((c.line)(4).cursor);
+        assert!(!(c.line)(2).dim && (c.line)(4).dim, "checked vs unchecked");
+    }
+
+    #[test]
+    fn the_proof_width_follows_edits() {
+        let mut file = tempfile::NamedTempFile::with_suffix(".opb").unwrap();
+        file.write_all(FORMULA.as_bytes()).unwrap();
+        let mut session = Session::load(file.path().to_str().unwrap()).unwrap();
+        for line in ["short ;", "the longest line of all ;", "mid line ;"] {
+            session.buffer.push(line.to_string());
+        }
+        let theme = ThemeName::default().theme();
+        let longest = |s: &Session| {
+            let c = proof_content(s, None, None, None, None, theme);
+            let all: Vec<PanelLine> = (0..c.total).map(|i| (c.line)(i)).collect();
+            (c.longest, longest_line(&all))
+        };
+        let (cached, actual) = longest(&session);
+        assert_eq!(cached, actual);
+        session.delete_line(1).unwrap();
+        let (cached, actual) = longest(&session);
+        assert_eq!(cached, actual, "after deleting the longest line");
+        session
+            .set_line(0, "now this one is the longest line ;")
+            .unwrap();
+        let (cached, actual) = longest(&session);
+        assert_eq!(cached, actual, "after lengthening a line");
+    }
+
+    #[test]
+    fn constraint_widths_match_their_tokens() {
+        for text in [
+            "1 x1 1 ~x2 >= 1",
+            ">= 1",
+            "3 x1  2   x2 >= 4",
+            "not a constraint",
+            "",
+            "1 x1 >= 1 extra",
+        ] {
+            assert_eq!(
+                constraint_width(text),
+                spans_char_len(&tokenize_constraint(text)),
+                "{text:?}"
+            );
+        }
+        let mut labels = ahash::AHashMap::new();
+        labels.insert(3, vec!["@a".to_string(), "@longer".to_string()]);
+        for id in [3, 4] {
+            assert_eq!(
+                labels_width(&labels, id),
+                spans_char_len(&label_spans(&labels, id))
+            );
+        }
     }
 }

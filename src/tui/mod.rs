@@ -102,21 +102,45 @@ pub enum Zoom {
 /// Bottom-pane transcript of everything commands and the checker have
 /// emitted, plus an echo of each submitted line. The TUI's `Output` sink.
 pub struct Scrollback {
-    lines: Vec<String>,
+    lines: std::collections::VecDeque<String>,
+    /// [`Self::longest_chars`], or `None` until it is next asked for.
+    longest: Option<usize>,
 }
 
 impl Scrollback {
     fn new() -> Self {
-        Scrollback { lines: Vec::new() }
+        Scrollback {
+            lines: std::collections::VecDeque::new(),
+            longest: Some(0),
+        }
     }
 
-    pub fn lines(&self) -> &[String] {
-        &self.lines
+    pub(crate) fn len(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// Lines `range` (oldest first).
+    pub(crate) fn range(&self, range: std::ops::Range<usize>) -> impl Iterator<Item = &String> {
+        self.lines.range(range)
+    }
+
+    /// Returns the length in characters of the longest line.
+    pub(crate) fn longest_chars(&mut self) -> usize {
+        *self.longest.get_or_insert_with(|| {
+            self.lines
+                .iter()
+                .map(|l| l.chars().count())
+                .max()
+                .unwrap_or(0)
+        })
     }
 
     fn push(&mut self, text: &str) {
-        if self.lines.len() == SCROLLBACK_CAP {
-            self.lines.remove(0);
+        if self.lines.len() == SCROLLBACK_CAP
+            && let Some(dropped) = self.lines.pop_front()
+            && self.longest == Some(dropped.chars().count())
+        {
+            self.longest = None;
         }
         // A literal tab (e.g. `CheckingLineError`'s own `Display`, which
         // hand-indents its detail line with one) is one character by
@@ -132,7 +156,11 @@ impl Scrollback {
         // `output::error`'s own docs) — sidestepped the same way, by
         // never letting the raw control character reach the terminal.
         // A fixed run of spaces reads as "indented" without the hazard.
-        self.lines.push(text.replace('\t', "    "));
+        let line = text.replace('\t', "    ");
+        if let Some(longest) = &mut self.longest {
+            *longest = (*longest).max(line.chars().count());
+        }
+        self.lines.push_back(line);
     }
 }
 
@@ -261,6 +289,9 @@ pub struct App {
     /// same reasoning as `proof_content_h`, for `snap_database_to_row` to
     /// map a row index onto a scroll offset.
     pub database_content_h: usize,
+    /// The top panes' line widths, kept between frames; see
+    /// `draw::PaneWidths`.
+    pane_widths: draw::PaneWidths,
     /// Position and time of the last left-click, for double-click
     /// detection — a second click on the same cell within
     /// `DOUBLE_CLICK_WINDOW` opens `:edit` on whatever Proof line is
@@ -295,6 +326,12 @@ pub struct App {
     /// `refresh_candidates` after every keystroke — shared between the
     /// event loop (arrows, Tab, Enter) and the drawn strip.
     pub candidates: Vec<complete::Candidate>,
+    /// Further matches counted but not in `candidates` (see
+    /// `complete::Suggestions`).
+    pub omitted_candidates: usize,
+    /// The longest common prefix of every match's line: what an ambiguous
+    /// Tab completes to.
+    common_candidate_line: String,
     /// The buffer text `candidates` was computed for.
     candidates_for: String,
     /// Index into `candidates` of the highlighted suggestion, if the user
@@ -346,11 +383,14 @@ impl App {
             proof_content_h: 0,
             formula_content_h: 0,
             database_content_h: 0,
+            pane_widths: draw::PaneWidths::default(),
             last_click: None,
             vim: None,
             formula_browse: None,
             debug: None,
             candidates: Vec::new(),
+            omitted_candidates: 0,
+            common_candidate_line: String::new(),
             candidates_for: String::new(),
             selected: None,
             theme: theme::ThemeName::default(),
@@ -731,11 +771,14 @@ impl App {
         } else {
             None
         };
-        self.candidates = if self.editor.browsing_history() {
-            Vec::new()
+        let suggestions = if self.editor.browsing_history() {
+            complete::Suggestions::default()
         } else {
             complete::suggestions(&text, self.session.as_ref(), mode_vocabulary.as_deref())
         };
+        self.common_candidate_line = suggestions.common_line_prefix().to_string();
+        self.omitted_candidates = suggestions.omitted;
+        self.candidates = suggestions.candidates;
         if let Some(s) = self.selected
             && s >= self.candidates.len()
         {
@@ -811,13 +854,13 @@ impl App {
         }
         match self.candidates.len() {
             0 => {}
-            1 => {
+            1 if self.omitted_candidates == 0 => {
                 let line = self.candidates[0].line.clone();
                 self.editor.set_text(&line);
             }
             _ => {
-                let lcp = complete::common_line_prefix(&self.candidates).to_string();
-                if !lcp.is_empty() {
+                if !self.common_candidate_line.is_empty() {
+                    let lcp = self.common_candidate_line.clone();
                     self.editor.set_text(&lcp);
                 }
             }
@@ -1847,6 +1890,14 @@ impl App {
     /// — none of which fire a `MouseEventKind` of their own to hang an
     /// update off of. A purely event-driven update would go stale in
     /// exactly those cases; this can't.
+    /// Whether `event` is mouse motion that changes nothing drawn: the
+    /// breakpoint hover (the only thing motion affects) stays as it is.
+    fn is_idle_motion(&self, event: &Event) -> bool {
+        matches!(event, Event::Mouse(mouse)
+            if mouse.kind == MouseEventKind::Moved
+                && self.proof_marker_at(mouse.column, mouse.row) == self.bp_hover)
+    }
+
     pub(crate) fn recompute_bp_hover(&mut self) {
         self.bp_hover = self
             .mouse_pos
@@ -2372,10 +2423,18 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
     let _guard = TerminalGuard::enter()?;
     let mut stdout = io::stdout();
 
+    let mut redraw = true;
     loop {
-        draw::draw(&mut stdout, &mut app)?;
+        // Draw once no more events are waiting: events can arrive faster
+        // than frames are drawn (mouse motion especially).
+        if redraw && !event::poll(Duration::ZERO)? {
+            draw::draw(&mut stdout, &mut app)?;
+            redraw = false;
+        }
 
-        match event::read()? {
+        let event = event::read()?;
+        redraw |= !app.is_idle_motion(&event);
+        match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 match key.code {
                     // Vim `Insert` sub-mode: Esc commits and returns to
