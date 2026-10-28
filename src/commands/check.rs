@@ -3,18 +3,19 @@
 //! - With an argument, non-destructively tests whether the session would
 //!   verify with that real conclusion (`UNSAT`, `SAT`, `BOUNDS 0 10`,
 //!   `NONE`, ...), without closing it. See [`Session::dry_run_conclusion`].
-//! - With no argument, auto-detects: tries every conclusion that needs no
-//!   extra input from the user and can hold — `UNSAT` and `SAT` without an
-//!   objective; with one, `BOUNDS v v` for the checked-deletion-safe best
-//!   value once it is known — and shows whichever one the real checker
-//!   actually accepts, so you see the genuine `s VERIFIED ...` rather than a
-//!   REPL-guessed hint. Everything else — an unequal
-//!   `BOUNDS lo hi`, `ENUMERATION_COMPLETE`/`ENUMERATION_PARTIAL`, ... —
-//!   needs numbers only you can supply, so it's never auto-tried; ask for
-//!   those explicitly. If nothing auto-detects, reports a REPL-native
-//!   "not yet" status instead of running a real (and pointless)
-//!   `conclusion NONE` check, which is a proof-format no-op that would
-//!   verify trivially either way.
+//! - With no argument, auto-detects: tries the session's intended
+//!   conclusion (`:conclusion`) first, if it has one, then every conclusion
+//!   that needs no extra input from the user and can hold — `UNSAT` and
+//!   `SAT` without an objective; with one, `BOUNDS v v` for the
+//!   checked-deletion-safe best value once it is known — and shows
+//!   whichever one the real checker actually accepts, so you see the
+//!   genuine `s VERIFIED ...` rather than a REPL-guessed hint. Everything
+//!   else — an unequal `BOUNDS lo hi`,
+//!   `ENUMERATION_COMPLETE`/`ENUMERATION_PARTIAL`, ... — needs numbers only
+//!   you can supply, so it's never auto-tried; ask for those explicitly.
+//!   If nothing auto-detects, reports a REPL-native "not yet" status
+//!   instead of running a real (and pointless) `conclusion NONE` check,
+//!   which is a proof-format no-op that would verify trivially either way.
 
 use crate::checker;
 use crate::output::{self, Output, outln};
@@ -76,17 +77,41 @@ pub fn run(session: &Session, args: &str, out: &mut dyn Output) -> anyhow::Resul
         return Ok(());
     }
 
+    match detect(session, out)? {
+        Some((_, captured)) => output::text(out, &captured),
+        None => outln!(out, "NOT YET CONCLUDED"),
+    }
+    Ok(())
+}
+
+/// Bare `:check`'s and `:save`'s search: the session's intended conclusion
+/// first, then [`auto_detect_candidates`], each tried once. Returns the
+/// first that verifies, with the checker's output for it. If the intended
+/// conclusion is tried first and fails, says so on `out`; other failed
+/// candidates print nothing (tracing is scoped off, so a failed probe
+/// captures nothing).
+pub(crate) fn detect(
+    session: &Session,
+    out: &mut dyn Output,
+) -> anyhow::Result<Option<(String, String)>> {
+    if let Some(intended) = &session.intended_conclusion {
+        let (captured, result) = session.dry_run_conclusion(intended)?;
+        match result {
+            Ok(()) => return Ok(Some((intended.clone(), captured))),
+            Err(err) => outln!(
+                out,
+                "(the intended conclusion {intended} does not verify: {err})"
+            ),
+        }
+    }
     for candidate in auto_detect_candidates(session) {
+        if session.intended_conclusion.as_ref() == Some(&candidate) {
+            continue;
+        }
         let (captured, result) = session.dry_run_conclusion(&candidate)?;
         if result.is_ok() {
-            output::text(out, &captured);
-            return Ok(());
+            return Ok(Some((candidate, captured)));
         }
-        // A failed probe captures nothing (tracing is scoped off), so
-        // dropping it and silently moving on to the next candidate is safe
-        // — the user never sees two "it's not this" errors dumped on them.
     }
-
-    outln!(out, "NOT YET CONCLUDED");
-    Ok(())
+    Ok(None)
 }

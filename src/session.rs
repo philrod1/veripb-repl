@@ -50,6 +50,7 @@ struct PointState {
     checked_len: usize,
     known_bad: Option<String>,
     last_step_constraint_ids: Vec<usize>,
+    intended_conclusion: Option<String>,
 }
 
 /// One `:undo` or `:redo` entry: a state to return to, and the hunks that
@@ -139,6 +140,11 @@ pub struct Session {
     /// cleared by every mutation that isn't a fresh acceptance. Used by
     /// `:debug`'s Database-pane highlight.
     pub last_step_constraint_ids: Vec<usize>,
+    /// The conclusion the proof means to reach (e.g. `BOUNDS 23 23`), which
+    /// bare `:check` and `:save` try first: the sourced file's own, or one
+    /// set with `:conclusion`. Whitespace-normalized, without `;`. Set by
+    /// [`Self::set_intended_conclusion`].
+    pub intended_conclusion: Option<String>,
     /// The most recent `:formula` edit, consumed by `:formula cancel`.
     pub(crate) last_formula_edit: Option<FormulaEditSnapshot>,
     /// The fullest buffer to retry across successive `:formula` edits, so a
@@ -282,6 +288,7 @@ impl Session {
             checked_len: 0,
             known_bad: None,
             last_step_constraint_ids: Vec::new(),
+            intended_conclusion: None,
             last_formula_edit: None,
             recoverable_buffer: None,
             generation: 0,
@@ -1061,10 +1068,25 @@ impl Session {
         Ok(())
     }
 
-    /// Clears the buffer, breakpoints, and undo history (see
-    /// [`Self::clear_undo_history`]), leaving `formula`/`variables` alone.
+    /// Sets [`Self::intended_conclusion`] to `conclusion` (`None` clears it),
+    /// trimmed, without its `conclusion` keyword or `;`, whitespace
+    /// collapsed. A change is an undo point (see [`Self::mark_undo_point`]).
+    pub fn set_intended_conclusion(&mut self, conclusion: Option<&str>) {
+        let conclusion = conclusion
+            .map(normalize_conclusion)
+            .filter(|c| !c.is_empty());
+        if conclusion != self.intended_conclusion {
+            self.intended_conclusion = conclusion;
+            self.mark_undo_point();
+        }
+    }
+
+    /// Clears the buffer, breakpoints, intended conclusion and undo history
+    /// (see [`Self::clear_undo_history`]), leaving `formula`/`variables`
+    /// alone.
     pub fn reset(&mut self) -> anyhow::Result<()> {
         self.clear_undo_history();
+        self.intended_conclusion = None;
         self.buffer.clear();
         self.checked_len = 0;
         self.known_bad = None;
@@ -1158,6 +1180,7 @@ impl Session {
             checked_len: self.checked_len,
             known_bad: self.known_bad.clone(),
             last_step_constraint_ids: self.last_step_constraint_ids.clone(),
+            intended_conclusion: self.intended_conclusion.clone(),
         }
     }
 
@@ -1165,6 +1188,7 @@ impl Session {
         self.checked_len = state.checked_len;
         self.known_bad = state.known_bad;
         self.last_step_constraint_ids = state.last_step_constraint_ids;
+        self.intended_conclusion = state.intended_conclusion;
     }
 
     /// Records the hunks that undo the lines' changes from now on, or stops
@@ -1642,6 +1666,17 @@ fn closing_lines(conclusion: &str) -> [String; 3] {
         format!("conclusion {conclusion};"),
         "end pseudo-Boolean proof;".to_string(),
     ]
+}
+
+/// `conclusion` as [`Session::intended_conclusion`] keeps it: without a
+/// leading `conclusion` keyword or a trailing `;`, whitespace collapsed.
+pub fn normalize_conclusion(conclusion: &str) -> String {
+    let conclusion = conclusion.trim().trim_end_matches(';');
+    let conclusion = conclusion
+        .strip_prefix("conclusion")
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .unwrap_or(conclusion);
+    conclusion.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Writes `objective`, `preserved`, then `formula` to a fresh temp `.opb`

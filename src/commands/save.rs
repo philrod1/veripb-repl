@@ -9,7 +9,7 @@
 
 use std::fs;
 
-use crate::commands::check::auto_detect_candidates;
+use crate::commands::check::detect;
 use crate::commands::expand_tilde;
 use crate::output::{self, Output, outln};
 use crate::session::Session;
@@ -54,18 +54,20 @@ pub fn run(session: &Session, args: &str, out: &mut dyn Output) -> anyhow::Resul
         }
         conclusion_arg.to_string()
     } else {
-        let mut detected = None;
-        for candidate in auto_detect_candidates(session) {
-            let (captured, result) = session.dry_run_conclusion(&candidate)?;
-            if result.is_ok() {
+        match (detect(session, out)?, &session.intended_conclusion) {
+            (Some((conclusion, captured)), _) => {
                 output::text(out, &captured);
-                detected = Some(candidate);
-                break;
+                conclusion
             }
-        }
-        match detected {
-            Some(conclusion) => conclusion,
-            None => {
+            (None, Some(intended)) => {
+                outln!(
+                    out,
+                    "Warning: no conclusion verifies; saving with the intended conclusion \
+                     `{intended}` anyway."
+                );
+                intended.clone()
+            }
+            (None, None) => {
                 outln!(
                     out,
                     "No conclusion auto-detected; saving with `conclusion NONE;` (a real \

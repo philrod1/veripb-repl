@@ -16,9 +16,11 @@
 //! duplicate the preamble and — worse — close the session for good,
 //! leaving `:check` and further rules unusable. Instead the version header
 //! and a matching `f N;` are skipped, and the closing
-//! `output`/`conclusion`/`end` lines are lifted out and simply dropped —
-//! checking a conclusion only means anything once the derivation leading
-//! to it has actually verified, which `:source` alone no longer attempts.
+//! `output`/`conclusion`/`end` lines are lifted out. The file's conclusion
+//! is kept as the session's intended conclusion (see `:conclusion`), which
+//! bare `:check` and `:save` try first: checking it only means anything
+//! once the derivation leading to it has verified, which `:source` alone
+//! doesn't attempt.
 
 use std::fs;
 
@@ -37,8 +39,7 @@ fn parse_f_check(line: &str) -> Option<usize> {
 }
 
 /// Split a `.pbp` file's contents into its derivation lines and its
-/// closing conclusion (the latter parsed but, for now, unused — see the
-/// module docs on why a loaded file's conclusion isn't auto-checked).
+/// closing conclusion, if it has one.
 /// `session` supplies the formula length the file's own `f N;` line is
 /// compared against (see the `past_preamble` handling below); this never
 /// mutates it. `out` is only for the one advisory message a non-`NONE`
@@ -124,7 +125,7 @@ pub fn run(session: &mut Session, args: &str, out: &mut dyn Output) -> anyhow::R
         }
     };
 
-    let (derivation, _pending_conclusion) = parse_derivation(&contents, session, out);
+    let (derivation, conclusion) = parse_derivation(&contents, session, out);
 
     // Replace, not append — matches `:load`'s "this is now the X" model
     // for the formula, applied to the proof instead. Only announced when
@@ -151,5 +152,12 @@ pub fn run(session: &mut Session, args: &str, out: &mut dyn Output) -> anyhow::R
          ready.",
         session.buffer.len()
     );
+    session.set_intended_conclusion(conclusion.as_deref());
+    if let Some(conclusion) = &session.intended_conclusion {
+        outln!(
+            out,
+            "Intended conclusion: {conclusion} (bare :check and :save try it first)."
+        );
+    }
     Ok(())
 }
