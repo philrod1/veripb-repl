@@ -1,8 +1,9 @@
-//! Each top pane's find, opened with `/` while the pane is focused or with
-//! its header's `[/]`: the query typed goes to a line, or shows only the
-//! lines it matches (see `crate::find` for what a query means). The pane
-//! filters as you type; Enter keeps the result, Esc restores what was
-//! there before.
+//! Each pane's find, opened with `/` while the pane is focused or with its
+//! header's `[/]`: the query typed goes to a line, or shows only the lines
+//! it matches (see `crate::find` for what a query means). In the Output
+//! pane every query shows the lines containing it, and a filter takes in
+//! new output as it arrives. The pane filters as you type; Enter keeps the
+//! result, Esc restores what was there before.
 
 use crossterm::event::{KeyCode, KeyEvent};
 
@@ -36,14 +37,14 @@ pub(super) struct FindInput {
     pub(super) note: Option<String>,
 }
 
-/// `pane`'s index into `App::finds`; `None` for Output.
+/// `pane`'s index into `App::finds` and `App::marked`.
 fn slot(pane: Pane) -> Option<usize> {
-    match pane {
-        Pane::Formula => Some(0),
-        Pane::Database => Some(1),
-        Pane::Proof => Some(2),
-        Pane::Output => None,
-    }
+    Some(match pane {
+        Pane::Formula => 0,
+        Pane::Database => 1,
+        Pane::Proof => 2,
+        Pane::Output => 3,
+    })
 }
 
 impl App {
@@ -61,19 +62,15 @@ impl App {
                 .is_some_and(|input| input.pane == pane)
     }
 
-    /// Whether `/`, Home and End act on the focused pane: a top pane is
-    /// focused, nothing is typed, and no edit is under way.
+    /// Whether `/`, Home and End act on the focused pane: nothing is typed
+    /// and no edit is under way.
     pub(super) fn pane_keys_active(&self) -> bool {
-        self.focus != Pane::Output
-            && self.vim.is_none()
-            && self.formula_browse.is_none()
-            && self.editor.text().is_empty()
+        self.vim.is_none() && self.formula_browse.is_none() && self.editor.text().is_empty()
     }
 
-    /// Whether a find can open on `pane`: a top pane, while nothing is
-    /// being edited.
-    fn can_find(&self, pane: Pane) -> bool {
-        pane != Pane::Output && self.vim.is_none() && self.formula_browse.is_none()
+    /// Whether a find can open: not while a pane is being edited.
+    fn can_find(&self) -> bool {
+        self.vim.is_none() && self.formula_browse.is_none()
     }
 
     fn scroll_of(&mut self, pane: Pane) -> &mut usize {
@@ -90,12 +87,15 @@ impl App {
             Pane::Formula => self.formula_content_h,
             Pane::Database => self.database_content_h,
             Pane::Proof => self.proof_content_h,
-            Pane::Output => 0,
+            Pane::Output => self.output_content_h,
         }
     }
 
     /// The rows `pane` has unfiltered.
     fn content_total(&self, pane: Pane) -> usize {
+        if pane == Pane::Output {
+            return self.scrollback.len();
+        }
         let Some(session) = &self.session else {
             return 0;
         };
@@ -109,6 +109,9 @@ impl App {
 
     /// Changes whenever `pane`'s content does.
     fn find_content_key(&self, pane: Pane) -> (u64, u64) {
+        if pane == Pane::Output {
+            return (self.scrollback.pushed(), 0);
+        }
         let Some(session) = &self.session else {
             return (0, 0);
         };
@@ -116,7 +119,7 @@ impl App {
             Pane::Formula => (session.formula.epoch(), 0),
             Pane::Database => session.state_key(),
             Pane::Proof => (session.buffer.revision(), 0),
-            Pane::Output => (0, 0),
+            Pane::Output => unreachable!("handled above"),
         }
     }
 
@@ -128,15 +131,20 @@ impl App {
         filter: &Filter,
         candidates: Option<&[usize]>,
     ) -> Vec<usize> {
-        let Some(session) = &self.session else {
-            return Vec::new();
-        };
         // Asks `matches` about each row in ascending order.
         let select = |total: usize, matches: &mut dyn FnMut(usize) -> bool| -> Vec<usize> {
             match candidates {
                 Some(rows) => rows.iter().copied().filter(|&row| matches(row)).collect(),
                 None => (0..total).filter(|&row| matches(row)).collect(),
             }
+        };
+        if pane == Pane::Output {
+            return select(self.scrollback.len(), &mut |row| {
+                filter.matches(self.scrollback.get(row))
+            });
+        }
+        let Some(session) = &self.session else {
+            return Vec::new();
         };
         match pane {
             Pane::Formula => select(session.formula.len(), &mut |row| {
@@ -168,7 +176,7 @@ impl App {
                     row >= base && filter.matches(&session.buffer[row - base])
                 })
             }
-            Pane::Output => Vec::new(),
+            Pane::Output => unreachable!("handled above"),
         }
     }
 
@@ -201,32 +209,59 @@ impl App {
             .take()
             .filter(|find| find.key == key && filter.narrows(&find.filter));
         let rows = self.matching_rows(pane, &filter, narrowing.as_ref().map(|f| &f.rows[..]));
-        *self.scroll_of(pane) = rows.partition_point(|&row| row < origin);
+        let first = rows.partition_point(|&row| row < origin);
         self.finds[slot] = Some(PaneFind {
             text: text.to_string(),
             filter,
             rows,
             key,
         });
+        self.scroll_to_offset(pane, first);
         self.marked[slot].clear();
+    }
+
+    /// How many rows `pane` shows: its filter's, or all of them.
+    fn shown_total(&self, pane: Pane) -> usize {
+        match self.find(pane) {
+            Some(find) => find.rows.len(),
+            None => self.content_total(pane),
+        }
+    }
+
+    /// Which of the rows `pane` shows is at its top. The Output pane's
+    /// scroll counts up from its newest line.
+    fn top_offset(&self, pane: Pane) -> usize {
+        match pane {
+            Pane::Formula => self.formula_scroll,
+            Pane::Database => self.database_scroll,
+            Pane::Proof => self.proof_scroll,
+            Pane::Output => self
+                .shown_total(pane)
+                .saturating_sub(self.scroll_up + self.output_content_h),
+        }
+    }
+
+    /// Scrolls `pane` so that the shown row `offset` is at its top.
+    fn scroll_to_offset(&mut self, pane: Pane, offset: usize) {
+        *self.scroll_of(pane) = match pane {
+            Pane::Output => self
+                .shown_total(pane)
+                .saturating_sub(offset + self.output_content_h),
+            _ => offset,
+        };
     }
 
     /// The unfiltered row at the top of `pane`.
     pub(super) fn top_row(&self, pane: Pane) -> usize {
-        let scroll = match pane {
-            Pane::Formula => self.formula_scroll,
-            Pane::Database => self.database_scroll,
-            Pane::Proof => self.proof_scroll,
-            Pane::Output => self.scroll_up,
-        };
+        let offset = self.top_offset(pane);
         match self.find(pane) {
             Some(find) => find
                 .rows
-                .get(scroll)
+                .get(offset)
                 .or(find.rows.last())
                 .copied()
                 .unwrap_or(0),
-            None => scroll,
+            None => offset,
         }
     }
 
@@ -247,7 +282,7 @@ impl App {
         if let Some(slot) = slot(pane) {
             self.finds[slot] = None;
         }
-        *self.scroll_of(pane) = top;
+        self.scroll_to_offset(pane, top);
     }
 
     /// Shows `row` of `pane` unfiltered, a third of the way down, and
@@ -289,15 +324,11 @@ impl App {
         }
     }
 
-    /// Home or End with a top pane focused: its first or last row.
+    /// Home or End: the focused pane's first or last row.
     pub(super) fn scroll_pane_to_end(&mut self, end: bool) {
         let pane = self.focus;
-        let last_page = match self.find(pane) {
-            Some(find) => find.rows.len(),
-            None => self.content_total(pane),
-        }
-        .saturating_sub(self.content_h(pane));
-        *self.scroll_of(pane) = if end { last_page } else { 0 };
+        let last_page = self.shown_total(pane).saturating_sub(self.content_h(pane));
+        self.scroll_to_offset(pane, if end { last_page } else { 0 });
         self.unmark(pane);
     }
 
@@ -346,7 +377,7 @@ impl App {
 
     /// Opens `pane`'s find, with its current query to edit.
     pub(super) fn open_find(&mut self, pane: Pane) {
-        if !self.can_find(pane) {
+        if !self.can_find() {
             return;
         }
         let Some(slot) = slot(pane) else {
@@ -359,7 +390,7 @@ impl App {
             // Matches start from the top of the unfiltered view the
             // filter was made from.
             Some(_) => self.top_row(pane),
-            None => *self.scroll_of(pane),
+            None => self.top_offset(pane),
         };
         let scroll = *self.scroll_of(pane);
         self.find_input = Some(FindInput {
@@ -433,8 +464,16 @@ impl App {
                 if let Some(slot) = slot(pane) {
                     self.finds[slot] = None;
                 }
-                *self.scroll_of(pane) = origin;
+                self.scroll_to_offset(pane, origin);
                 self.unmark(pane);
+            }
+            // The Output pane has no line numbers or IDs: it searches for
+            // the query as text.
+            Some(Query::End | Query::Line(_)) if pane == Pane::Output => {
+                self.show_matches(pane, text, Filter::text(text.trim()), origin);
+            }
+            Some(Query::Label(_, filter)) if pane == Pane::Output => {
+                self.show_matches(pane, text, filter, origin);
             }
             Some(Query::End) => {
                 let total = self.content_total(pane);
@@ -464,6 +503,7 @@ mod tests {
 
     use super::*;
     use crate::session::Session;
+    use crate::tui::SCROLLBACK_CAP;
 
     const FORMULA: &str = "@f1 1 x1 1 x2 >= 1 ;\n1 x2 1 x3 >= 1 ;\n1 x12 1 x120 >= 1 ;\n";
 
@@ -650,6 +690,99 @@ mod tests {
         app.clear_find(Pane::Proof);
         app.scroll_pane_to_end(true);
         assert_eq!(app.proof_scroll, 302 - 10);
+    }
+
+    /// An app with `n` pairs of trace-like lines in its Output pane, which
+    /// shows 3 lines.
+    fn output_app(n: usize) -> (NamedTempFile, App) {
+        let (file, mut app) = app(&[], 10);
+        app.output_content_h = 3;
+        for i in 1..=n {
+            push_pair(&mut app, i);
+        }
+        (file, app)
+    }
+
+    fn push_pair(app: &mut App, i: usize) {
+        app.scrollback.push(&format!("line {i}: rup 1 x{i} >= 1 ;"));
+        app.scrollback
+            .push(&format!("  ConstraintId {}: 1 x{i} >= 1", 100 + i));
+    }
+
+    #[test]
+    fn the_output_pane_filters_and_follows_new_output() {
+        let (_file, mut app) = output_app(60);
+        find(&mut app, Pane::Output, "constraintid 15");
+        // At the newest output, the newest matches.
+        assert_eq!(
+            shown_output(&app),
+            [
+                "  ConstraintId 157: 1 x57 >= 1",
+                "  ConstraintId 158: 1 x58 >= 1",
+                "  ConstraintId 159: 1 x59 >= 1",
+            ]
+        );
+        assert_eq!(app.find(Pane::Output).unwrap().rows.len(), 10);
+
+        push_pair(&mut app, 50);
+        app.refresh_find(Pane::Output);
+        assert_eq!(
+            shown_output(&app).last().unwrap(),
+            "  ConstraintId 150: 1 x50 >= 1",
+            "new output joins the filter"
+        );
+
+        // Numbers and `$` are text here.
+        find(&mut app, Pane::Output, "42");
+        assert!(shown_output(&app).iter().all(|line| line.contains("42")));
+        assert!(app.marked(Pane::Output).is_empty());
+    }
+
+    #[test]
+    fn clearing_the_output_filter_keeps_the_top_line() {
+        let (_file, mut app) = output_app(60);
+        find(&mut app, Pane::Output, "line 1");
+        app.scroll_lines(Pane::Output, true, 4);
+        let top = shown_output(&app)[0].clone();
+        app.clear_find(Pane::Output);
+        assert!(app.find(Pane::Output).is_none());
+        assert_eq!(shown_output(&app)[0], top);
+
+        app.focus = Pane::Output;
+        app.scroll_pane_to_end(false);
+        assert_eq!(shown_output(&app)[0], app.scrollback.get(0));
+        app.scroll_pane_to_end(true);
+        assert_eq!(app.scroll_up, 0);
+    }
+
+    #[test]
+    fn the_output_filter_survives_old_lines_being_dropped() {
+        let (_file, mut app) = output_app(10);
+        find(&mut app, Pane::Output, "ConstraintId");
+        for i in 11..=SCROLLBACK_CAP / 2 + 20 {
+            push_pair(&mut app, i);
+        }
+        app.refresh_find(Pane::Output);
+        let rows = &app.find(Pane::Output).unwrap().rows;
+        assert_eq!(rows.len(), SCROLLBACK_CAP / 2);
+        assert!(
+            rows.iter()
+                .all(|&row| app.scrollback.get(row).contains("ConstraintId"))
+        );
+    }
+
+    /// The Output lines `app` shows, oldest first, as drawing works them out.
+    fn shown_output(app: &App) -> Vec<String> {
+        let rows: Vec<usize> = match app.find(Pane::Output) {
+            Some(find) => find.rows.clone(),
+            None => (0..app.scrollback.len()).collect(),
+        };
+        let end = rows.len() - app.scroll_up.min(rows.len());
+        let start = end.saturating_sub(app.output_content_h);
+        rows[start..end]
+            .iter()
+            .map(|&row| app.scrollback.get(row).to_string())
+            .collect()
     }
 
     #[test]

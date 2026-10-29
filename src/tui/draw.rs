@@ -447,7 +447,8 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     let zoomed_pane = layout.zoomed_top_pane().map(|(pane, _)| pane);
     // The header buttons drawn active: the pane's zoom level, and `[/]`
     // while the pane has a find.
-    let finding = [Pane::Formula, Pane::Database, Pane::Proof].map(|pane| app.find_shown(pane));
+    let finding =
+        [Pane::Formula, Pane::Database, Pane::Proof, Pane::Output].map(|pane| app.find_shown(pane));
     let active_buttons = |pane: Pane| -> Vec<HeaderButton> {
         let zoom = layout
             .zoomed
@@ -457,7 +458,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             Pane::Formula => finding[0],
             Pane::Database => finding[1],
             Pane::Proof => finding[2],
-            Pane::Output => false,
+            Pane::Output => finding[3],
         }
         .then_some(HeaderButton::Find);
         zoom.into_iter().chain(find).collect()
@@ -476,10 +477,14 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     // The assertion `:deassert` is replacing, if any; named in the Output
     // and Database headings and drives the Database hint highlighting.
     let deassert_target = app.vim_deassert_source().map(str::to_string);
-    // Names the assertion being replaced while `:deassert` is active.
-    let output_title = match &deassert_target {
-        Some(source) => format!("Output (deasserting {source})"),
-        None => "Output".to_string(),
+    // Names the assertion being replaced while `:deassert` is active, and
+    // the match count while a find filters the pane.
+    app.refresh_find(Pane::Output);
+    let output_count = matching(app.find(Pane::Output), app.scrollback.len());
+    let output_title = match (&deassert_target, output_count) {
+        (Some(source), _) => format!("Output (deasserting {source})"),
+        (None, Some(count)) => format!("Output ({count})"),
+        (None, None) => "Output".to_string(),
     };
 
     // Panel content and titles. Only the rows on screen are built (see
@@ -634,9 +639,11 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
 
     // Scrollback view: the tail scrolled up by `scroll_up`, with horizontal
     // offset and scrollbars resolved in the same order as `pane_view`.
-    // Horizontal extent is the longest line in the whole scrollback.
+    // Horizontal extent is the longest line in the whole scrollback. A
+    // find's rows stand in for the scrollback's while it filters the pane.
     let sb_h = layout.scrollback_h as usize;
-    let sb_total = app.scrollback.len();
+    let sb_rows = app.finds[3].as_ref().map(|find| &find.rows);
+    let sb_total = sb_rows.map_or(app.scrollback.len(), Vec::len);
     let sb_longest = app.scrollback.longest_chars();
     let sb_vbar_expected = sb_total > sb_h;
     let sb_avail_w = inner.saturating_sub(sb_vbar_expected as usize);
@@ -651,6 +658,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     app.proof_content_h = proof.as_ref().map_or(0, |v| v.content_h);
     app.formula_content_h = formula.as_ref().map_or(0, |v| v.content_h);
     app.database_content_h = database.as_ref().map_or(0, |v| v.content_h);
+    app.output_content_h = sb_content_h;
     let prefix_width = |view: &Option<PaneView>| {
         view.as_ref()
             .and_then(|view| view.lines.first())
@@ -664,7 +672,17 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     app.scroll_up = app.scroll_up.min(sb_total.saturating_sub(sb_content_h));
     let sb_end = sb_total - app.scroll_up;
     let sb_start = sb_end.saturating_sub(sb_content_h);
-    let visible: Vec<&String> = app.scrollback.range(sb_start..sb_end).collect();
+    let visible: Vec<&str> = match sb_rows {
+        Some(rows) => rows[sb_start..sb_end]
+            .iter()
+            .map(|&row| app.scrollback.get(row))
+            .collect(),
+        None => app
+            .scrollback
+            .range(sb_start..sb_end)
+            .map(String::as_str)
+            .collect(),
+    };
     let output_vbar = vbar(sb_start, sb_total, sb_content_h);
     let sb_eff_w = inner - (output_vbar.is_some() as usize);
     let output_hbar = sb_hbar_on.then(|| hbar_range(sb_eff_w, app.output_hscroll, sb_longest));
@@ -815,7 +833,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             rows.push(format!("{bar}{row}{bar}"));
             continue;
         }
-        let line = visible.get(i).map_or("", |line| line.as_str());
+        let line = visible.get(i).copied().unwrap_or("");
         let vars = app.session.as_ref().map(|s| &s.variables);
         let cell = scrollback_cell(line, vars, app.output_hscroll, sb_eff_w, theme);
         rows.push(match &output_vbar {
@@ -836,7 +854,8 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     let prompt_label = match find_input.map(|input| input.pane) {
         Some(Pane::Formula) => "Formula/ ",
         Some(Pane::Database) => "Database/ ",
-        Some(_) => "Proof/ ",
+        Some(Pane::Proof) => "Proof/ ",
+        Some(Pane::Output) => "Output/ ",
         None if debugging => DEBUG_PROMPT,
         None if editing => FORMULA_PROMPT,
         None => NORMAL_PROMPT,

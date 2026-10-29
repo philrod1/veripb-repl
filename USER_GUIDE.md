@@ -107,14 +107,14 @@ line numbers (right-aligned, e.g. `  9: `, ` 10: `) stay pinned at the
 left. With Output focused (the default), the arrow keys belong to the
 prompt. Typing always goes to the prompt, whatever has focus. With the
 Proof pane focused, Enter on an empty prompt opens the Vim-style editor
-at the topmost visible line (see `:edit`). With a top pane focused and
-nothing typed, Home and End go to its first and last lines.
+at the topmost visible line (see `:edit`). With nothing typed, Home and
+End go to the focused pane's first and last lines.
 
-**Finding lines.** With Formula, Database, or Proof focused and nothing
-typed, `/` opens that pane's find; so does its header's `[/]` button.
-The prompt shows `Proof/ ` (or `Formula/ `, `Database/ `) while you type
-the query, and the pane follows as you type. Enter keeps the result; Esc
-puts the pane back as it was. What a query does:
+**Finding lines.** With nothing typed, `/` opens the focused pane's
+find; so does any pane's header `[/]` button. The prompt shows `Proof/ `
+(or `Formula/ `, `Database/ `, `Output/ `) while you type the query, and
+the pane follows as you type. Enter keeps the result; Esc puts the pane
+back as it was. What a query does:
 
 | Query | Effect |
 |---|---|
@@ -136,14 +136,18 @@ clears it, leaving the line at the top where it was, as does an empty
 query. Entering Vim mode or a `:formula` browse, or a `:debug` step
 moving a pane, clears that pane's filter first.
 
+In the Output pane, every query shows the lines containing it: numbers,
+`$` and `@name` are text there. A filter takes in new output as it
+arrives, so at the newest output you see the newest matches. Home and End
+go to the oldest and newest lines.
+
 Scrollbars appear inside a pane only when its content overflows: a `┃`
 thumb on a dimmed `│` track in the last column (vertical), a `━` thumb on
 a dimmed `─` track in the last row (horizontal). The Formula pane anchors
 at the top; Database, Proof, and Output follow their newest content until
 scrolled. Running any command resets every pane to its default view.
 
-**Zoom.** Formula, Database, and Proof each have two zoom buttons in
-their header, after `[/]`:
+**Zoom.** Every pane has two zoom buttons in its header, after `[/]`:
 `[▭]` widens the pane to fill the top row (the Output area keeps its
 size); `[⛶]` also shrinks the Output area to its minimum. On Output,
 `[▭]` shrinks the top row to three lines and `[⛶]` hides it. One pane is zoomed at a
