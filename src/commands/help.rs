@@ -508,6 +508,25 @@ pub const RULES: &[Topic] = &[
         details: &["range: IDs from lo up to, but not including, hi."],
     },
     Topic {
+        name: "setlvl",
+        usage: "setlvl <level> ;",
+        summary: "mark the constraints that follow with a level",
+        details: &[
+            "level is a non-negative integer. Constraints derived from here",
+            "until the next setlvl carry it; those derived before the first",
+            "setlvl carry no level. wiplvl deletes by level.",
+        ],
+    },
+    Topic {
+        name: "wiplvl",
+        usage: "wiplvl <level> ;",
+        summary: "delete the constraints marked with a level or above",
+        details: &[
+            "Deletes every constraint whose setlvl level is level or greater,",
+            "as del does. Constraints without a level are kept.",
+        ],
+    },
+    Topic {
         name: "obju",
         usage: "obju new <objective> ; | obju diff <difference> ;",
         summary: "update the objective (new value, or by difference)",
