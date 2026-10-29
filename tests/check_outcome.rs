@@ -49,3 +49,44 @@ fn finds_a_syntax_error_line_without_a_trace() {
         20
     );
 }
+
+/// veripb's error on running out of input, expecting `expected`.
+fn ran_out(expected: &str) -> RawInvocation {
+    failed_run(
+        "Running VeriPB version 3.0.2\n",
+        &format!(
+            "Error: Syntax error while parsing proof file!\n\nCaused by:\n    \
+             Expected {expected} but found end of file (EOF) at line 5 col 1.\n"
+        ),
+    )
+}
+
+#[test]
+fn running_out_of_input_after_a_complete_line_is_accepted() {
+    for expected in ["a top level rule name or `output`", "`conclusion`", "`end`"] {
+        assert!(
+            check_outcome(&ran_out(expected)).unwrap().is_accepted(),
+            "{expected}"
+        );
+    }
+}
+
+#[test]
+fn running_out_of_input_mid_rule_is_an_incomplete_line() {
+    match check_outcome(&ran_out("`:` or `;`")).unwrap() {
+        CheckOutcome::Rejected { line, message, .. } => {
+            assert_eq!(line, 5);
+            assert_eq!(message, "the line is incomplete: expected `:` or `;` next");
+        }
+        CheckOutcome::Accepted { .. } => panic!("a cut-off rule was accepted"),
+    }
+}
+
+#[test]
+fn only_numbered_ids_count_as_naming_a_constraint() {
+    use veripb_repl::checker::parse::mentions_constraint_id;
+    assert!(mentions_constraint_id("falsifies the constraint with ID 3"));
+    assert!(!mentions_constraint_id(
+        "the line is incomplete: expected a constraint ID (label or signed integer) or `;` next"
+    ));
+}
