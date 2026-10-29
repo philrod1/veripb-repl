@@ -67,7 +67,7 @@ impl Query {
 
 impl Filter {
     /// Lines containing `text`, ignoring ASCII case.
-    fn text(text: &str) -> Filter {
+    pub fn text(text: &str) -> Filter {
         let regex = RegexBuilder::new(&regex::escape(text))
             .unicode(false)
             .case_insensitive(true)

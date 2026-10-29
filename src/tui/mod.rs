@@ -63,9 +63,9 @@ const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(500);
 
 /// The four scrollable panes. Shift+Tab cycles focus through them;
 /// PgUp/PgDn scroll whichever is focused. Typing always goes to the
-/// prompt regardless of focus, except that with a top pane focused and
-/// nothing typed, `/` opens its find (see `find`) and Home/End go to its
-/// first/last line.
+/// prompt regardless of focus, except that with nothing typed, `/` opens
+/// the focused pane's find (see `find`) and Home/End go to its first/last
+/// line.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Pane {
     Formula,
@@ -180,6 +180,8 @@ pub struct Scrollback {
     lines: std::collections::VecDeque<String>,
     /// [`Self::longest_chars`], or `None` until it is next asked for.
     longest: Option<usize>,
+    /// Lines pushed so far, including those since dropped.
+    pushed: u64,
 }
 
 impl Scrollback {
@@ -187,11 +189,22 @@ impl Scrollback {
         Scrollback {
             lines: std::collections::VecDeque::new(),
             longest: Some(0),
+            pushed: 0,
         }
     }
 
     pub(crate) fn len(&self) -> usize {
         self.lines.len()
+    }
+
+    /// Line `idx` (oldest first).
+    pub(crate) fn get(&self, idx: usize) -> &str {
+        &self.lines[idx]
+    }
+
+    /// Changes whenever a line is pushed.
+    pub(crate) fn pushed(&self) -> u64 {
+        self.pushed
     }
 
     /// Lines `range` (oldest first).
@@ -236,6 +249,7 @@ impl Scrollback {
             *longest = (*longest).max(line.chars().count());
         }
         self.lines.push_back(line);
+        self.pushed += 1;
     }
 }
 
@@ -364,6 +378,8 @@ pub struct App {
     /// same reasoning as `proof_content_h`, for `snap_database_to_row` to
     /// map a row index onto a scroll offset.
     pub database_content_h: usize,
+    /// The Output pane's scrollback rows in the last frame drawn.
+    pub output_content_h: usize,
     /// The top panes' line widths, kept between frames; see
     /// `draw::PaneWidths`.
     pane_widths: draw::PaneWidths,
@@ -438,16 +454,16 @@ pub struct App {
     /// not written directly from event handling — see that method's
     /// own docs for why.
     bp_hover: Option<usize>,
-    /// Each top pane's filter (Formula, Database, Proof), if it has one;
-    /// see `find`.
-    finds: [Option<find::PaneFind>; 3],
+    /// Each pane's filter (Formula, Database, Proof, Output), if it has
+    /// one; see `find`.
+    finds: [Option<find::PaneFind>; 4],
     /// `Some` while a pane's find query is being typed, in `find_editor`.
     find_input: Option<find::FindInput>,
     /// The find query editor, with its own history.
     find_editor: input::LineEditor,
     /// Each top pane's rows highlighted by the last find or link that went
     /// to it, until the pane next scrolls; see `find::App::jump_to_rows`.
-    marked: [Vec<usize>; 3],
+    marked: [Vec<usize>; 4],
     /// Each top pane's line-number width in the last frame drawn: where a
     /// click follows a link (see `link`) rather than landing on the text.
     prefix_widths: [usize; 3],
@@ -474,6 +490,7 @@ impl App {
             proof_content_h: 0,
             formula_content_h: 0,
             database_content_h: 0,
+            output_content_h: 0,
             pane_widths: draw::PaneWidths::default(),
             activity: Arc::new(Mutex::new(None)),
             last_click: None,
@@ -489,7 +506,7 @@ impl App {
             mouse_pos: None,
             bp_hover: None,
             zoom: None,
-            finds: [None, None, None],
+            finds: Default::default(),
             find_input: None,
             find_editor: input::LineEditor::new(),
             marked: Default::default(),
@@ -2726,8 +2743,8 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
                     {
                         app.debug_step_backward();
                     }
-                    // With a top pane focused and nothing typed, `/` opens
-                    // its find, and Home/End go to its first/last line.
+                    // With nothing typed, `/` opens the focused pane's find,
+                    // and Home/End go to its first/last line.
                     KeyCode::Char('/') if app.pane_keys_active() => app.open_find(app.focus),
                     KeyCode::Home if app.pane_keys_active() => app.scroll_pane_to_end(false),
                     KeyCode::End if app.pane_keys_active() => app.scroll_pane_to_end(true),

@@ -25,7 +25,7 @@
 //! squeezed to a few lines — while `Full` (full-maximise) removes the top
 //! area entirely, so Output alone fills the screen. Every header carries
 //! two small buttons toggling this, `[▭]` then `[⛶]` (after a `[/]` that
-//! opens the pane's find, on the three top panes), laid out by
+//! opens the pane's find), laid out by
 //! `button_offsets` below and drawn by `draw::title_segment` at the exact
 //! same columns this module hit-tests clicks against, so the two can
 //! never disagree about where a button actually is. For the three top
@@ -55,22 +55,16 @@ pub enum HeaderButton {
     Zoom(Zoom),
 }
 
-/// A pane's header buttons, left to right: `[/]` on the three top panes,
-/// then both zoom levels, `Wide` then `Full`. `Output`'s levels mean
-/// something different from a top pane's (see the module docs), but the
-/// two zoom buttons are the same across all four panes.
-pub(crate) fn header_buttons(pane: Pane) -> &'static [HeaderButton] {
-    match pane {
-        Pane::Output => &[
-            HeaderButton::Zoom(Zoom::Wide),
-            HeaderButton::Zoom(Zoom::Full),
-        ],
-        _ => &[
-            HeaderButton::Find,
-            HeaderButton::Zoom(Zoom::Wide),
-            HeaderButton::Zoom(Zoom::Full),
-        ],
-    }
+/// A pane's header buttons, left to right: `[/]`, then both zoom levels,
+/// `Wide` then `Full`. `Output`'s levels mean something different from a
+/// top pane's (see the module docs), but the buttons are the same across
+/// all four panes.
+pub(crate) fn header_buttons(_pane: Pane) -> &'static [HeaderButton] {
+    &[
+        HeaderButton::Find,
+        HeaderButton::Zoom(Zoom::Wide),
+        HeaderButton::Zoom(Zoom::Full),
+    ]
 }
 
 /// Total header columns `levels`' buttons occupy, gap included — e.g.
