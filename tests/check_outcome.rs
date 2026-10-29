@@ -72,14 +72,9 @@ fn running_out_of_input_after_a_complete_line_is_accepted() {
 }
 
 #[test]
-fn running_out_of_input_mid_rule_is_an_incomplete_line() {
-    match check_outcome(&ran_out("`:` or `;`")).unwrap() {
-        CheckOutcome::Rejected { line, message, .. } => {
-            assert_eq!(line, 5);
-            assert_eq!(message, "the line is incomplete: expected `:` or `;` next");
-        }
-        CheckOutcome::Accepted { .. } => panic!("a cut-off rule was accepted"),
-    }
+fn running_out_of_input_mid_rule_is_accepted_too() {
+    // A rule may span lines; veripb reports no error for an unfinished one.
+    assert!(check_outcome(&ran_out("`:` or `;`")).unwrap().is_accepted());
 }
 
 #[test]
