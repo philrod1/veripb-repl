@@ -87,6 +87,19 @@ pub const COMMANDS: &[Topic] = &[
         ],
     },
     Topic {
+        name: "where",
+        usage: ":where <id>|@label|line <n>",
+        summary: "link a constraint and the line it came from",
+        details: &[
+            "With a constraint ID or label: prints the constraint and where it",
+            "came from, the formula or the checked proof line that derived it.",
+            "With line <n>: prints the constraints checked line n derived.",
+            "In the TUI it also shows both in their panes, highlighted, as",
+            "clicking a line number or a Database ID does.",
+            "Changes nothing.",
+        ],
+    },
+    Topic {
         name: "list",
         usage: ":list",
         summary: "print the proof so far, numbered like checker output",

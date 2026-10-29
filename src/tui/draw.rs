@@ -272,11 +272,11 @@ impl PaneContent<'_> {
 }
 
 /// `content` as a find leaves it: only `find`'s rows if it filters the
-/// pane, and row `jumped` highlighted.
+/// pane, and the `marked` rows highlighted.
 fn found<'a>(
     content: PaneContent<'a>,
     find: Option<&'a PaneFind>,
-    jumped: Option<usize>,
+    marked: &'a [usize],
 ) -> PaneContent<'a> {
     let PaneContent {
         total,
@@ -285,7 +285,7 @@ fn found<'a>(
     } = content;
     let line = move |i| {
         let mut line = line(i);
-        line.cursor |= jumped == Some(i);
+        line.cursor |= marked.contains(&i);
         line
     };
     match find {
@@ -487,12 +487,6 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     // `found`).
     app.refresh_find(Pane::Formula);
     app.refresh_find(Pane::Proof);
-    let jumped = |pane| app.jumped.filter(|&(at, _)| at == pane).map(|(_, row)| row);
-    let (formula_jumped, database_jumped, proof_jumped) = (
-        jumped(Pane::Formula),
-        jumped(Pane::Database),
-        jumped(Pane::Proof),
-    );
     let formula_title = match &app.session {
         Some(session) => format!(
             "Formula: {} ({})",
@@ -508,7 +502,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             Some(session) => formula_content(session, formula_cursor, &mut app.pane_widths),
             None => PaneContent::whole(vec![pinned("(no formula loaded)".to_string())]),
         };
-        let content = found(content, app.finds[0].as_ref(), formula_jumped);
+        let content = found(content, app.finds[0].as_ref(), &app.marked[0]);
         pane_view(
             content,
             pane_w(Pane::Formula, w1),
@@ -545,7 +539,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
                 database_content(session, db, &hint_vars, &debug_ids, &mut app.pane_widths);
             let total = content.total;
             let find = app.finds[1].as_ref().filter(|_| db.is_ok());
-            let content = found(content, find, database_jumped);
+            let content = found(content, find, &app.marked[1]);
             let view = pane_view(
                 content,
                 pane_w(Pane::Database, w2),
@@ -628,7 +622,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             ),
             None => PaneContent::whole(Vec::new()),
         };
-        let content = found(content, app.finds[2].as_ref(), proof_jumped);
+        let content = found(content, app.finds[2].as_ref(), &app.marked[2]);
         pane_view(
             content,
             proof_w,
@@ -657,6 +651,16 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     app.proof_content_h = proof.as_ref().map_or(0, |v| v.content_h);
     app.formula_content_h = formula.as_ref().map_or(0, |v| v.content_h);
     app.database_content_h = database.as_ref().map_or(0, |v| v.content_h);
+    let prefix_width = |view: &Option<PaneView>| {
+        view.as_ref()
+            .and_then(|view| view.lines.first())
+            .map_or(0, |line| line.prefix.chars().count())
+    };
+    app.prefix_widths = [
+        prefix_width(&formula),
+        prefix_width(&database),
+        prefix_width(&proof),
+    ];
     app.scroll_up = app.scroll_up.min(sb_total.saturating_sub(sb_content_h));
     let sb_end = sb_total - app.scroll_up;
     let sb_start = sb_end.saturating_sub(sb_content_h);

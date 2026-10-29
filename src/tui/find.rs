@@ -208,7 +208,7 @@ impl App {
             rows,
             key,
         });
-        self.jumped = None;
+        self.marked[slot].clear();
     }
 
     /// The unfiltered row at the top of `pane`.
@@ -253,12 +253,40 @@ impl App {
     /// Shows `row` of `pane` unfiltered, a third of the way down, and
     /// highlights it.
     fn jump(&mut self, pane: Pane, row: usize) {
-        if let Some(slot) = slot(pane) {
-            self.finds[slot] = None;
-        }
+        self.jump_to_rows(pane, vec![row]);
+    }
+
+    /// Shows `rows` (ascending, at least one) of `pane` unfiltered, the
+    /// first a third of the way down, and highlights them until the pane
+    /// next scrolls.
+    pub(super) fn jump_to_rows(&mut self, pane: Pane, rows: Vec<usize>) {
+        let Some(slot) = slot(pane) else {
+            return;
+        };
+        self.finds[slot] = None;
         let h = self.content_h(pane);
-        *self.scroll_of(pane) = row.saturating_sub(h / 3);
-        self.jumped = Some((pane, row));
+        *self.scroll_of(pane) = rows[0].saturating_sub(h / 3);
+        self.marked[slot] = rows;
+    }
+
+    /// The rows of `pane` highlighted by the last jump to it.
+    #[cfg(test)]
+    pub(super) fn marked(&self, pane: Pane) -> &[usize] {
+        slot(pane).map_or(&[], |slot| &self.marked[slot])
+    }
+
+    /// Highlights `rows` of `pane` without moving it.
+    pub(super) fn mark(&mut self, pane: Pane, rows: Vec<usize>) {
+        if let Some(slot) = slot(pane) {
+            self.marked[slot] = rows;
+        }
+    }
+
+    /// Stops highlighting rows of `pane`.
+    pub(super) fn unmark(&mut self, pane: Pane) {
+        if let Some(slot) = slot(pane) {
+            self.marked[slot].clear();
+        }
     }
 
     /// Home or End with a top pane focused: its first or last row.
@@ -270,7 +298,7 @@ impl App {
         }
         .saturating_sub(self.content_h(pane));
         *self.scroll_of(pane) = if end { last_page } else { 0 };
-        self.jumped = None;
+        self.unmark(pane);
     }
 
     /// The row of `pane` showing line `n`: Proof's display line, or the
@@ -370,7 +398,7 @@ impl App {
             self.finds[slot] = find;
         }
         *self.scroll_of(input.pane) = scroll;
-        self.jumped = None;
+        self.unmark(input.pane);
         self.find_editor.set_text("");
     }
 
@@ -406,7 +434,7 @@ impl App {
                     self.finds[slot] = None;
                 }
                 *self.scroll_of(pane) = origin;
-                self.jumped = None;
+                self.unmark(pane);
             }
             Some(Query::End) => {
                 let total = self.content_total(pane);
@@ -556,25 +584,25 @@ mod tests {
         find(&mut app, Pane::Proof, "pol");
         find(&mut app, Pane::Proof, "200");
         assert!(app.find(Pane::Proof).is_none());
-        assert_eq!(app.jumped, Some((Pane::Proof, 199)));
+        assert_eq!(app.marked(Pane::Proof), [199]);
         assert_eq!(app.proof_scroll, 199 - 3);
 
         // `@l30` is on buffer line 30, display line 32; `@l3` is a label
         // too, so it doesn't filter on its text.
         find(&mut app, Pane::Proof, "@l30");
-        assert_eq!(app.jumped, Some((Pane::Proof, 31)));
+        assert_eq!(app.marked(Pane::Proof), [31]);
         find(&mut app, Pane::Proof, "@nope");
         assert!(app.find(Pane::Proof).unwrap().rows.is_empty());
 
         find(&mut app, Pane::Proof, "$");
-        assert_eq!(app.jumped, Some((Pane::Proof, 301)));
+        assert_eq!(app.marked(Pane::Proof), [301]);
         app.scroll_lines(Pane::Proof, true, 1);
-        assert_eq!(app.jumped, None);
+        assert!(app.marked(Pane::Proof).is_empty());
 
         find(&mut app, Pane::Formula, "@f1");
-        assert_eq!(app.jumped, Some((Pane::Formula, 0)));
+        assert_eq!(app.marked(Pane::Formula), [0]);
         find(&mut app, Pane::Formula, "3");
-        assert_eq!(app.jumped, Some((Pane::Formula, 2)));
+        assert_eq!(app.marked(Pane::Formula), [2]);
 
         type_query(&mut app, Pane::Proof, "999");
         let note = app.find_input.as_ref().unwrap().note.clone();
@@ -639,9 +667,9 @@ mod tests {
         assert!(rejection.is_none(), "{rejection:?}");
 
         find(&mut app, Pane::Database, "5");
-        assert_eq!(app.jumped, Some((Pane::Database, 4)));
+        assert_eq!(app.marked(Pane::Database), [4]);
         find(&mut app, Pane::Database, "@p");
-        assert_eq!(app.jumped, Some((Pane::Database, 3)));
+        assert_eq!(app.marked(Pane::Database), [3]);
         find(&mut app, Pane::Database, "@f");
         assert_eq!(
             app.find(Pane::Database).unwrap().rows,
