@@ -171,6 +171,10 @@ pane at the same level.
   formula or proof line it came from. The clicked line is highlighted too
   and its pane stays where it is. The highlights last until each pane
   next scrolls. `:where` does the same from the prompt.
+- Clicking a constraint reference in a Formula or Proof line (a `@label`,
+  or an ID where the rule takes one: a `pol` operand, a hint after `:`,
+  a `del id`/`core id` list, `proofgoal <n>`) shows that constraint,
+  highlighted, in the Database pane.
 - To select text for copying, use your terminal's mouse-capture bypass
   (usually Shift, or Option/Alt on macOS).
 
@@ -617,7 +621,8 @@ formulas are not supported.
   retypes buffer lines in place; with no argument, the last buffer line.
   **Retyping never checks the new text and never changes other lines.**
   If the retyped line was checked, it and every later line become
-  unchecked; run `:verify` to recheck. Lines inside `red ... : subproof
+  unchecked; run `:verify` to recheck. Retyping a `%` comment or blank
+  line as another comment or blank line keeps everything checked. Lines inside `red ... : subproof
   ... qed;` blocks are edited the same way. Line numbers are as in
   `:list`; a preamble line or a line past the end is an error.
 

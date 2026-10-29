@@ -4,6 +4,7 @@
 //! same from the prompt. Both ends are highlighted until their pane next
 //! scrolls.
 
+use crate::checker::parse::{ConstraintRef, constraint_refs};
 use crate::commands::where_::{self, Link, Target};
 use crate::session::ConstraintSource;
 use crate::tui::{App, Pane};
@@ -113,11 +114,18 @@ impl App {
         // The Proof pane's first column is the breakpoint marker.
         let numbers = if pane == Pane::Proof { 1 } else { 0 }..prefix_w;
         let offset = usize::from(column.saturating_sub(layout.content_x0(pane)));
-        if !numbers.contains(&offset) {
+        let Some(content_row) = self.content_row_at(pane, row) else {
             return false;
+        };
+        if offset >= prefix_w {
+            let hscroll = match pane {
+                Pane::Formula => self.formula_hscroll,
+                Pane::Proof => self.proof_hscroll,
+                _ => return false,
+            };
+            return self.click_reference(pane, content_row, offset - prefix_w + hscroll);
         }
-        let (Some(content_row), Some(session)) = (self.content_row_at(pane, row), &self.session)
-        else {
+        let (true, Some(session)) = (numbers.contains(&offset), &self.session) else {
             return false;
         };
         match pane {
@@ -140,6 +148,64 @@ impl App {
                 self.follow_target(&Target::Line(content_row + 1), Pane::Proof);
             }
             _ => return false,
+        }
+        true
+    }
+
+    /// A click on character `col` of the text of row `row` of the Formula
+    /// or Proof pane: on a constraint reference (a label, or an ID where
+    /// the rule takes one — see `constraint_refs`), shows that constraint
+    /// in the Database pane, highlighted, and returns `true`.
+    fn click_reference(&mut self, pane: Pane, row: usize, col: usize) -> bool {
+        let Some(session) = &self.session else {
+            return false;
+        };
+        let text = match pane {
+            Pane::Formula => session.formula.get(row),
+            Pane::Proof => session
+                .buffer_index(row + 1)
+                .map(|idx| &session.buffer[idx]),
+            _ => None,
+        };
+        let Some(text) = text else {
+            return false;
+        };
+        let Some((byte, _)) = text.char_indices().nth(col) else {
+            return false;
+        };
+        let Some((_, reference)) = constraint_refs(text)
+            .into_iter()
+            .find(|(range, _)| range.contains(&byte))
+        else {
+            return false;
+        };
+        let id = match reference {
+            ConstraintRef::Id(id) => id,
+            ConstraintRef::Label(name) => {
+                match session
+                    .label_id(name)
+                    .and_then(|id| usize::try_from(id).ok())
+                {
+                    Some(id) => id,
+                    None => {
+                        let message = format!("No checked constraint is labelled {name}.");
+                        self.scrollback.push(&message);
+                        return true;
+                    }
+                }
+            }
+        };
+        let row = session.database().ok().and_then(|database| {
+            database
+                .entries
+                .binary_search_by_key(&id, |entry| entry.id)
+                .ok()
+        });
+        match row {
+            Some(row) => self.jump_to_rows(Pane::Database, vec![row]),
+            None => self
+                .scrollback
+                .push(&format!("ConstraintId {id} is not in the database.")),
         }
         true
     }
@@ -223,9 +289,9 @@ mod tests {
         assert_eq!(app.marked(Pane::Formula), [2]);
         assert_eq!(app.marked(Pane::Database), [2, 3]);
 
-        // The preamble, and the text after the number, link nothing.
+        // The preamble, and text that refers to nothing, link nothing.
         assert!(!click(&mut app, Pane::Proof, 0, 1));
-        assert!(!click(&mut app, Pane::Proof, 2, 5));
+        assert!(!click(&mut app, Pane::Proof, 2, 5 + 3));
     }
 
     #[test]
@@ -247,5 +313,36 @@ mod tests {
         app.scroll_lines(Pane::Database, false, 1);
         assert!(app.marked(Pane::Database).is_empty());
         assert_eq!(app.marked(Pane::Proof), [5]);
+    }
+
+    #[test]
+    fn clicking_a_reference_in_a_line_shows_its_constraint() {
+        let Some((_file, mut app)) = app() else {
+            return;
+        };
+        // Proof row 5 is `pol 1 2 + ;`; its text starts 5 columns in.
+        assert!(click(&mut app, Pane::Proof, 5, 5 + 6));
+        assert_eq!(app.marked(Pane::Database), [1]);
+        assert!(
+            app.marked(Pane::Proof).is_empty(),
+            "the line's own end isn't marked"
+        );
+
+        // `@p` on row 2 names constraint 5, the database's fifth row.
+        assert!(click(&mut app, Pane::Proof, 2, 5 + 1));
+        assert_eq!(app.marked(Pane::Database), [4]);
+
+        // `del id 6 ;`: constraint 6 is deleted, so nothing is highlighted.
+        app.marked = Default::default();
+        assert!(click(&mut app, Pane::Proof, 4, 5 + 7));
+        assert!(app.marked(Pane::Database).is_empty());
+
+        // Not a reference: the `+`, and constraint text.
+        assert!(!click(&mut app, Pane::Proof, 5, 5 + 8));
+        assert!(!click(&mut app, Pane::Proof, 3, 5 + 6));
+
+        // `@f1` in the formula.
+        assert!(click(&mut app, Pane::Formula, 0, 5 + 1));
+        assert_eq!(app.marked(Pane::Database), [0]);
     }
 }

@@ -50,14 +50,90 @@ pub fn rule_keyword(line: &str) -> Option<&str> {
     line.split_whitespace().find(|t| !t.starts_with('@'))
 }
 
+/// A reference to a constraint in a proof line.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConstraintRef<'a> {
+    /// `@name`.
+    Label(&'a str),
+    Id(usize),
+}
+
+/// Returns the constraint references in proof `line`, each with its byte
+/// range: every `@label`, and constraint IDs where the rule takes them:
+/// - `pol`: every number, except `0` and one followed by a scalar operator
+///   (`*`, `d`, `c`, `m`, `n`);
+/// - `rup`, `ia`, `i`, `e`, `conclusion`, `qed`: numbers after the first
+///   `:`;
+/// - `del`, `delc`, `deld`, `core`: numbers after `id`;
+/// - `proofgoal <n>`.
+///
+/// Negative (relative) IDs are not included.
+pub fn constraint_refs(line: &str) -> Vec<(std::ops::Range<usize>, ConstraintRef<'_>)> {
+    // Each token without a trailing `;`, with its byte range.
+    let tokens: Vec<(std::ops::Range<usize>, &str)> = line
+        .split_whitespace()
+        .map(|token| {
+            let start = token.as_ptr() as usize - line.as_ptr() as usize;
+            let bare = token.trim_end_matches(';');
+            (start..start + bare.len(), bare)
+        })
+        .collect();
+    let len = tokens.len();
+    // Which tokens are in a position that takes a constraint ID.
+    let mut takes_id = vec![false; len];
+    if let Some(k) = tokens.iter().position(|(_, token)| !token.starts_with('@')) {
+        let token = |i: usize| tokens.get(i).map(|(_, token)| *token);
+        match tokens[k].1 {
+            "pol" => {
+                for (i, takes) in takes_id.iter_mut().enumerate().skip(k + 1) {
+                    let scaled = matches!(token(i + 1), Some("*" | "d" | "c" | "m" | "n"));
+                    *takes = token(i) != Some("0") && !scaled;
+                }
+            }
+            "rup" | "ia" | "i" | "e" | "conclusion" | "qed" => {
+                if let Some(colon) = (k + 1..len).find(|&i| token(i) == Some(":")) {
+                    takes_id[colon + 1..].fill(true);
+                }
+            }
+            "del" | "delc" | "deld" | "core" if token(k + 1) == Some("id") => {
+                takes_id[k + 2..].fill(true);
+            }
+            "proofgoal" if k + 1 < len => takes_id[k + 1] = true,
+            _ => {}
+        }
+    }
+    tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (range, token))| {
+            if token.len() > 1 && token.starts_with('@') {
+                Some((range.clone(), ConstraintRef::Label(token)))
+            } else if takes_id[i] {
+                let id = token.parse().ok()?;
+                Some((range.clone(), ConstraintRef::Id(id)))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Whether proof `line` is a `%` comment or blank: one such line in place
+/// of another changes nothing veripb checks.
+pub fn is_comment_or_blank(line: &str) -> bool {
+    let line = line.trim_start();
+    line.is_empty() || line.starts_with('%')
+}
+
 /// Returns how many constraints an accepted proof `line` adds to the
 /// database, if that is all it does: 1 for a whole `rup`, `pol`, `a` or
 /// `ia` rule ending in its one `;` (the new constraint gets the next ID,
-/// even if it repeats one already there), 0 for a `%` comment. `None` for
+/// even if it repeats one already there), 0 for a `%` comment or a blank
+/// line. `None` for
 /// any other rule, which may also delete, change or scope constraints, and
 /// for part of a rule split across lines.
 pub fn constraints_added(line: &str) -> Option<usize> {
-    if line.trim_start().starts_with('%') {
+    if is_comment_or_blank(line) {
         return Some(0);
     }
     let code = line.split('%').next().unwrap_or(line).trim_end();

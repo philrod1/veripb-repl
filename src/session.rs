@@ -1067,8 +1067,19 @@ impl Session {
     }
 
     /// Replaces `buffer[idx]` without checking it. Retracts `checked_len` to
-    /// `idx` if `idx` was checked.
+    /// `idx` if `idx` was checked, unless a comment or blank line replaces
+    /// another, which changes nothing veripb checks.
     pub fn set_line(&mut self, idx: usize, new_text: &str) -> anyhow::Result<()> {
+        if idx < self.checked_len
+            && checker::parse::is_comment_or_blank(&self.buffer[idx])
+            && checker::parse::is_comment_or_blank(new_text)
+        {
+            if self.buffer[idx] != new_text {
+                self.buffer.set_inert(idx, new_text.to_string());
+                self.mark_undo_point();
+            }
+            return Ok(());
+        }
         self.buffer.set(idx, new_text.to_string());
         self.checked_len = self.checked_len.min(idx);
         self.known_bad = None;
@@ -2305,6 +2316,46 @@ mod tests {
         assert_eq!(runs, 0);
         assert_eq!(labels["@l0"], (CHAIN + 1) as isize);
         assert_eq!(labels[&format!("@l{}", n - 1)], (CHAIN + n) as isize);
+    }
+
+    #[test]
+    fn editing_a_comment_keeps_the_proof_checked() {
+        if !have_veripb() {
+            return;
+        }
+        let (_file, mut session) = chain_session();
+        for line in ["rup 1 ~x8 >= 1 ;", "% first", "", "rup 1 ~x7 >= 1 ;"] {
+            session.buffer.push(line.to_string());
+        }
+        session.drive_forward().unwrap();
+        session.database().unwrap();
+        let last = session.display_line(3);
+        let derived = session.line_constraint_ids(last).unwrap();
+        let edit = |session: &mut Session, idx: usize, text: &str| {
+            session.begin_undo_point();
+            session.set_line(idx, text).unwrap();
+            session.end_undo_point();
+        };
+
+        edit(&mut session, 1, "% second");
+        edit(&mut session, 2, "  % was blank");
+        assert_eq!(session.checked_len, 4);
+        let (kept, runs, _) = counting(|| {
+            session.database().unwrap();
+            session.line_constraint_ids(last).unwrap()
+        });
+        assert_eq!((kept, runs), (derived, 0));
+
+        // Each edit is one undo step.
+        session.undo(1);
+        assert_eq!(session.buffer[2], "");
+        session.undo(1);
+        assert_eq!(session.buffer[1], "% first");
+        assert_eq!(session.checked_len, 4);
+
+        // A comment made into a rule unchecks from there.
+        edit(&mut session, 1, "rup 1 ~x6 >= 1 ;");
+        assert_eq!(session.checked_len, 1);
     }
 
     #[test]

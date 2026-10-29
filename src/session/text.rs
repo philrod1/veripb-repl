@@ -273,6 +273,20 @@ impl ProofBuffer {
         old
     }
 
+    /// Replaces line `idx` with a line that changes nothing the checker
+    /// sees, such as one comment with another: like [`Self::set`], but
+    /// lines after it count as unchanged (see [`Self::take_changed_from`]).
+    pub fn set_inert(&mut self, idx: usize, line: String) -> String {
+        if self[idx] == line {
+            return line;
+        }
+        self.revision.set(next_epoch());
+        self.added(&line);
+        let old = self.lines.splice(idx..idx + 1, vec![line], true).remove(0);
+        self.removed(&old);
+        old
+    }
+
     pub fn clear(&mut self) {
         self.changed(0);
         self.longest.set(None);
