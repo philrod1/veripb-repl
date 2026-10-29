@@ -29,11 +29,42 @@ fn count(n: usize, noun: &str) -> String {
     }
 }
 
+/// `part` as a percentage of `whole`, e.g. `33.3%`.
+fn percent(part: impl Into<f64>, whole: impl Into<f64>) -> String {
+    let whole = whole.into();
+    if whole == 0.0 {
+        return "-".to_string();
+    }
+    format!("{:.1}%", 100.0 * part.into() / whole)
+}
+
+/// `n` and its percentage of `whole`: `4 (66.7%)`.
+fn share(n: usize, whole: usize) -> String {
+    format!("{n} ({})", percent(n as f64, whole as f64))
+}
+
+/// `bytes` in B, KiB, MiB or GiB, e.g. `95.3 MiB`.
+fn size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 fn formula(session: &Session, out: &mut dyn Output) {
     let stats = stats::formula(session);
     let mut summary = format!(
-        "Formula: {}, {}",
+        "Formula: {} ({}), {}",
         count(stats.lines, "line"),
+        size(stats.bytes),
         count(stats.constraints, "constraint")
     );
     if stats.two_constraint_lines > 0 {
@@ -42,12 +73,16 @@ fn formula(session: &Session, out: &mut dyn Output) {
             count(stats.two_constraint_lines, "line")
         ));
     }
-    summary.push_str(&format!(
-        ", {} labelled, {}",
-        stats.labelled,
-        count(stats.variables, "variable")
-    ));
+    summary.push_str(&format!(", {}", count(stats.variables, "variable")));
     outln!(out, "{summary}");
+    outln!(
+        out,
+        "  labelled lines: {}",
+        share(stats.labelled, stats.lines)
+    );
+    if let Some((ids, bytes)) = &stats.longest {
+        outln!(out, "  longest line: {} (ID {ids})", size(*bytes as u64));
+    }
     if let Some(terms) = stats.objective_terms {
         outln!(out, "  objective: {}", count(terms, "term"));
     }
@@ -65,28 +100,49 @@ fn database(session: &Session, out: &mut dyn Output) {
             return;
         }
     };
-    let mut summary = format!(
-        "Database: {}: {} core, {} derived; {} of the formula's {} still there; {} labelled",
-        count(stats.constraints, "constraint"),
-        stats.core,
-        stats.constraints - stats.core,
+    let total = stats.constraints;
+    outln!(
+        out,
+        "Database: {} ({})",
+        count(total, "constraint"),
+        size(stats.bytes)
+    );
+    outln!(
+        out,
+        "  core: {}, derived: {}",
+        share(stats.core, total),
+        share(total - stats.core, total)
+    );
+    outln!(
+        out,
+        "  from the formula: {} of its {} still there ({})",
         stats.from_formula,
         stats.formula_constraints,
-        stats.labelled
+        percent(stats.from_formula as f64, stats.formula_constraints as f64)
     );
+    let mut labelled = format!("  labelled: {}", share(stats.labelled, total));
     if let Some(id) = stats.highest_id {
-        summary.push_str(&format!("; highest ID {id}"));
+        labelled.push_str(&format!("; highest ID {id}"));
     }
-    outln!(out, "{summary}");
+    outln!(out, "{labelled}");
+    if let Some((id, bytes)) = stats.longest {
+        outln!(
+            out,
+            "  longest constraint: {} (ID {id})",
+            size(bytes as u64)
+        );
+    }
     print_shapes(&stats.shapes, "constraint", out);
 }
 
 fn proof(session: &Session, out: &mut dyn Output) {
     let stats = stats::proof(session);
     let mut summary = format!(
-        "Proof: {}, {} checked",
+        "Proof: {} ({}), {} checked ({})",
         count(stats.lines, "line"),
-        stats.checked
+        size(stats.bytes),
+        stats.checked,
+        percent(stats.checked as f64, stats.lines as f64)
     );
     if stats.rejected {
         summary.push_str(&format!(
@@ -94,38 +150,60 @@ fn proof(session: &Session, out: &mut dyn Output) {
             session.display_line(stats.checked)
         ));
     }
-    summary.push_str(&format!(
-        "; {} labelled, {}",
-        stats.labelled,
-        count(stats.breakpoints, "breakpoint")
-    ));
     outln!(out, "{summary}");
+    outln!(
+        out,
+        "  labelled lines: {}; {}",
+        share(stats.labelled, stats.lines),
+        count(stats.breakpoints, "breakpoint")
+    );
+    if let Some((line, bytes)) = stats.longest {
+        outln!(out, "  longest line: {} (line {line})", size(bytes as u64));
+    }
     if stats.rules.is_empty() {
         return;
     }
-    let width = stats
-        .rules
-        .iter()
-        .map(|(rule, _, _)| rule.len())
-        .max()
-        .unwrap_or(0)
-        .max("rule".len());
-    let lines_w = stats.lines.to_string().len().max("lines".len());
-    outln!(out, "  {:<width$}  {:>lines_w$}  checked", "rule", "lines");
-    for (rule, lines, checked) in &stats.rules {
-        outln!(out, "  {rule:<width$}  {lines:>lines_w$}  {checked:>7}");
+    let mut table = vec![[
+        "rule".to_string(),
+        "lines".to_string(),
+        "%".to_string(),
+        "bytes".to_string(),
+        "%".to_string(),
+        "checked".to_string(),
+    ]];
+    for rule in &stats.rules {
+        table.push([
+            rule.rule.clone(),
+            rule.lines.to_string(),
+            percent(rule.lines as f64, stats.lines as f64),
+            size(rule.bytes),
+            percent(rule.bytes as f64, stats.bytes as f64),
+            rule.checked.to_string(),
+        ]);
+    }
+    let widths: Vec<usize> = (0..6)
+        .map(|column| table.iter().map(|row| row[column].len()).max().unwrap_or(0))
+        .collect();
+    for row in &table {
+        // The rule name on the left, the numbers right-aligned.
+        let mut line = format!("  {:<w$}", row[0], w = widths[0]);
+        for (cell, width) in row.iter().zip(&widths).skip(1) {
+            line.push_str(&format!("  {cell:>width$}"));
+        }
+        outln!(out, "{line}");
     }
 }
 
 /// The kinds, terms per `unit` and largest coefficient of `shapes`.
 fn print_shapes(shapes: &Shapes, unit: &str, out: &mut dyn Output) {
-    if shapes.kinds.is_empty() {
+    let total: usize = shapes.kinds.iter().map(|(_, n)| n).sum();
+    if total == 0 {
         return;
     }
     let kinds: Vec<String> = shapes
         .kinds
         .iter()
-        .map(|(kind, n)| format!("{} {n}", kind.name()))
+        .map(|(kind, n)| format!("{} {}", kind.name(), share(*n, total)))
         .collect();
     outln!(out, "  kinds: {}", kinds.join(", "));
     if let Some(terms) = &shapes.terms {

@@ -40,9 +40,11 @@ fn formula_stats_count_lines_constraints_and_kinds() {
     assert_eq!(
         run(&mut session, ":stats formula"),
         [
-            "Formula: 3 lines, 4 constraints (1 line loading as two), 1 labelled, 3 variables",
+            "Formula: 3 lines (53 B), 4 constraints (1 line loading as two), 3 variables",
+            "  labelled lines: 1 (33.3%)",
+            "  longest line: 19 B (ID 1)",
             "  objective: 2 terms",
-            "  kinds: clause 1, general 1, equality 1",
+            "  kinds: clause 1 (33.3%), general 1 (33.3%), equality 1 (33.3%)",
             "  terms per line: min 2, median 2, max 2, mean 2.0",
             "  largest coefficient: 3",
         ]
@@ -56,10 +58,12 @@ fn proof_stats_count_rules_and_checked_lines() {
     assert_eq!(
         run(&mut session, ":stats proof"),
         [
-            "Proof: 3 lines, 2 checked; 1 labelled, 0 breakpoints",
-            "  rule     lines  checked",
-            "  rup          2        1",
-            "  comment      1        1",
+            "Proof: 3 lines (47 B), 2 checked (66.7%)",
+            "  labelled lines: 1 (33.3%); 0 breakpoints",
+            "  longest line: 25 B (line 3)",
+            "  rule     lines      %  bytes      %  checked",
+            "  rup          2  66.7%   40 B  85.1%        1",
+            "  comment      1  33.3%    7 B  14.9%        1",
         ]
     );
     assert_eq!(
@@ -79,10 +83,24 @@ fn database_stats_count_core_derived_and_kinds() {
     assert_eq!(
         run(&mut session, ":stats database"),
         [
-            "Database: 6 constraints: 4 core, 2 derived; 4 of the formula's 4 still there; 2 labelled; highest ID 6",
-            "  kinds: clause 4, general 2",
+            "Database: 6 constraints (102 B)",
+            "  core: 4 (66.7%), derived: 2 (33.3%)",
+            "  from the formula: 4 of its 4 still there (100.0%)",
+            "  labelled: 2 (33.3%); highest ID 6",
+            "  longest constraint: 19 B (ID 5)",
+            "  kinds: clause 4 (66.7%), general 2 (33.3%)",
             "  terms per constraint: min 2, median 2, max 3, mean 2.3",
             "  largest coefficient: 3",
         ]
     );
+}
+
+#[test]
+fn sizes_use_binary_units() {
+    let (_file, mut session) = session(&[]);
+    let long = format!("% {}", "x".repeat(3 * 1024 * 1024));
+    session.as_mut().unwrap().buffer.push(long);
+    let stats = run(&mut session, ":stats proof");
+    assert_eq!(stats[0], "Proof: 1 line (3.0 MiB), 0 checked (0.0%)");
+    assert_eq!(stats[2], "  longest line: 3.0 MiB (line 3)");
 }

@@ -506,15 +506,17 @@ formulas are not supported.
     are still there, labelled constraints and the highest ID. This can
     take one veripb run, as `:show` can.
   - `proof`: lines, how many are checked, a rejected line, labelled lines,
-    breakpoints, and a table of lines and checked lines per rule
+    breakpoints, and a table of lines, bytes and checked lines per rule
     (`comment` and `blank` included).
 
-  Formula and database also say what their constraints look like: how
-  many are clauses, cardinality constraints, general, equalities,
-  implications, trivial (always hold) or contradictions (never hold);
-  terms per constraint (min, median, max, mean); and the largest
-  coefficient. In the TUI, clicking a top pane's title shows its
-  statistics.
+  Each gives its size in bytes (B, KiB, MiB, GiB; newlines included) and
+  its longest line, with where it is, and shows a part of the whole with
+  its percentage, e.g. `core: 4 (66.7%)`. Formula and database also say
+  what their constraints look like: how many are clauses, cardinality
+  constraints, general, equalities, implications, trivial (always hold)
+  or contradictions (never hold); terms per constraint (min, median,
+  max, mean); and the largest coefficient. In the TUI, clicking a top
+  pane's title shows its statistics.
 
 ### Checking a conclusion
 

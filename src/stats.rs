@@ -210,9 +210,27 @@ fn shapes<'a>(constraints: impl Iterator<Item = &'a str>) -> Shapes {
     }
 }
 
+/// Bytes of `lines` written one per line, newlines included.
+fn bytes<'a>(lines: impl Iterator<Item = &'a str>) -> u64 {
+    lines.map(|line| line.len() as u64 + 1).sum()
+}
+
+/// The longest of `lines` (by bytes, the first if tied): its index and
+/// length in bytes, newline excluded.
+fn longest<'a>(lines: impl Iterator<Item = &'a str>) -> Option<(usize, usize)> {
+    lines
+        .map(str::len)
+        .enumerate()
+        .reduce(|best, next| if next.1 > best.1 { next } else { best })
+}
+
 #[derive(Debug)]
 pub struct FormulaStats {
     pub lines: usize,
+    /// Bytes of the constraint lines, newlines included.
+    pub bytes: u64,
+    /// The longest line's constraint ID (or ID range) and its bytes.
+    pub longest: Option<(String, usize)>,
     pub constraints: usize,
     /// Lines that load as two constraints (`=` or `<==>`).
     pub two_constraint_lines: usize,
@@ -230,6 +248,9 @@ pub fn formula(session: &Session) -> FormulaStats {
     let lines = &session.formula;
     FormulaStats {
         lines: lines.len(),
+        bytes: bytes(lines.iter().map(String::as_str)),
+        longest: longest(lines.iter().map(String::as_str))
+            .map(|(idx, len)| (session.formula_line_ids(idx), len)),
         constraints: session.formula_constraint_count(),
         two_constraint_lines: lines
             .iter()
@@ -260,6 +281,11 @@ pub fn formula(session: &Session) -> FormulaStats {
 #[derive(Debug)]
 pub struct DatabaseStats {
     pub constraints: usize,
+    /// Bytes of the constraints as the database lists them (without
+    /// labels), one per line.
+    pub bytes: u64,
+    /// The longest constraint's ID and its bytes.
+    pub longest: Option<(usize, usize)>,
     pub core: usize,
     /// Constraints from the formula still in the database.
     pub from_formula: usize,
@@ -276,8 +302,11 @@ pub fn database(session: &Session) -> anyhow::Result<DatabaseStats> {
     let labels_by_id = session.labels_by_id();
     let formula_constraints = session.formula_constraint_count();
     let entries = &database.entries;
+    let texts = || entries.iter().map(|entry| entry.text.as_str());
     Ok(DatabaseStats {
         constraints: entries.len(),
+        bytes: bytes(texts()),
+        longest: longest(texts()).map(|(row, len)| (entries[row].id, len)),
         core: entries.iter().filter(|entry| entry.is_core).count(),
         from_formula: entries
             .iter()
@@ -289,50 +318,68 @@ pub fn database(session: &Session) -> anyhow::Result<DatabaseStats> {
             .filter(|entry| labels_by_id.contains_key(&(entry.id as isize)))
             .count(),
         highest_id: entries.last().map(|entry| entry.id),
-        shapes: shapes(entries.iter().map(|entry| entry.text.as_str())),
+        shapes: shapes(texts()),
     })
+}
+
+/// The proof lines using one rule.
+#[derive(Debug, PartialEq)]
+pub struct RuleStats {
+    /// The rule's keyword, or `comment` or `blank`.
+    pub rule: String,
+    pub lines: usize,
+    /// Bytes of those lines, newlines included.
+    pub bytes: u64,
+    pub checked: usize,
 }
 
 #[derive(Debug)]
 pub struct ProofStats {
     pub lines: usize,
+    /// Bytes of the proof lines, newlines included (the preamble not).
+    pub bytes: u64,
+    /// The longest line's display line number and its bytes.
+    pub longest: Option<(usize, usize)>,
     pub checked: usize,
     /// Whether the line after the checked ones was rejected.
     pub rejected: bool,
     /// Lines with a leading `@label`.
     pub labelled: usize,
     pub breakpoints: usize,
-    /// Each rule (`comment`, `blank`, or the line's keyword) with its lines
-    /// and checked lines, most lines first.
-    pub rules: Vec<(String, usize, usize)>,
+    /// Most lines first.
+    pub rules: Vec<RuleStats>,
 }
 
 pub fn proof(session: &Session) -> ProofStats {
-    let mut rules: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let mut rules: BTreeMap<String, RuleStats> = BTreeMap::new();
     for (idx, line) in session.buffer.iter().enumerate() {
         let rule = match rule_keyword(line) {
-            None => "blank".to_string(),
-            Some(keyword) if keyword.starts_with('%') => "comment".to_string(),
-            Some(keyword) => keyword.trim_end_matches(';').to_string(),
+            None => "blank",
+            Some(keyword) if keyword.starts_with('%') => "comment",
+            Some(keyword) => keyword.trim_end_matches(';'),
         };
-        let counts = rules.entry(rule).or_default();
-        counts.0 += 1;
+        let stats = rules.entry(rule.to_string()).or_insert_with(|| RuleStats {
+            rule: rule.to_string(),
+            lines: 0,
+            bytes: 0,
+            checked: 0,
+        });
+        stats.lines += 1;
+        stats.bytes += line.len() as u64 + 1;
         if idx < session.checked_len {
-            counts.1 += 1;
+            stats.checked += 1;
         }
     }
-    let mut rules: Vec<(String, usize, usize)> = rules
-        .into_iter()
-        .map(|(rule, (lines, checked))| (rule, lines, checked))
-        .collect();
-    rules.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut rules: Vec<RuleStats> = rules.into_values().collect();
+    rules.sort_by(|a, b| b.lines.cmp(&a.lines).then(a.rule.cmp(&b.rule)));
+    let lines = || session.buffer.iter().map(String::as_str);
     ProofStats {
         lines: session.buffer.len(),
+        bytes: bytes(lines()),
+        longest: longest(lines()).map(|(idx, len)| (session.display_line(idx), len)),
         checked: session.checked_len,
         rejected: session.known_bad.is_some(),
-        labelled: session
-            .buffer
-            .iter()
+        labelled: lines()
             .filter(|line| !leading_labels(line).is_empty())
             .count(),
         breakpoints: session.breakpoints.len(),
