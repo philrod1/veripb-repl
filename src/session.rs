@@ -943,7 +943,7 @@ impl Session {
             CheckOutcome::Rejected { message, trace, .. } => {
                 // Name any constraint the reason mentions by ID (looking the
                 // labels up can take a veripb run, so only if there is one).
-                let message = if message.contains("ID ") {
+                let message = if checker::parse::mentions_constraint_id(&message) {
                     checker::parse::annotate_constraint_ids(&message, &self.labels_by_id())
                 } else {
                     message
@@ -988,6 +988,20 @@ impl Session {
             }
             CheckOutcome::Rejected { line, .. } => line.checked_sub(PREAMBLE_LINES + 1),
         };
+        // A rule cut off at the end is named by the line after the last
+        // one: it is the last line that isn't blank or a comment.
+        let rejected_idx = rejected_idx.map(|idx| {
+            if idx < boundary {
+                return idx;
+            }
+            (self.checked_len..boundary)
+                .rev()
+                .find(|&i| {
+                    let line = self.buffer[i].trim_start();
+                    !line.is_empty() && !line.starts_with('%')
+                })
+                .unwrap_or(boundary - 1)
+        });
         if let Some(idx) = rejected_idx
             && idx > self.checked_len
             && idx < boundary

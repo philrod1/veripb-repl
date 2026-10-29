@@ -152,15 +152,25 @@ fn strip_ansi(text: &str) -> String {
 }
 
 /// veripb exits non-zero with this phrase for a proof with no closing
-/// `output`/`conclusion`/`end` lines; every supplied line was accepted, so
-/// treat it as accepted.
+/// `output`/`conclusion`/`end` lines.
 const RAN_OUT_OF_INPUT_MARKER: &str = "found end of file (EOF)";
+
+/// What veripb expected when it ran out of input after a complete line:
+/// another rule or `output`, then `conclusion` after `output`, then `end`
+/// after `conclusion`. Anything else means the last rule is cut off.
+const EXPECTED_AFTER_COMPLETE_LINE: &[&str] = &[
+    "Expected a top level rule name or `output` but ",
+    "Expected `conclusion` but ",
+    "Expected `end` but ",
+];
 
 /// Classifies a `veripb` run as accepted or rejected at a line.
 ///
-/// Accepted on a clean exit or `RAN_OUT_OF_INPUT_MARKER`; `trace` is then
-/// stdout only (on acceptance stderr holds only the EOF syntax-error
-/// wrapper).
+/// Accepted on a clean exit, or on running out of input after a complete
+/// line (see [`EXPECTED_AFTER_COMPLETE_LINE`]); `trace` is then stdout only
+/// (on acceptance stderr holds only the EOF syntax-error wrapper). Running
+/// out of input mid-rule is a rejection at the line veripb names, which is
+/// past the last line, with an "incomplete line" message.
 ///
 /// On rejection the line comes from `<proof path>:<line>` (as in `Checking
 /// error at ...`/`Verification error at ...`), else from `line <N>`, searched
@@ -180,9 +190,21 @@ pub fn check_outcome(raw: &RawInvocation) -> anyhow::Result<CheckOutcome> {
     let combined = format!("{}{}", raw.stdout, raw.stderr);
 
     if combined.contains(RAN_OUT_OF_INPUT_MARKER) {
-        return Ok(CheckOutcome::Accepted {
-            trace: raw.stdout.clone(),
-        });
+        if EXPECTED_AFTER_COMPLETE_LINE
+            .iter()
+            .any(|expected| combined.contains(&format!("{expected}{RAN_OUT_OF_INPUT_MARKER}")))
+        {
+            return Ok(CheckOutcome::Accepted {
+                trace: raw.stdout.clone(),
+            });
+        }
+        if let Some(line) = find_line_number(&raw.stderr) {
+            return Ok(CheckOutcome::Rejected {
+                line,
+                message: incomplete_line_reason(&combined),
+                trace: combined,
+            });
+        }
     }
 
     let line = find_path_anchored_line(&combined, &raw.proof_file_path)
@@ -238,6 +260,17 @@ pub fn formula_error(raw: &RawInvocation) -> Option<String> {
     let message = replaced.trim();
     let message = message.strip_prefix("Error: ").unwrap_or(message);
     Some(format!("the formula has an error: {message}"))
+}
+
+/// Says what the cut-off rule in `output` (veripb's run-out-of-input error)
+/// still needed: `the line is incomplete: expected `:` or `;` next`.
+fn incomplete_line_reason(output: &str) -> String {
+    let reason = rejection_reason(output);
+    let expected = reason
+        .strip_prefix("Expected ")
+        .and_then(|rest| rest.split(" but found end of file").next())
+        .unwrap_or(&reason);
+    format!("the line is incomplete: expected {expected} next")
 }
 
 /// Returns the one-line reason from a rejection's raw output: the first
@@ -423,6 +456,13 @@ pub fn pol_table_with_typed_operands(trace: &str, pol_line: &str) -> String {
         text.push('\n');
     }
     text
+}
+
+/// Whether `text` names a constraint as `ID <N>`, which
+/// [`annotate_constraint_ids`] would label.
+pub fn mentions_constraint_id(text: &str) -> bool {
+    text.match_indices("ID ")
+        .any(|(pos, _)| text[pos + 3..].starts_with(|c: char| c.is_ascii_digit()))
 }
 
 /// Appends each constraint's labels after every `ID <N>` in `text` (as in
