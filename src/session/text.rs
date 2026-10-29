@@ -185,11 +185,20 @@ pub struct ProofBuffer {
     changed_from: Cell<usize>,
     /// [`Self::longest_chars`], or `None` until it is next asked for.
     longest: Cell<Option<usize>>,
+    /// See [`Self::revision`].
+    revision: Cell<u64>,
 }
 
 impl ProofBuffer {
     fn changed(&self, idx: usize) {
         self.changed_from.set(self.changed_from.get().min(idx));
+        self.revision.set(next_epoch());
+    }
+
+    /// Changes whenever a line changes. No two buffers in the process share
+    /// one.
+    pub fn revision(&self) -> u64 {
+        self.revision.get()
     }
 
     /// Records that `line` was added.
@@ -346,12 +355,13 @@ impl From<Vec<String>> for ProofBuffer {
             lines: Lines::new(lines),
             changed_from: Cell::new(usize::MAX),
             longest: Cell::new(None),
+            revision: Cell::new(next_epoch()),
         }
     }
 }
 
-/// Source of [`FormulaLines::epoch`] values, so no two formulas in the
-/// process share one.
+/// Source of [`FormulaLines::epoch`] and [`ProofBuffer::revision`] values,
+/// so no two formulas or buffers in the process share one.
 static NEXT_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 fn next_epoch() -> u64 {

@@ -10,6 +10,7 @@
 
 pub mod checker;
 pub mod commands;
+pub mod find;
 pub mod output;
 pub mod plain;
 pub mod session;

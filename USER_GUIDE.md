@@ -107,7 +107,34 @@ line numbers (right-aligned, e.g. `  9: `, ` 10: `) stay pinned at the
 left. With Output focused (the default), the arrow keys belong to the
 prompt. Typing always goes to the prompt, whatever has focus. With the
 Proof pane focused, Enter on an empty prompt opens the Vim-style editor
-at the topmost visible line (see `:edit`).
+at the topmost visible line (see `:edit`). With a top pane focused and
+nothing typed, Home and End go to its first and last lines.
+
+**Finding lines.** With Formula, Database, or Proof focused and nothing
+typed, `/` opens that pane's find; so does its header's `[/]` button.
+The prompt shows `Proof/ ` (or `Formula/ `, `Database/ `) while you type
+the query, and the pane follows as you type. Enter keeps the result; Esc
+puts the pane back as it was. What a query does:
+
+| Query | Effect |
+|---|---|
+| `1234` | Proof: go to line 1234. Formula, Database: go to constraint ID 1234. |
+| `$` | Go to the last line. |
+| `@name` | Go to where label `@name` is defined: the last checked proof line defining it (else the first unchecked one), the formula line, or the database constraint. If it isn't a label there, it is text. |
+| `rup ~x7` | Show only the lines containing the text, ignoring case. Leading and trailing spaces are dropped. In the Database pane, labels count as part of the text. |
+| `/x7\b/` | Show only the lines matching the regular expression (the closing `/` is optional). Case-sensitive unless it starts with `(?i)`. |
+| `"123"` | Show only the lines containing `123`, spaces included (the closing `"` is optional). |
+
+A line you go to is placed a third of the way down the pane and
+highlighted until the pane next scrolls. A filtered pane's title says how
+many lines match, e.g. `Proof (1204 of 2312065 matching rup ~x7)`; its
+lines keep their own numbers, and the scroll keys, the wheel, and clicks
+work on the matching lines. A filter starts at the first match at or
+after the line that was at the top. It stays until cleared, following
+edits to the pane's content: Esc with the pane focused and nothing typed
+clears it, leaving the line at the top where it was, as does an empty
+query. Entering Vim mode or a `:formula` browse, or a `:debug` step
+moving a pane, clears that pane's filter first.
 
 Scrollbars appear inside a pane only when its content overflows: a `┃`
 thumb on a dimmed `│` track in the last column (vertical), a `━` thumb on
@@ -115,13 +142,15 @@ a dimmed `─` track in the last row (horizontal). The Formula pane anchors
 at the top; Database, Proof, and Output follow their newest content until
 scrolled. Running any command resets every pane to its default view.
 
-**Zoom.** Formula, Database, and Proof each have two header buttons:
+**Zoom.** Formula, Database, and Proof each have two zoom buttons in
+their header, after `[/]`:
 `[▭]` widens the pane to fill the top row (the Output area keeps its
 size); `[⛶]` also shrinks the Output area to its minimum. On Output,
 `[▭]` shrinks the top row to three lines and `[⛶]` hides it. One pane is zoomed at a
 time. Click the button again, or press Esc, to un-zoom. Esc goes first to
-Vim mode, a `:formula` browse, or `:debug` if one is active; otherwise it
-un-zooms before it clears a completion highlight. Entering Vim mode or a
+a find query being typed, Vim mode, a `:formula` browse, or `:debug` if
+one is active; otherwise it un-zooms, then clears the focused pane's
+filter, then a completion highlight. Entering Vim mode or a
 `:formula` browse on a different pane while zoomed moves the zoom to that
 pane at the same level.
 
@@ -155,7 +184,8 @@ Ctrl-U/Ctrl-K kill to start/end of line, Ctrl-C clears the line, Ctrl-D on
 an empty line exits. Ctrl+←/→ (or Alt+←/→) move to the start of the
 previous/next word. Vim mode's `Insert` sub-mode uses the same editor,
 except that ↑/↓ move between proof lines (see `:edit`); `Normal` has its
-own Ctrl/Alt+←/→ word motion.
+own Ctrl/Alt+←/→ word motion. A find query uses the same editor too, with
+its own history, and Ctrl-D cancels it like Esc.
 
 **Suggestion strip and Tab completion.** Once you start typing, a dimmed
 strip under the prompt lists candidates for the first word: `:`-commands

@@ -19,6 +19,7 @@
 
 mod complete;
 mod draw;
+mod find;
 mod input;
 mod layout;
 mod theme;
@@ -61,8 +62,10 @@ const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(500);
 
 /// The four scrollable panes. Shift+Tab cycles focus through them;
 /// PgUp/PgDn scroll whichever is focused. Typing always goes to the
-/// prompt regardless of focus.
-#[derive(Clone, Copy, PartialEq)]
+/// prompt regardless of focus, except that with a top pane focused and
+/// nothing typed, `/` opens its find (see `find`) and Home/End go to its
+/// first/last line.
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Pane {
     Formula,
     Database,
@@ -434,6 +437,16 @@ pub struct App {
     /// not written directly from event handling — see that method's
     /// own docs for why.
     bp_hover: Option<usize>,
+    /// Each top pane's filter (Formula, Database, Proof), if it has one;
+    /// see `find`.
+    finds: [Option<find::PaneFind>; 3],
+    /// `Some` while a pane's find query is being typed, in `find_editor`.
+    find_input: Option<find::FindInput>,
+    /// The find query editor, with its own history.
+    find_editor: input::LineEditor,
+    /// The row a find last went to, highlighted until the pane next
+    /// scrolls: (pane, row).
+    jumped: Option<(Pane, usize)>,
 }
 
 impl App {
@@ -472,6 +485,10 @@ impl App {
             mouse_pos: None,
             bp_hover: None,
             zoom: None,
+            finds: [None, None, None],
+            find_input: None,
+            find_editor: input::LineEditor::new(),
+            jumped: None,
         })
     }
 
@@ -666,6 +683,7 @@ impl App {
     /// the pane's content height. A no-op before the first draw (no known
     /// height yet), same as `snap_proof_to_line`.
     fn snap_database_to_row(&mut self, row: usize) {
+        self.clear_find(Pane::Database);
         let h = self.database_content_h;
         let Some(session) = &self.session else {
             return;
@@ -754,6 +772,7 @@ impl App {
     /// the distance-from-tail of Output's own tail-anchored scrollback.
     /// Offsets are clamped against actual content at draw time.
     fn scroll_lines(&mut self, pane: Pane, up: bool, amount: usize) {
+        self.jumped = None;
         let toward_larger = match pane {
             Pane::Output => up,
             _ => !up,
@@ -1040,9 +1059,9 @@ impl App {
         let max_line = 2 + session.buffer.len();
         // `proof_scroll` counts content rows scrolled off the top and the
         // pane's first content row is display line 1, so the topmost
-        // visible line is `proof_scroll + 1` — clamped past the
+        // visible line is `proof_scroll + 1` (or the filtered row shown there) — clamped past the
         // synthesized preamble to the first line actually worth editing.
-        let start_line = (self.proof_scroll + 1).clamp(3, max_line);
+        let start_line = (self.top_row(Pane::Proof) + 1).clamp(3, max_line);
         self.start_vim(start_line);
         self.scrollback.push(
             "Editing — hjkl/arrows to move, i/a/o/O to insert, x to delete a char, dd a line, \
@@ -1843,6 +1862,7 @@ impl App {
     /// height yet) — the pane's default view (line one at the top) is a
     /// reasonable fallback until then.
     fn scroll_proof_to_cursor(&mut self, cursor: usize) {
+        self.clear_find(Pane::Proof);
         let h = self.proof_content_h;
         let Some(session) = &self.session else {
             return;
@@ -1878,6 +1898,7 @@ impl App {
     /// before the first draw (no known height yet), same as
     /// `scroll_proof_to_cursor`.
     fn snap_proof_to_line(&mut self, line: usize) {
+        self.clear_find(Pane::Proof);
         let h = self.proof_content_h;
         let Some(session) = &self.session else {
             return;
@@ -1906,7 +1927,7 @@ impl App {
         }
         let session = self.session.as_ref()?;
         let total = 2 + session.buffer.len();
-        let idx = self.proof_scroll + (row - 1);
+        let idx = self.row_at_offset(Pane::Proof, self.proof_scroll + (row - 1))?;
         if idx >= total {
             return None;
         }
@@ -2023,6 +2044,7 @@ impl App {
     /// within the pane's last-drawn content height, with `BROWSE_MARGIN`
     /// rows of context above/below where the content allows.
     fn scroll_formula_to_cursor(&mut self, cursor: usize) {
+        self.clear_find(Pane::Formula);
         let h = self.formula_content_h;
         let Some(session) = &self.session else {
             return;
@@ -2057,7 +2079,7 @@ impl App {
             return None;
         }
         let session = self.session.as_ref()?;
-        let idx = self.formula_scroll + (row - 1);
+        let idx = self.row_at_offset(Pane::Formula, self.formula_scroll + (row - 1))?;
         if idx >= session.formula.len() {
             return None;
         }
@@ -2270,6 +2292,7 @@ impl App {
     /// non-interactive in both frontends, so it just flows through
     /// `dispatch` normally.
     fn execute(&mut self, line: &str) -> bool {
+        self.jumped = None;
         let label = line.split_whitespace().next().unwrap_or(line);
         let began = self.begin_activity(label);
         let keep_going = self.execute_line(line);
@@ -2555,6 +2578,8 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 match key.code {
+                    // A find query being typed owns every key.
+                    _ if app.find_input.is_some() => app.find_key(key),
                     // Vim `Insert` sub-mode: Esc commits and returns to
                     // `Normal`; Enter opens the next proof line; Backspace
                     // at the start / Delete at the end joins lines; arrows
@@ -2689,6 +2714,11 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
                     {
                         app.debug_step_backward();
                     }
+                    // With a top pane focused and nothing typed, `/` opens
+                    // its find, and Home/End go to its first/last line.
+                    KeyCode::Char('/') if app.pane_keys_active() => app.open_find(app.focus),
+                    KeyCode::Home if app.pane_keys_active() => app.scroll_pane_to_end(false),
+                    KeyCode::End if app.pane_keys_active() => app.scroll_pane_to_end(true),
                     KeyCode::Tab => app.complete(),
                     // With a top pane focused, ↑/↓ scroll it line by
                     // line. With Output focused (the default), they
@@ -2726,6 +2756,10 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
                     // leaving an active edit always takes priority over
                     // leaving zoom — one layer of "step back" at a time.
                     KeyCode::Esc if app.zoom.is_some() => app.zoom = None,
+                    // Then the focused pane's filter, keeping its place.
+                    KeyCode::Esc if app.pane_keys_active() && app.find(app.focus).is_some() => {
+                        app.clear_find(app.focus);
+                    }
                     KeyCode::Esc => app.selected = None,
                     // Enter with a highlight inserts it — submitting takes
                     // a second Enter, once nothing is highlighted.
@@ -2821,14 +2855,17 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
                             if app.vim.is_none() && app.formula_browse.is_none() {
                                 app.focus = Pane::Proof;
                             }
-                        } else if let Some((pane, level)) = header_hit {
+                        } else if let Some((pane, button)) = header_hit {
                             // A button click is never part of a double-click
                             // sequence — the content double-click actions
                             // (deassert/edit) only ever fire on row >= 1, but
                             // resetting this outright avoids a stray double
                             // registering against whatever's clicked next.
                             app.last_click = None;
-                            app.toggle_zoom(pane, level);
+                            match button {
+                                layout::HeaderButton::Find => app.open_find(pane),
+                                layout::HeaderButton::Zoom(level) => app.toggle_zoom(pane, level),
+                            }
                         } else {
                             let now = Instant::now();
                             let is_double = app.last_click.is_some_and(|(col, row, at)| {
