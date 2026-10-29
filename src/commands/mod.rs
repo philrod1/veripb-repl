@@ -19,6 +19,7 @@ pub mod reset;
 pub mod save;
 pub mod show;
 pub mod source;
+pub mod stats;
 pub mod theme;
 pub mod undo;
 pub mod verify;
@@ -267,6 +268,7 @@ fn dispatch_inner(
             "show" => show::run(session, cmd_args, out),
             "explain" => explain::run(session, cmd_args, out),
             "where" => where_::run(session, cmd_args, out),
+            "stats" => stats::run(session, cmd_args, out),
             "check" => check::run(session, cmd_args, out)?,
             "conclusion" => conclusion::run(session, cmd_args, out),
             "objective" => objective::run(session, out),

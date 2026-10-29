@@ -529,6 +529,21 @@ impl App {
         self.focus = pane;
     }
 
+    /// A click on a top pane's title: `:stats` for that pane, as if typed.
+    /// Not while a pane is being edited.
+    fn show_stats(&mut self, pane: Pane) {
+        if self.vim.is_some() || self.formula_browse.is_some() {
+            return;
+        }
+        let name = match pane {
+            Pane::Formula => "formula",
+            Pane::Database => "database",
+            Pane::Proof => "proof",
+            Pane::Output => return,
+        };
+        self.execute(&format!(":stats {name}"));
+    }
+
     /// If a *different* pane is currently zoomed — another top pane, or
     /// `Output` — retarget the zoom to `pane` (keeping the same level)
     /// instead of leaving it hidden, squeezed, or (an `Output`
@@ -2895,6 +2910,12 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
                                 layout::HeaderButton::Find => app.open_find(pane),
                                 layout::HeaderButton::Zoom(level) => app.toggle_zoom(pane, level),
                             }
+                        } else if let Some(pane) = app
+                            .last_layout
+                            .and_then(|l| l.top_header_at(mouse.column, mouse.row))
+                        {
+                            app.last_click = None;
+                            app.show_stats(pane);
                         } else {
                             let now = Instant::now();
                             let is_double = app.last_click.is_some_and(|(col, row, at)| {

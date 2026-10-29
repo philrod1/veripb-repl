@@ -18,7 +18,9 @@
 //! commands, rejects any other `:` input (proof-rule text never starts with
 //! `:`), and treats everything else as the replacement or inserted line.
 
-use crate::commands::{check, explain, list, objective, preserved, resolve_command, show, where_};
+use crate::commands::{
+    check, explain, list, objective, preserved, resolve_command, show, stats, where_,
+};
 use crate::output::{Output, outln};
 use crate::session::Session;
 
@@ -32,6 +34,7 @@ pub(crate) const READONLY_DURING_EDIT: &[&str] = &[
     "check",
     "explain",
     "where",
+    "stats",
 ];
 
 /// Runs a `READONLY_DURING_EDIT` command directly, skipping `dispatch`'s undo
@@ -50,6 +53,7 @@ pub(crate) fn run_readonly(
         "preserved" => preserved::run(session, out),
         "explain" => explain::run(session, args, out),
         "where" => where_::run(session, args, out),
+        "stats" => stats::run(session, args, out),
         "check" => check::run(session, args, out)?,
         _ => unreachable!("only ever called with a READONLY_DURING_EDIT name"),
     }
@@ -589,7 +593,7 @@ pub fn handle(
                     outln!(
                         out,
                         "Only :show, :list, :objective, :preserved, :check, :explain, :where, \
-                         :skip, :done, and :cancel work while editing — type the replacement \
+                         :stats, :skip, :done, and :cancel work while editing — type the replacement \
                          line, or one of those."
                     );
                     Ok(EditFlow::Continue)
