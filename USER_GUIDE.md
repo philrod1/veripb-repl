@@ -175,6 +175,7 @@ pane at the same level.
   formula or proof line it came from. The clicked line is highlighted too
   and its pane stays where it is. The highlights last until each pane
   next scrolls. `:where` does the same from the prompt.
+- Clicking a top pane's title shows its statistics (`:stats`).
 - Clicking a constraint reference in a Formula or Proof line (a `@label`,
   or an ID where the rule takes one: a `pol` operand, a hint after `:`,
   a `del id`/`core id` list, `proofgoal <n>`) shows that constraint,
@@ -360,6 +361,7 @@ candidates.
 | `:conclusion [<conclusion>\|none]` | show, set or clear the intended conclusion that bare `:check` and `:save` try first | **Implemented** |
 | `:explain [<n>]` | show how line `n` was derived, or why it was rejected | **Implemented** |
 | `:where <id>\|@label\|line <n>` | link a constraint and the line it came from | **Implemented** |
+| `:stats [formula\|database\|proof]` | summarise the formula, the database or the proof | **Implemented** |
 | `:list` | print every buffer line, numbered, with `[unchecked]`/`[breakpoint]` tags | **Implemented** |
 | `:load <file>` | load an OPB formula, starting a new session | **Implemented** (OPB only) |
 | `:instance <file.opb\|file.pbp\|stem>` | `:load` a formula then `:source` its matching proof | **Implemented** |
@@ -495,6 +497,24 @@ formulas are not supported.
   line's constraints for the first time can take one veripb run. In the
   TUI, `:where` also shows both ends in their panes, highlighted, as
   clicking a line number does.
+
+- **`:stats [formula|database|proof]`** — summarises one pane's content,
+  or all three, without changing the session.
+  - `formula`: lines, constraints (and lines loading as two), labelled
+    lines, variables, the objective's terms and the preserved set.
+  - `database`: core and derived constraints, how many of the formula's
+    are still there, labelled constraints and the highest ID. This can
+    take one veripb run, as `:show` can.
+  - `proof`: lines, how many are checked, a rejected line, labelled lines,
+    breakpoints, and a table of lines and checked lines per rule
+    (`comment` and `blank` included).
+
+  Formula and database also say what their constraints look like: how
+  many are clauses, cardinality constraints, general, equalities,
+  implications, trivial (always hold) or contradictions (never hold);
+  terms per constraint (min, median, max, mean); and the largest
+  coefficient. In the TUI, clicking a top pane's title shows its
+  statistics.
 
 ### Checking a conclusion
 
@@ -638,11 +658,12 @@ formulas are not supported.
     line without replacement. `:done` ends the edit, leaving remaining
     queued lines unchanged. `:cancel` restores the buffer to its state
     when the edit began. While editing, only `:skip`, `:done`, `:cancel`,
-    `:show`, `:list`, `:objective`, `:preserved`, `:check`, `:explain`, and
-    `:where` are accepted; any other `:`-command is refused ("Only :show, ... work
-    while editing"), and every line not starting with `:` is replacement
-    text. The read-only commands leave the queue unchanged. The prompt is
-    `edit>` (for `:deassert`, `edit (deasserting <constraint>)>`).
+    `:show`, `:list`, `:objective`, `:preserved`, `:check`, `:explain`,
+    `:where`, and `:stats` are accepted; any other `:`-command is refused
+    ("Only :show, ... work while editing"), and every line not starting
+    with `:` is replacement text. The read-only commands leave the queue
+    unchanged. The prompt is `edit>` (for `:deassert`,
+    `edit (deasserting <constraint>)>`).
 
   - **TUI**: `:edit` (cursor on the last line) or `:edit n`/`:edit n-m`
     (cursor on `n`; nothing is queued) opens the Vim-style editor in the
@@ -787,7 +808,7 @@ formulas are not supported.
     removes all.
   - `:restart` — mark every line unchecked, keeping them all.
   - `:show`, `:list`, `:objective`, `:preserved`, `:check`, `:explain`,
-    `:where` work as usual.
+    `:where`, `:stats` work as usual.
   - `:done` (or Esc in the TUI) leaves.
 
   `:step`/`:back`/`:continue`/`:until`/`:restart` are each one undo step.

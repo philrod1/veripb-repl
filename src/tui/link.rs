@@ -316,6 +316,27 @@ mod tests {
     }
 
     #[test]
+    fn clicking_a_title_shows_that_panes_stats() {
+        let Some((_file, mut app)) = app() else {
+            return;
+        };
+        let layout = app.last_layout.unwrap();
+        for (pane, heading) in [
+            (Pane::Formula, "Formula: "),
+            (Pane::Database, "Database: "),
+            (Pane::Proof, "Proof: "),
+        ] {
+            let x = layout.content_x0(pane) + 2;
+            assert_eq!(layout.top_header_at(x, 0), Some(pane));
+            assert_eq!(layout.top_header_at(x, 1), None);
+            app.show_stats(pane);
+            let shown =
+                (0..app.scrollback.len()).any(|i| app.scrollback.get(i).starts_with(heading));
+            assert!(shown, "{heading}");
+        }
+    }
+
+    #[test]
     fn clicking_a_reference_in_a_line_shows_its_constraint() {
         let Some((_file, mut app)) = app() else {
             return;

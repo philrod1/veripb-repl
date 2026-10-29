@@ -309,6 +309,28 @@ impl Layout {
         None
     }
 
+    /// Which top pane's header the cell (`column`, `row`) is in, buttons
+    /// included (see [`Self::header_button_at`]); `None` off the top
+    /// panes' header row.
+    pub fn top_header_at(&self, column: u16, row: u16) -> Option<Pane> {
+        if row != 0 || self.output_fullscreen() {
+            return None;
+        }
+        if let Some((pane, _)) = self.zoomed_top_pane() {
+            return Some(pane);
+        }
+        let [w1, w2, _] = self.cols;
+        if (1..=w1).contains(&column) {
+            Some(Pane::Formula)
+        } else if (2 + w1..2 + w1 + w2).contains(&column) {
+            Some(Pane::Database)
+        } else if column >= 3 + w1 + w2 {
+            Some(Pane::Proof)
+        } else {
+            None
+        }
+    }
+
     /// Which pane's header button (if any) sits at (`column`, `row`).
     /// `Output`'s live in its own header row ([`Self::output_header_row`])
     /// — at the row's right edge, same as every other pane's: `single_width`
