@@ -183,6 +183,9 @@ pub struct Session {
     /// [`Self::dry_run_conclusion`]'s results for a `generation`, by
     /// conclusion.
     conclusion_cache: std::cell::RefCell<(u64, ahash::AHashMap<String, DryRun>)>,
+    /// The lowest buffer index changed since `database_cache` was last
+    /// filled (`usize::MAX` if none); see [`Self::sync_changes`].
+    changed_since_database: std::cell::Cell<usize>,
     /// Set by [`Self::database`], cleared when a verify run refreshes the
     /// cache from its own dump: verify runs dump the database only while it
     /// is in use.
@@ -198,13 +201,10 @@ pub struct Session {
 /// the error computing them.
 struct DatabaseCache {
     generation: u64,
-    contents: Result<
-        (
-            std::rc::Rc<checker::Database>,
-            ahash::AHashMap<String, isize>,
-        ),
-        String,
-    >,
+    /// The `checked_len` and `FormulaLines::epoch` it was computed for.
+    checked_len: usize,
+    epoch: u64,
+    contents: DatabaseContents,
     /// [`Session::labels_by_id`], once asked for.
     labels_by_id: std::cell::OnceCell<std::rc::Rc<LabelsById>>,
     /// [`Session::live_labels`], once asked for.
@@ -229,6 +229,16 @@ type VerifyDumps = (
 /// [`Session::dry_run_conclusion`]'s result: the checker's output, and the
 /// rejection message if the conclusion doesn't hold.
 pub type DryRun = (String, Result<(), String>);
+
+/// [`DatabaseCache::contents`]: the database and every label's constraint ID,
+/// or the error computing them.
+type DatabaseContents = Result<
+    (
+        std::rc::Rc<checker::Database>,
+        ahash::AHashMap<String, isize>,
+    ),
+    String,
+>;
 
 /// Each constraint ID's labels, sorted.
 pub type LabelsById = ahash::AHashMap<isize, Vec<String>>;
@@ -302,6 +312,7 @@ impl Session {
             objective_cache: std::cell::RefCell::new(None),
             conclusion_cache: std::cell::RefCell::default(),
             database_wanted: std::cell::Cell::new(false),
+            changed_since_database: std::cell::Cell::new(usize::MAX),
             line_ids: std::cell::RefCell::default(),
             formula_file: std::cell::RefCell::new(None),
         })
@@ -458,7 +469,7 @@ impl Session {
             &*self.database_cache.borrow(),
             Some(cache) if cache.generation == self.generation
         );
-        if !fresh {
+        if !fresh && !self.database_from_longer_prefix() {
             self.refresh_database(&[]);
         }
         match &self
@@ -479,12 +490,80 @@ impl Session {
         let contents = self
             .compute_database(extra)
             .map_err(|err| format!("{err:#}"));
+        self.set_database_cache(contents);
+    }
+
+    /// Makes `contents` the database cache for the current state.
+    fn set_database_cache(&self, contents: DatabaseContents) {
+        self.sync_changes();
+        self.changed_since_database.set(usize::MAX);
         *self.database_cache.borrow_mut() = Some(DatabaseCache {
             generation: self.generation,
+            checked_len: self.checked_len,
+            epoch: self.formula.epoch(),
             contents,
             labels_by_id: std::cell::OnceCell::new(),
             live_labels: std::cell::OnceCell::new(),
         });
+    }
+
+    /// Makes the database for the current state from the cached one for a
+    /// longer checked prefix, without running `veripb`, if every line
+    /// between only adds constraints (see
+    /// [`checker::parse::constraints_added`]) and nothing before them or in
+    /// the formula changed since: each such line's constraint has the
+    /// highest ID yet, so the shorter prefix's database is the longer one's
+    /// without its newest entries. Returns whether it did.
+    fn database_from_longer_prefix(&self) -> bool {
+        self.sync_changes();
+        let (added, relabel) = {
+            let cache = self.database_cache.borrow();
+            let Some(cache) = cache.as_ref() else {
+                return false;
+            };
+            if cache.contents.is_err()
+                || cache.epoch != self.formula.epoch()
+                || cache.checked_len <= self.checked_len
+                || self.changed_since_database.get() < cache.checked_len
+            {
+                return false;
+            }
+            let between = &self.buffer[self.checked_len..cache.checked_len];
+            let Some(added) = between
+                .iter()
+                .map(|line| checker::parse::constraints_added(line))
+                .sum::<Option<usize>>()
+            else {
+                return false;
+            };
+            let relabel = between
+                .iter()
+                .any(|line| !checker::parse::leading_labels(line).is_empty());
+            (added, relabel)
+        };
+        if relabel && !self.lines_to_trace(self.checked_len, &[]).is_empty() {
+            return false;
+        }
+        let labels = relabel.then(|| self.labels_from_kept_ids());
+
+        let mut cache = self.database_cache.borrow_mut();
+        let cache = cache.as_mut().expect("checked above");
+        let Ok((database, cached_labels)) = &mut cache.contents else {
+            return false;
+        };
+        let keep = database.entries.len().saturating_sub(added);
+        if database.entries.len() < added || database.entries[keep..].iter().any(|e| e.is_core) {
+            return false;
+        }
+        std::rc::Rc::make_mut(database).entries.truncate(keep);
+        if let Some(labels) = labels {
+            *cached_labels = labels;
+        }
+        cache.generation = self.generation;
+        cache.checked_len = self.checked_len;
+        cache.labels_by_id = std::cell::OnceCell::new();
+        cache.live_labels = std::cell::OnceCell::new();
+        true
     }
 
     /// Runs `veripb` over `buffer[..checked_len]` for [`Self::database`]:
@@ -561,12 +640,8 @@ impl Session {
         if !self.lines_to_trace(self.checked_len, &[]).is_empty() {
             return;
         }
-        *self.database_cache.borrow_mut() = Some(DatabaseCache {
-            generation: self.generation,
-            contents: Ok((std::rc::Rc::new(database), self.labels_from_kept_ids())),
-            labels_by_id: std::cell::OnceCell::new(),
-            live_labels: std::cell::OnceCell::new(),
-        });
+        let labels = self.labels_from_kept_ids();
+        self.set_database_cache(Ok((std::rc::Rc::new(database), labels)));
     }
 
     /// The lines before buffer index `end` whose IDs aren't kept that are
@@ -592,9 +667,22 @@ impl Session {
     /// What proof lines derived, as far as it is known, with what edits
     /// since made stale dropped.
     fn line_ids(&self) -> std::cell::RefMut<'_, LineIds> {
-        let mut ids = self.line_ids.borrow_mut();
-        ids.sync(self.formula.epoch(), self.buffer.take_changed_from());
-        ids
+        self.sync_changes();
+        self.line_ids.borrow_mut()
+    }
+
+    /// Passes the buffer's changes since the last call (its low-water mark)
+    /// to what depends on them: the kept line IDs, and
+    /// `changed_since_database`.
+    fn sync_changes(&self) {
+        let changed_from = self.buffer.take_changed_from();
+        self.line_ids
+            .borrow_mut()
+            .sync(self.formula.epoch(), changed_from);
+        if let Some(idx) = changed_from {
+            self.changed_since_database
+                .set(self.changed_since_database.get().min(idx));
+        }
     }
 
     /// Keeps what each line traced in `trace` (a checker's output for the
@@ -1868,9 +1956,11 @@ mod tests {
     /// one that doesn't, or a comment (which shifts the IDs after it).
     fn random_line(rng: &mut Rng) -> String {
         let label = ["", "@a ", "@b ", "@c "][rng.below(4)];
-        match rng.below(8) {
+        match rng.below(10) {
             0 => format!("{label}rup 1 x1 >= 1 ;"),
             1 | 2 => "% derives nothing".to_string(),
+            3 => format!("{label}pol 1 2 + ;"),
+            4 => format!("{label}a 1 x{} >= 1 ;", rng.below(CHAIN) + 1),
             _ => format!("{label}rup 1 ~x{} >= 1 ;", rng.below(CHAIN) + 1),
         }
     }
@@ -2204,5 +2294,63 @@ mod tests {
         assert_eq!(runs, 0);
         assert_eq!(labels["@l0"], (CHAIN + 1) as isize);
         assert_eq!(labels[&format!("@l{}", n - 1)], (CHAIN + n) as isize);
+    }
+
+    #[test]
+    fn stepping_back_over_added_constraints_runs_nothing() {
+        if !have_veripb() {
+            return;
+        }
+        let (_file, mut session) = chain_session();
+        for line in [
+            format!("@p rup 1 ~x{CHAIN} >= 1 ;"),
+            "rup 1 ~x7 >= 1 ;".to_string(),
+            format!("del id {} ;", CHAIN + 1),
+            "@q rup 1 ~x7 >= 1 ;".to_string(),
+            "% a comment".to_string(),
+            "pol 1 2 + ;".to_string(),
+            "@q rup 1 ~x6 >= 1 ;".to_string(),
+        ] {
+            session.buffer.push(line);
+        }
+        session.database().unwrap();
+        session.drive_forward().unwrap();
+        assert_eq!(session.checked_len, 7);
+        let held = session.database().unwrap();
+
+        // Back over each line in turn: only the `del` line needs a run.
+        for expected_runs in [0, 0, 0, 0, 1, 0, 0] {
+            session.step_back().unwrap();
+            let (database, runs, _) = counting(|| session.database().unwrap());
+            assert_eq!(runs, expected_runs, "back to {}", session.checked_len);
+            assert_eq!(
+                entries(&database),
+                entries(&fresh_database(&session)),
+                "back to {}",
+                session.checked_len
+            );
+            assert_eq!(session.label_ids(), traced_labels(&session));
+        }
+        assert_eq!(
+            held.entries.len(),
+            CHAIN + 4,
+            "a database handed out is unchanged"
+        );
+    }
+
+    #[test]
+    fn an_edit_after_the_database_stops_stepping_back_from_it() {
+        if !have_veripb() {
+            return;
+        }
+        let (_file, mut session) = chain_session();
+        push_labelled(&mut session, 6);
+        session.database().unwrap();
+        session.drive_forward().unwrap();
+        session.set_line(4, "rup 1 ~x2 >= 1 ;").unwrap();
+        session.step_back().unwrap();
+        let (database, runs, _) = counting(|| session.database().unwrap());
+        assert_eq!(runs, 1);
+        assert_eq!(entries(&database), entries(&fresh_database(&session)));
     }
 }

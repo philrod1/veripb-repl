@@ -50,6 +50,21 @@ pub fn rule_keyword(line: &str) -> Option<&str> {
     line.split_whitespace().find(|t| !t.starts_with('@'))
 }
 
+/// Returns how many constraints an accepted proof `line` adds to the
+/// database, if that is all it does: 1 for `rup`, `pol`, `a` and `ia` (the
+/// new constraint gets the next ID, even if it repeats one already there),
+/// 0 for a `%` comment. `None` for any other rule, which may also delete,
+/// change or scope constraints.
+pub fn constraints_added(line: &str) -> Option<usize> {
+    if line.trim_start().starts_with('%') {
+        return Some(0);
+    }
+    match rule_keyword(line) {
+        Some("rup" | "pol" | "a" | "ia") => Some(1),
+        _ => None,
+    }
+}
+
 /// Returns the `@label`s at the start of a proof or formula line, in order.
 pub fn leading_labels(line: &str) -> Vec<&str> {
     line.split_whitespace().take_while(|t| t.starts_with('@')).collect()
