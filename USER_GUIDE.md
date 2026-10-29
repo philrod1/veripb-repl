@@ -124,6 +124,7 @@ back as it was. What a query does:
 | `rup ~x7` | Show only the lines containing the text, ignoring case. Leading and trailing spaces are dropped. In the Database pane, labels count as part of the text. |
 | `/x7\b/` | Show only the lines matching the regular expression (the closing `/` is optional). Case-sensitive unless it starts with `(?i)`. |
 | `"123"` | Show only the lines containing `123`, spaces included (the closing `"` is optional). |
+| `core:`, `derived: x5` | Database only: show only core (or derived) constraints, and of those only the ones the rest of the query matches; a number or `$` is text here. Other panes search for the text. |
 
 A line you go to is placed a third of the way down the pane and
 highlighted until the pane next scrolls. A filtered pane's title says how

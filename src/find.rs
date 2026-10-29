@@ -11,6 +11,10 @@
 //! - `"text"` shows the lines containing `text`, taken literally (the
 //!   closing `"` is optional).
 //! - Anything else shows the lines containing it, ignoring case.
+//!
+//! In the Database pane, a query may start with `core:` or `derived:`
+//! (see [`constraint_kind`]) to show only those constraints; the rest of
+//! it then only filters.
 
 use regex::{Regex, RegexBuilder};
 
@@ -63,6 +67,33 @@ impl Query {
         }
         Ok(Some(Query::Filter(Filter::text(query))))
     }
+}
+
+impl Query {
+    /// The filter for this query where it can't go to a line: `query`'s
+    /// text for a number or `$`, else the query's own filter.
+    pub fn into_filter(self, query: &str) -> Filter {
+        match self {
+            Query::Filter(filter) | Query::Label(_, filter) => filter,
+            Query::End | Query::Line(_) => Filter::text(query.trim()),
+        }
+    }
+}
+
+/// A Database query's leading `core:` or `derived:` (in any case): whether
+/// it asks for core (`Some(true)`) or derived (`Some(false)`) constraints,
+/// and the rest of the query. `None` and the whole query without either.
+pub fn constraint_kind(query: &str) -> (Option<bool>, &str) {
+    let trimmed = query.trim_start();
+    for (prefix, core) in [("core:", true), ("derived:", false)] {
+        if trimmed
+            .get(..prefix.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+        {
+            return (Some(core), &trimmed[prefix.len()..]);
+        }
+    }
+    (None, query)
 }
 
 impl Filter {
@@ -139,6 +170,14 @@ mod tests {
         assert!(!filter("/RUP/").matches("rup"));
         assert!(filter("/(?i)RUP/").matches("rup"));
         assert!(Query::parse("/x(").is_err());
+    }
+
+    #[test]
+    fn core_and_derived_prefixes_split_off() {
+        assert_eq!(constraint_kind("core:"), (Some(true), ""));
+        assert_eq!(constraint_kind("  Derived: x5"), (Some(false), " x5"));
+        assert_eq!(constraint_kind("core x5"), (None, "core x5"));
+        assert_eq!(constraint_kind("cor€"), (None, "cor€"));
     }
 
     #[test]
