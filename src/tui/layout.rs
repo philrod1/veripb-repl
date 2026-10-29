@@ -23,8 +23,9 @@
 //! displaces and in degree: `Wide` (semi-maximise) shrinks the top area
 //! down to *its* floor instead — all three columns stay visible, just
 //! squeezed to a few lines — while `Full` (full-maximise) removes the top
-//! area entirely, so Output alone fills the screen. Every zoomable header
-//! carries two small buttons toggling this, `[▭]` then `[⛶]`, laid out by
+//! area entirely, so Output alone fills the screen. Every header carries
+//! two small buttons toggling this, `[▭]` then `[⛶]` (after a `[/]` that
+//! opens the pane's find, on the three top panes), laid out by
 //! `button_offsets` below and drawn by `draw::title_segment` at the exact
 //! same columns this module hit-tests clicks against, so the two can
 //! never disagree about where a button actually is. For the three top
@@ -47,19 +48,36 @@ const TOP_FLOOR: u16 = 3;
 /// zoomed to `Full` (3 scrollback + prompt).
 const BOTTOM_FLOOR: u16 = 4;
 
-/// Every pane offers both zoom levels — `Wide` then `Full`, left to
-/// right on its header. `Output`'s levels mean something different from a
-/// top pane's (see the module docs), but the two-buttons-in-that-order
-/// shape is the same across all four panes.
-pub(crate) fn zoom_levels(_pane: Pane) -> &'static [Zoom] {
-    &[Zoom::Wide, Zoom::Full]
+/// A header button: open the pane's find (`[/]`), or zoom the pane.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HeaderButton {
+    Find,
+    Zoom(Zoom),
+}
+
+/// A pane's header buttons, left to right: `[/]` on the three top panes,
+/// then both zoom levels, `Wide` then `Full`. `Output`'s levels mean
+/// something different from a top pane's (see the module docs), but the
+/// two zoom buttons are the same across all four panes.
+pub(crate) fn header_buttons(pane: Pane) -> &'static [HeaderButton] {
+    match pane {
+        Pane::Output => &[
+            HeaderButton::Zoom(Zoom::Wide),
+            HeaderButton::Zoom(Zoom::Full),
+        ],
+        _ => &[
+            HeaderButton::Find,
+            HeaderButton::Zoom(Zoom::Wide),
+            HeaderButton::Zoom(Zoom::Full),
+        ],
+    }
 }
 
 /// Total header columns `levels`' buttons occupy, gap included — e.g.
-/// `" [▭][⛶]"` (7) for two, `" [⛶]"` (4) for one. `pub(crate)` so
+/// `" [/][▭][⛶]"` (10) for three, `" [⛶]"` (4) for one. `pub(crate)` so
 /// `draw::title_segment` reserves exactly this much rather than a
 /// separately-maintained magic number.
-pub(crate) fn button_zone(levels: &[Zoom]) -> u16 {
+pub(crate) fn button_zone(levels: &[HeaderButton]) -> u16 {
     if levels.is_empty() {
         0
     } else {
@@ -72,12 +90,12 @@ pub(crate) fn button_zone(levels: &[Zoom]) -> u16 {
 /// columns), so a very narrow pane doesn't render as all-buttons-no-title.
 const TITLE_SLIVER: u16 = 4;
 
-/// Where a pane's zoom buttons sit, as columns from that pane's own left
+/// Where a pane's header buttons sit, as columns from that pane's own left
 /// edge (0-based), one offset per entry in `levels` (same order), each 3
 /// columns wide (`[X]`), flush against the pane's right edge. `None` when
 /// `levels` is empty or `pane_width` is too narrow to show them (see
 /// `TITLE_SLIVER`).
-pub(crate) fn button_offsets(pane_width: u16, levels: &[Zoom]) -> Option<Vec<u16>> {
+pub(crate) fn button_offsets(pane_width: u16, levels: &[HeaderButton]) -> Option<Vec<u16>> {
     if levels.is_empty() || pane_width < button_zone(levels) + TITLE_SLIVER {
         return None;
     }
@@ -288,7 +306,7 @@ impl Layout {
         None
     }
 
-    /// Which pane's zoom button (if any) sits at (`column`, `row`).
+    /// Which pane's header button (if any) sits at (`column`, `row`).
     /// `Output`'s live in its own header row ([`Self::output_header_row`])
     /// — at the row's right edge, same as every other pane's: `single_width`
     /// wide, starting right after the left border, when a top pane is
@@ -302,18 +320,18 @@ impl Layout {
     /// header's "buttons at the pane's own right edge" rule. A top pane's
     /// own header (`row == 0`, whichever top pane(s) are actually visible)
     /// is the other case, each only where the pane in question is wide
-    /// enough to show its buttons at all (see `button_offsets`). The
-    /// returned `Zoom` is which level that specific button toggles, not
-    /// necessarily the pane's current one — `App` decides what a click
-    /// actually does (see `App::toggle_zoom`).
-    pub fn header_button_at(&self, column: u16, row: u16) -> Option<(Pane, Zoom)> {
+    /// enough to show its buttons at all (see `button_offsets`). A zoom
+    /// button's level is the one that button toggles, not necessarily the
+    /// pane's current one — `App` decides what a click actually does (see
+    /// `App::toggle_zoom`).
+    pub fn header_button_at(&self, column: u16, row: u16) -> Option<(Pane, HeaderButton)> {
         if row == self.output_header_row() {
             let (start, width) = if self.output_fullscreen() || self.zoomed_top_pane().is_some() {
                 (1u16, self.single_width)
             } else {
                 (3 + self.cols[0] + self.cols[1], self.cols[2])
             };
-            let levels = zoom_levels(Pane::Output);
+            let levels = header_buttons(Pane::Output);
             let offsets = button_offsets(width, levels)?;
             let col = column.checked_sub(start)?;
             if col >= width {
@@ -325,7 +343,7 @@ impl Layout {
             return None;
         }
         if let Some((pane, _)) = self.zoomed_top_pane() {
-            let levels = zoom_levels(pane);
+            let levels = header_buttons(pane);
             let offsets = button_offsets(self.single_width, levels)?;
             let col = column.checked_sub(1)?;
             return Self::button_hit(pane, col, &offsets, levels);
@@ -336,7 +354,7 @@ impl Layout {
             (Pane::Database, 2 + w1, w2),
             (Pane::Proof, 3 + w1 + w2, w3),
         ] {
-            let levels = zoom_levels(pane);
+            let levels = header_buttons(pane);
             let Some(offsets) = button_offsets(width, levels) else {
                 continue;
             };
@@ -356,7 +374,12 @@ impl Layout {
     /// Whether `col` (already relative to the pane's own left edge) lands
     /// on one of its 3-column-wide buttons — `offsets`/`levels` paired up
     /// index-for-index, as `button_offsets` returns them.
-    fn button_hit(pane: Pane, col: u16, offsets: &[u16], levels: &[Zoom]) -> Option<(Pane, Zoom)> {
+    fn button_hit(
+        pane: Pane,
+        col: u16,
+        offsets: &[u16],
+        levels: &[HeaderButton],
+    ) -> Option<(Pane, HeaderButton)> {
         offsets
             .iter()
             .zip(levels)

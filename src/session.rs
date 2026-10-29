@@ -366,6 +366,17 @@ impl Session {
         }
     }
 
+    /// Returns label `name`'s constraint ID, as [`Self::label_ids`] has it.
+    pub fn label_id(&self, name: &str) -> Option<isize> {
+        if self.database().is_ok()
+            && let Some(cache) = &*self.database_cache.borrow()
+            && let Ok((_, labels)) = &cache.contents
+        {
+            return labels.get(name).copied();
+        }
+        self.formula_labels().get(name).copied()
+    }
+
     /// Returns [`Self::label_ids`] inverted: each constraint ID's labels,
     /// sorted. Cached with [`Self::database`].
     pub fn labels_by_id(&self) -> std::rc::Rc<LabelsById> {

@@ -27,7 +27,8 @@ use crossterm::{cursor, queue, style::Color, style::Print, style::Stylize, termi
 use crate::checker::Database;
 use crate::commands::edit;
 use crate::session::Session;
-use crate::tui::layout::{self, Layout};
+use crate::tui::find::PaneFind;
+use crate::tui::layout::{self, HeaderButton, Layout};
 use crate::tui::{App, Pane, Zoom, theme::Theme};
 use crate::varnames::VarNames;
 
@@ -270,6 +271,50 @@ impl PaneContent<'_> {
     }
 }
 
+/// `content` as a find leaves it: only `find`'s rows if it filters the
+/// pane, and row `jumped` highlighted.
+fn found<'a>(
+    content: PaneContent<'a>,
+    find: Option<&'a PaneFind>,
+    jumped: Option<usize>,
+) -> PaneContent<'a> {
+    let PaneContent {
+        total,
+        longest,
+        line,
+    } = content;
+    let line = move |i| {
+        let mut line = line(i);
+        line.cursor |= jumped == Some(i);
+        line
+    };
+    match find {
+        Some(find) if find.rows.last().is_none_or(|&row| row < total) => {
+            let rows = &find.rows;
+            PaneContent {
+                total: rows.len(),
+                longest,
+                line: Box::new(move |i| line(rows[i])),
+            }
+        }
+        _ => PaneContent {
+            total,
+            longest,
+            line: Box::new(line),
+        },
+    }
+}
+
+/// A filtered pane's count for its title: `"12 of 400 matching rup"`.
+pub(super) fn matching(find: Option<&PaneFind>, total: usize) -> Option<String> {
+    let find = find?;
+    Some(format!(
+        "{} of {total} matching {}",
+        find.rows.len(),
+        find.text.trim()
+    ))
+}
+
 /// A top pane ready to render row by row: visible content plus scrollbar
 /// geometry. Scrollbars take space from the pane itself (last column /
 /// last row).
@@ -400,10 +445,24 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     // `Some` only when a top pane is solo-zoomed; `None` when nothing or
     // `Output` is zoomed. See `Layout::zoomed_top_pane`.
     let zoomed_pane = layout.zoomed_top_pane().map(|(pane, _)| pane);
-    let output_zoom = match layout.zoomed {
-        Some((Pane::Output, level)) => Some(level),
-        _ => None,
+    // The header buttons drawn active: the pane's zoom level, and `[/]`
+    // while the pane has a find.
+    let finding = [Pane::Formula, Pane::Database, Pane::Proof].map(|pane| app.find_shown(pane));
+    let active_buttons = |pane: Pane| -> Vec<HeaderButton> {
+        let zoom = layout
+            .zoomed
+            .filter(|&(zoomed, _)| zoomed == pane)
+            .map(|(_, level)| HeaderButton::Zoom(level));
+        let find = match pane {
+            Pane::Formula => finding[0],
+            Pane::Database => finding[1],
+            Pane::Proof => finding[2],
+            Pane::Output => false,
+        }
+        .then_some(HeaderButton::Find);
+        zoom.into_iter().chain(find).collect()
     };
+    let output_active = active_buttons(Pane::Output);
     // `Output` full-maximised: `top_h == 0` and no top `PaneView` is built
     // (`pane_view` underflows on zero height).
     let output_fullscreen = layout.output_fullscreen();
@@ -424,12 +483,22 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     };
 
     // Panel content and titles. Only the rows on screen are built (see
-    // `PaneContent`).
+    // `PaneContent`). A filtered pane shows only its find's rows (see
+    // `found`).
+    app.refresh_find(Pane::Formula);
+    app.refresh_find(Pane::Proof);
+    let jumped = |pane| app.jumped.filter(|&(at, _)| at == pane).map(|(_, row)| row);
+    let (formula_jumped, database_jumped, proof_jumped) = (
+        jumped(Pane::Formula),
+        jumped(Pane::Database),
+        jumped(Pane::Proof),
+    );
     let formula_title = match &app.session {
         Some(session) => format!(
             "Formula: {} ({})",
             file_name(&session.formula_path),
-            session.formula_constraint_count()
+            matching(app.find(Pane::Formula), session.formula.len())
+                .unwrap_or_else(|| session.formula_constraint_count().to_string())
         ),
         None => "Formula".to_string(),
     };
@@ -439,6 +508,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             Some(session) => formula_content(session, formula_cursor, &mut app.pane_widths),
             None => PaneContent::whole(vec![pinned("(no formula loaded)".to_string())]),
         };
+        let content = found(content, app.finds[0].as_ref(), formula_jumped);
         pane_view(
             content,
             pane_w(Pane::Formula, w1),
@@ -466,11 +536,16 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
         }
         _ => None,
     };
+    if database_db.as_ref().is_some_and(Result::is_ok) {
+        app.refresh_find(Pane::Database);
+    }
     let (database_total, database) = match (&app.session, &database_db) {
         (Some(session), Some(db)) => {
             let content =
                 database_content(session, db, &hint_vars, &debug_ids, &mut app.pane_widths);
             let total = content.total;
+            let find = app.finds[1].as_ref().filter(|_| db.is_ok());
+            let content = found(content, find, database_jumped);
             let view = pane_view(
                 content,
                 pane_w(Pane::Database, w2),
@@ -493,20 +568,23 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             }),
         ),
     };
+    let database_count =
+        matching(app.find(Pane::Database), database_total).unwrap_or(database_total.to_string());
     let database_title = match &deassert_target {
         // Same phrasing as the Output heading.
-        Some(source) => format!("Database ({database_total}) (deasserting {source})"),
-        None => format!("Database ({database_total})"),
+        Some(source) => format!("Database ({database_count}) (deasserting {source})"),
+        None => format!("Database ({database_count})"),
     };
 
     let proof_title = match &app.session {
         Some(session) => {
             let total = session.buffer.len();
+            let count = matching(app.find(Pane::Proof), total).unwrap_or(total.to_string());
             let unchecked = total - session.checked_len;
             if unchecked > 0 {
-                format!("Proof ({total}) ({unchecked} unchecked)")
+                format!("Proof ({count}) ({unchecked} unchecked)")
             } else {
-                format!("Proof ({total})")
+                format!("Proof ({count})")
             }
         }
         None => "Proof (0)".to_string(),
@@ -550,6 +628,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             ),
             None => PaneContent::whole(Vec::new()),
         };
+        let content = found(content, app.finds[2].as_ref(), proof_jumped);
         pane_view(
             content,
             proof_w,
@@ -599,8 +678,8 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
                 Some(&output_title),
                 inner,
                 app.focus == Pane::Output,
-                layout::zoom_levels(Pane::Output),
-                output_zoom,
+                layout::header_buttons(Pane::Output),
+                &output_active,
                 theme
             ),
             chrome("┐", theme),
@@ -618,8 +697,8 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
                         Some(&formula_title),
                         w1,
                         app.focus == Pane::Formula,
-                        layout::zoom_levels(Pane::Formula),
-                        None,
+                        layout::header_buttons(Pane::Formula),
+                        &active_buttons(Pane::Formula),
                         theme
                     ),
                     chrome("┬", theme),
@@ -627,8 +706,8 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
                         Some(&database_title),
                         w2,
                         app.focus == Pane::Database,
-                        layout::zoom_levels(Pane::Database),
-                        None,
+                        layout::header_buttons(Pane::Database),
+                        &active_buttons(Pane::Database),
                         theme
                     ),
                     chrome("┬", theme),
@@ -636,8 +715,8 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
                         Some(&proof_title),
                         w3,
                         app.focus == Pane::Proof,
-                        layout::zoom_levels(Pane::Proof),
-                        None,
+                        layout::header_buttons(Pane::Proof),
+                        &active_buttons(Pane::Proof),
                         theme
                     ),
                     chrome("┐", theme),
@@ -660,14 +739,14 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
                         Some(&output_title),
                         inner,
                         app.focus == Pane::Output,
-                        layout::zoom_levels(Pane::Output),
-                        output_zoom,
+                        layout::header_buttons(Pane::Output),
+                        &output_active,
                         theme
                     ),
                     chrome("┤", theme),
                 ));
             }
-            Some((pane, level)) => {
+            Some((pane, _)) => {
                 let (title, view) = match pane {
                     Pane::Formula => (&formula_title, formula.as_ref()),
                     Pane::Database => (&database_title, database.as_ref()),
@@ -684,8 +763,8 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
                         Some(title),
                         inner,
                         app.focus == pane,
-                        layout::zoom_levels(pane),
-                        Some(level),
+                        layout::header_buttons(pane),
+                        &active_buttons(pane),
                         theme
                     ),
                     chrome("┐", theme),
@@ -700,8 +779,8 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
                         Some(&output_title),
                         inner,
                         app.focus == Pane::Output,
-                        layout::zoom_levels(Pane::Output),
-                        output_zoom,
+                        layout::header_buttons(Pane::Output),
+                        &output_active,
                         theme
                     ),
                     chrome("┤", theme),
@@ -743,19 +822,32 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             None => format!("{bar}{cell}{bar}"),
         });
     }
-    // Prompt label indicates the mode: `debug>` / `opb>` (formula browse)
-    // drawn in `theme.cursor_accent`, else `pbp>`. Vim mode replaces the
-    // whole row with its `-- NORMAL --`/`-- INSERT --` status.
+    // Prompt label indicates the mode: `Proof/` (a find query, in that
+    // pane) / `debug>` / `opb>` (formula browse) drawn in
+    // `theme.cursor_accent`, else `pbp>`. Vim mode replaces the whole row
+    // with its `-- NORMAL --`/`-- INSERT --` status.
     let editing = app.formula_editing();
     let debugging = app.debug_active();
-    let prompt_label = if debugging {
-        DEBUG_PROMPT
-    } else if editing {
-        FORMULA_PROMPT
-    } else {
-        NORMAL_PROMPT
+    let find_input = app.find_input.as_ref();
+    let prompt_label = match find_input.map(|input| input.pane) {
+        Some(Pane::Formula) => "Formula/ ",
+        Some(Pane::Database) => "Database/ ",
+        Some(_) => "Proof/ ",
+        None if debugging => DEBUG_PROMPT,
+        None if editing => FORMULA_PROMPT,
+        None => NORMAL_PROMPT,
     };
-    let (input_view, cursor_offset) = app.editor.view(inner - prompt_label.len());
+    // Why the find query does nothing, after it.
+    let note = find_input
+        .and_then(|input| input.note.as_ref())
+        .map(|note| fit(&format!("  ({note})"), inner / 2))
+        .unwrap_or_default();
+    let input_w = inner - prompt_label.len() - note.chars().count();
+    let prompt_editor = match find_input {
+        Some(_) => &app.find_editor,
+        None => &app.editor,
+    };
+    let (input_view, cursor_offset) = prompt_editor.view(input_w);
     if app.vim_active() {
         let status_text = if app.vim_inserting() {
             "-- INSERT --  Esc commits the line · Enter splits it"
@@ -769,7 +861,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             .to_string();
         rows.push(format!("{bar}{styled}{bar}"));
     } else {
-        let styled_label = if editing || debugging {
+        let styled_label = if editing || debugging || find_input.is_some() {
             prompt_label
                 .with(theme.cursor_accent)
                 .on(theme.bg)
@@ -778,8 +870,9 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
             base(prompt_label, theme)
         };
         rows.push(format!(
-            "{bar}{styled_label}{}{bar}",
-            base(&fit(&input_view, inner - prompt_label.len()), theme)
+            "{bar}{styled_label}{}{}{bar}",
+            base(&fit(&input_view, input_w), theme),
+            note.with(theme.dim).on(theme.bg)
         ));
     }
     for (line, highlighted) in suggestion_rows(
@@ -1502,24 +1595,24 @@ fn scrollback_cell(
 /// A `width`-column border segment `─ Title ────` (title truncated to fit;
 /// dashes only when `title` is `None`), reverse video when `focused`.
 ///
-/// `levels` are the zoom buttons drawn right-aligned, if they fit (see
-/// `layout::button_offsets`); the one equal to `active` (the pane's current
-/// zoom) is drawn in reverse video. Clicks are handled by
-/// `Layout::header_button_at`.
+/// `buttons` are drawn right-aligned, if they fit (see
+/// `layout::button_offsets`); those in `active` (the pane's current zoom,
+/// and `[/]` while the pane has a find) are drawn in reverse video. Clicks
+/// are handled by `Layout::header_button_at`.
 fn title_segment(
     title: Option<&str>,
     width: usize,
     focused: bool,
-    levels: &[Zoom],
-    active: Option<Zoom>,
+    buttons: &[HeaderButton],
+    active: &[HeaderButton],
     theme: Theme,
 ) -> String {
     if width == 0 {
         return String::new();
     }
-    let show_buttons = layout::button_offsets(width as u16, levels).is_some();
+    let show_buttons = layout::button_offsets(width as u16, buttons).is_some();
     let button_zone = if show_buttons {
-        layout::button_zone(levels) as usize
+        layout::button_zone(buttons) as usize
     } else {
         0
     };
@@ -1556,19 +1649,20 @@ fn title_segment(
     };
     if show_buttons {
         out.push_str(&chrome(" ", theme));
-        for &level in levels {
-            let glyph = match level {
-                Zoom::Wide => '▭',
-                Zoom::Full => '⛶',
+        for button in buttons {
+            let glyph = match button {
+                HeaderButton::Find => '/',
+                HeaderButton::Zoom(Zoom::Wide) => '▭',
+                HeaderButton::Zoom(Zoom::Full) => '⛶',
             };
-            out.push_str(&zoom_button(glyph, active == Some(level), theme));
+            out.push_str(&header_button(glyph, active.contains(button), theme));
         }
     }
     out
 }
 
-/// One `[X]` zoom button: reverse video when `active`, else chrome.
-fn zoom_button(glyph: char, active: bool, theme: Theme) -> String {
+/// One `[X]` header button: reverse video when `active`, else chrome.
+fn header_button(glyph: char, active: bool, theme: Theme) -> String {
     let text = format!("[{glyph}]");
     if active {
         text.with(theme.fg).on(theme.bg).reverse().to_string()
