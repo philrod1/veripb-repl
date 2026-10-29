@@ -988,20 +988,6 @@ impl Session {
             }
             CheckOutcome::Rejected { line, .. } => line.checked_sub(PREAMBLE_LINES + 1),
         };
-        // A rule cut off at the end is named by the line after the last
-        // one: it is the last line that isn't blank or a comment.
-        let rejected_idx = rejected_idx.map(|idx| {
-            if idx < boundary {
-                return idx;
-            }
-            (self.checked_len..boundary)
-                .rev()
-                .find(|&i| {
-                    let line = self.buffer[i].trim_start();
-                    !line.is_empty() && !line.starts_with('%')
-                })
-                .unwrap_or(boundary - 1)
-        });
         if let Some(idx) = rejected_idx
             && idx > self.checked_len
             && idx < boundary
