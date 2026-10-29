@@ -19,9 +19,11 @@
 //!   and borders/scrollbar chrome through `chrome`; nothing is printed
 //!   with the terminal's default colours.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::ops::Range;
 
+use crossterm::style::{Attribute, SetAttribute};
 use crossterm::{cursor, queue, style::Color, style::Print, style::Stylize, terminal};
 
 use crate::checker::Database;
@@ -215,6 +217,9 @@ struct PanelLine {
     /// Colour for the first `prefix` char (the breakpoint marker) only; see
     /// `render_prefix`. `None` outside the Proof pane's buffer/preamble.
     marker_color: Option<Color>,
+    /// A Proof line edited in Vim `Insert` mode but not yet committed
+    /// (`VimState::held`); drawn in italics.
+    held: bool,
 }
 
 /// A numbered content line: pinned `prefix`, scrollable styled `text`.
@@ -230,6 +235,7 @@ fn content(prefix: String, text: Vec<Span>, dim: bool) -> PanelLine {
         error: false,
         debug_current: false,
         marker_color: None,
+        held: false,
     }
 }
 
@@ -246,6 +252,7 @@ fn pinned(text: String) -> PanelLine {
         error: false,
         debug_current: false,
         marker_color: None,
+        held: false,
     }
 }
 
@@ -615,6 +622,8 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
         app.bp_hover(),
         app.debug_current_line(),
     );
+    let no_held = BTreeMap::new();
+    let held = app.vim.as_ref().map_or(&no_held, |vim| &vim.held);
     let proof = shown(Pane::Proof).then(|| {
         let content = match &app.session {
             Some(session) => proof_content(
@@ -623,6 +632,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
                 vim_live_text.as_ref().map(|(l, t)| (*l, t.as_str())),
                 proof_hover,
                 proof_debug_line,
+                held,
                 theme,
             ),
             None => PaneContent::whole(Vec::new()),
@@ -872,13 +882,19 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     };
     let (input_view, cursor_offset) = prompt_editor.view(input_w);
     if app.vim_active() {
-        let status_text = if app.vim_inserting() {
-            "-- INSERT --  Esc commits the line · Enter splits it"
-        } else {
+        let status_text = if !app.vim_inserting() {
             "-- NORMAL --  hjkl/arrows move · i/a/o/O insert · x del char · dd del line · \
              : command · Esc leave"
+                .to_string()
+        } else if held.is_empty() {
+            "-- INSERT --  Esc commits the line · Enter splits it".to_string()
+        } else {
+            format!(
+                "-- INSERT --  Esc commits this line and {} more (in italics) · Enter splits it",
+                held.len()
+            )
         };
-        let styled = fit(status_text, inner)
+        let styled = fit(&status_text, inner)
             .with(theme.cursor_accent)
             .on(theme.bg)
             .to_string();
@@ -1102,8 +1118,29 @@ fn row_on_bg(
 
 /// Line `i` of `lines` rendered at exactly `width` columns (blank if past
 /// the end): pinned prefix, then text shifted by `h_offset`, clipped and
-/// padded, then styled per [`PanelLine`]'s priority.
+/// padded, then styled per [`PanelLine`]'s priority; in italics for a
+/// `held` line.
 fn panel_cell(
+    lines: &[PanelLine],
+    i: usize,
+    width: usize,
+    h_offset: usize,
+    theme: Theme,
+) -> String {
+    let cell = panel_row_cell(lines, i, width, h_offset, theme);
+    if lines.get(i).is_some_and(|line| line.held) {
+        format!(
+            "{}{cell}{}",
+            SetAttribute(Attribute::Italic),
+            SetAttribute(Attribute::NoItalic)
+        )
+    } else {
+        cell
+    }
+}
+
+/// [`panel_cell`] without the italics.
+fn panel_row_cell(
     lines: &[PanelLine],
     i: usize,
     width: usize,
@@ -1497,6 +1534,8 @@ fn database_content<'a>(
 ///   only `breakpoint_marker`.
 /// - `debug_current`: buffer index `:debug` is stopped at; marked
 ///   `debug_current` and not dimmed.
+/// - `held`: Vim `Insert` mode's uncommitted edits, by display line; those
+///   lines show their edited text, marked `held`.
 ///
 /// Checked `a`-rule lines are marked `assertion`. Lines at or past
 /// `session.checked_len` are dimmed, except the `session.known_bad` line
@@ -1507,6 +1546,7 @@ fn proof_content<'a>(
     editing: Option<(usize, &'a str)>,
     hover: Option<usize>,
     debug_current: Option<usize>,
+    held: &'a BTreeMap<usize, String>,
     theme: Theme,
 ) -> PaneContent<'a> {
     let preamble = session.preamble_lines();
@@ -1519,6 +1559,7 @@ fn proof_content<'a>(
         .map(|line| line.chars().count())
         .chain([session.buffer.longest_chars()])
         .chain(editing.map(|(_, live)| live.chars().count()))
+        .chain(held.values().map(|text| text.chars().count()))
         .max()
         .unwrap_or(0);
     PaneContent {
@@ -1537,9 +1578,10 @@ fn proof_content<'a>(
             } else {
                 let idx = i - base;
                 let display_line = i + 1;
+                let held_text = held.get(&display_line);
                 let text = match editing {
                     Some((edit_line, live)) if edit_line == display_line => live,
-                    _ => session.buffer[idx].as_str(),
+                    _ => held_text.map_or(session.buffer[idx].as_str(), String::as_str),
                 };
                 let checked = idx < session.checked_len;
                 let (marker, marker_color) =
@@ -1550,6 +1592,7 @@ fn proof_content<'a>(
                     !checked,
                 );
                 line.marker_color = marker_color;
+                line.held = held_text.is_some();
                 line.assertion = checked && edit::is_assertion_line(text);
                 if !checked && idx == session.checked_len && session.known_bad.is_some() {
                     line.dim = false;
@@ -1701,6 +1744,9 @@ mod tests {
     use super::*;
     use crate::tui::theme::ThemeName;
 
+    /// No held Vim edits, for `proof_content`.
+    static NO_HELD: BTreeMap<usize, String> = BTreeMap::new();
+
     /// The pane as `pane_view` built it before `PaneContent`: every line,
     /// then the window.
     fn eager_pane_view(
@@ -1821,14 +1867,15 @@ mod tests {
         let session = session(FORMULA, &proof);
         let theme = ThemeName::default().theme();
         for editing in [None, Some((4, "a much longer line typed in Insert mode ;"))] {
-            let content = || proof_content(session, Some(5), editing, Some(1), None, theme);
+            let content =
+                || proof_content(session, Some(5), editing, Some(1), None, &NO_HELD, theme);
             let all = || {
                 let c = content();
                 (0..c.total).map(|i| (c.line)(i)).collect()
             };
             assert_draws_like(content, all);
         }
-        let c = proof_content(session, Some(5), None, None, None, theme);
+        let c = proof_content(session, Some(5), None, None, None, &NO_HELD, theme);
         assert_eq!(c.total, 2 + proof.len());
         assert!((c.line)(4).cursor);
         assert!(!(c.line)(2).dim && (c.line)(4).dim, "checked vs unchecked");
@@ -1844,7 +1891,7 @@ mod tests {
         }
         let theme = ThemeName::default().theme();
         let longest = |s: &Session| {
-            let c = proof_content(s, None, None, None, None, theme);
+            let c = proof_content(s, None, None, None, None, &NO_HELD, theme);
             let all: Vec<PanelLine> = (0..c.total).map(|i| (c.line)(i)).collect();
             (c.longest, longest_line(&all))
         };

@@ -573,8 +573,9 @@ formulas are not supported.
   accepted proof line, a `:delete`, a whole `:source`, a whole `:verify`,
   a whole plain-frontend `:edit`/`:deassert`/`:insert`/`:formula`
   session, or one commit in the TUI's Vim mode (`x`, `dd`, an `Insert`
-  Esc, an `Insert` Enter line split, an `Insert` Backspace/Delete line
-  join, or an `Insert` arrow move off a changed line). `:undo 3` goes back 3 actions.
+  Esc, an `Insert` Enter line split, or an `Insert` Backspace/Delete line
+  join; each includes the `Insert` edits held until then). `:undo 3` goes
+  back 3 actions.
 
   - At most 200 actions are kept, fewer if together they replaced more
     than 256 MB of lines.
@@ -692,17 +693,22 @@ formulas are not supported.
     `Insert` mode (status line `-- INSERT --`) uses the prompt's line
     editor (←/→, Home/End, Backspace/Delete, Ctrl/Alt+←/→), with the text
     shown in the Proof pane at the cursor line:
-    - Esc commits the line (unchecked) and returns to `Normal` on it.
+    - Esc commits the line, and every line edited since entering
+      `Insert`, as one undo step, and returns to `Normal` on it.
     - Enter splits the line at the cursor: the rest becomes a new next
-      line and `Insert` continues at its start (one undo step).
+      line and `Insert` continues at its start. Lines edited before it
+      are committed with it (one undo step).
     - Backspace at the start of a line joins it onto the previous line;
       Delete at the end of a line joins the next line onto it. The cursor
-      stays at the join (one undo step). Backspace does nothing on the
-      first proof line, Delete nothing on the last.
+      stays at the join. Lines edited before it are committed with it
+      (one undo step). Backspace does nothing on the first proof line,
+      Delete nothing on the last.
     - ↑/↓ move to the previous/next proof line, keeping the column where
       possible; ← at the start / → at the end of a line move to the
-      neighbouring line. Moving off a line commits it only if it changed.
-      Prompt history is not available in `Insert`.
+      neighbouring line. Moving off a changed line commits nothing: it
+      is held, shown with its new text in italics, until Esc, a split or
+      a join (the status line says how many). A line edited back to its
+      old text is not held. Prompt history is not available in `Insert`.
 
     The terminal cursor is shown in the Proof pane in both modes. The
     range form of `:edit n-m` only sets the starting line.

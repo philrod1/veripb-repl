@@ -25,6 +25,7 @@ mod layout;
 mod link;
 mod theme;
 
+use std::collections::BTreeMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -309,6 +310,24 @@ struct VimState {
     /// pane headings and Database-pane highlighting (`draw::draw`) for as
     /// long as the replacement is still being typed.
     deassert_source: Option<String>,
+    /// Lines left in `Insert` with edits not yet committed, by display
+    /// line: drawn with their new text in italics. Esc commits them with
+    /// the current line as one undo step (`vim_commit_insert`); a split or
+    /// join commits them first, since it renumbers lines.
+    held: BTreeMap<usize, String>,
+}
+
+/// Commits `held` (see `VimState::held`) to `session`'s buffer, inside
+/// whatever undo point is open.
+fn commit_held(session: &mut Session, held: BTreeMap<usize, String>) -> anyhow::Result<()> {
+    for (line, text) in held {
+        if let Some(idx) = session.buffer_index(line)
+            && session.buffer[idx] != text
+        {
+            session.set_line(idx, &text)?;
+        }
+    }
+    Ok(())
 }
 
 /// TUI-only interactive formula browsing, entered by `:formula`/`:formula
@@ -1015,6 +1034,7 @@ impl App {
             mode: VimSubMode::Normal,
             pending_d: false,
             deassert_source: None,
+            held: BTreeMap::new(),
         });
         self.scroll_proof_to_cursor(line);
     }
@@ -1687,9 +1707,10 @@ impl App {
             return;
         };
 
+        let held = self.vim.as_mut().map(|vim| std::mem::take(&mut vim.held));
         session.begin_undo_point();
-        let result = session
-            .set_line(idx, &before)
+        let result = commit_held(session, held.unwrap_or_default())
+            .and_then(|()| session.set_line(idx, &before))
             .and_then(|()| session.insert_line(idx + 1, &after));
         session.end_undo_point();
         if let Err(err) = result {
@@ -1737,6 +1758,14 @@ impl App {
             }
             idx
         };
+        // The neighbouring line's text is its held edit, if it has one.
+        let held = self.vim.as_mut().map(|vim| std::mem::take(&mut vim.held));
+        session.begin_undo_point();
+        if let Err(err) = commit_held(session, held.unwrap_or_default()) {
+            session.end_undo_point();
+            self.scrollback.push(&format!("Error: {err:#}"));
+            return;
+        }
         let (upper_text, lower_text) = if backward {
             (session.buffer[upper].clone(), text)
         } else {
@@ -1745,7 +1774,6 @@ impl App {
         let join_col = upper_text.chars().count();
         let merged = format!("{upper_text}{lower_text}");
 
-        session.begin_undo_point();
         let result = session
             .set_line(upper, &merged)
             .and_then(|()| session.delete_line(upper + 1));
@@ -1765,10 +1793,10 @@ impl App {
         self.scroll_proof_to_cursor(joined_line);
     }
 
-    /// Move the Insert cursor to another proof line, committing the
-    /// current line only when its text changed. The destination column is
-    /// clamped to that line's length, matching a text editor's vertical
-    /// cursor movement without marking untouched checked lines unchecked.
+    /// Move the Insert cursor to another proof line, holding the current
+    /// line's edit, if it has one, until Esc (see `VimState::held`). The
+    /// destination column is clamped to that line's length, matching a
+    /// text editor's vertical cursor movement.
     fn vim_insert_move_to(&mut self, line: usize, col: usize) {
         let Some(current_line) = self.vim.as_ref().map(|vim| vim.line) else {
             return;
@@ -1777,7 +1805,7 @@ impl App {
             return;
         }
         let text = self.editor.text();
-        let Some(session) = self.session.as_mut() else {
+        let (Some(session), Some(vim)) = (&self.session, &mut self.vim) else {
             return;
         };
         let Some(current_idx) = session.buffer_index(current_line) else {
@@ -1787,22 +1815,18 @@ impl App {
             return;
         };
 
-        if session.buffer[current_idx] != text {
-            session.begin_undo_point();
-            let result = session.set_line(current_idx, &text);
-            session.end_undo_point();
-            if let Err(err) = result {
-                self.scrollback.push(&format!("Error: {err:#}"));
-                return;
-            }
+        if session.buffer[current_idx] == text {
+            vim.held.remove(&current_line);
+        } else {
+            vim.held.insert(current_line, text);
         }
-
-        let target_text = session.buffer[target_idx].clone();
+        let target_text = vim
+            .held
+            .remove(&line)
+            .unwrap_or_else(|| session.buffer[target_idx].clone());
         let target_col = col.min(target_text.chars().count());
-        if let Some(vim) = &mut self.vim {
-            vim.line = line;
-            vim.col = target_col;
-        }
+        vim.line = line;
+        vim.col = target_col;
         self.editor.set_text(&target_text);
         self.editor.set_cursor(target_col);
         self.scroll_proof_to_cursor(line);
@@ -1843,23 +1867,17 @@ impl App {
                 self.vim_insert_move_to(line + 1, 0);
             }
         } else if !right && col == 0 && line > 3 {
-            let previous_text = self
-                .session
-                .as_ref()
-                .and_then(|session| session.buffer_index(line - 1))
-                .and_then(|idx| self.session.as_ref()?.buffer.get(idx))
-                .cloned()
-                .unwrap_or_default();
-            self.vim_insert_move_to(line - 1, previous_text.chars().count());
+            // The end of the previous line: the column is clamped to it.
+            self.vim_insert_move_to(line - 1, usize::MAX);
         }
     }
 
     /// Esc in `Insert` mode: commit `self.editor`'s current text as the
-    /// line's new content and return to `Normal` on the same line, cursor
-    /// where typing left it — its own independently-undoable action, same
-    /// pattern as every other Vim-mode commit here. Never rejected:
-    /// nothing is checked, so this always succeeds (barring an internal
-    /// replay bug, reported like any other).
+    /// line's new content, with every held edit (`VimState::held`), and
+    /// return to `Normal` on the same line, cursor where typing left it —
+    /// one independently-undoable action. Never rejected: nothing is
+    /// checked, so this always succeeds (barring an internal replay bug,
+    /// reported like any other).
     fn vim_commit_insert(&mut self) {
         let Some(vim) = &self.vim else {
             return;
@@ -1873,13 +1891,15 @@ impl App {
         let Some(idx) = session.buffer_index(line) else {
             return;
         };
-        if session.buffer[idx] != text {
-            session.begin_undo_point();
-            let result = session.set_line(idx, &text);
-            session.end_undo_point();
-            if let Err(err) = result {
-                self.scrollback.push(&format!("Error: {err:#}"));
-            }
+        let held = self.vim.as_mut().map(|vim| std::mem::take(&mut vim.held));
+        session.begin_undo_point();
+        let mut result = commit_held(session, held.unwrap_or_default());
+        if result.is_ok() && session.buffer[idx] != text {
+            result = session.set_line(idx, &text);
+        }
+        session.end_undo_point();
+        if let Err(err) = result {
+            self.scrollback.push(&format!("Error: {err:#}"));
         }
         self.editor.set_text("");
         let len = text.chars().count();
@@ -2992,5 +3012,93 @@ mod tests {
             activity.line(progress),
             ":check · 0 s · run 2 · line 1,251,781 of 2,312,067 (54%)"
         );
+    }
+
+    /// An app on a one-constraint formula with `lines` in the buffer, all
+    /// marked checked (nothing here runs veripb), in Vim `Insert` mode on
+    /// display line `line`.
+    fn inserting(lines: &[&str], line: usize) -> (tempfile::NamedTempFile, App) {
+        use std::io::Write as _;
+        let mut file = tempfile::NamedTempFile::with_suffix(".opb").unwrap();
+        file.write_all(b"1 x1 >= 1 ;\n").unwrap();
+        let mut session = Session::load(file.path().to_str().unwrap()).unwrap();
+        for text in lines {
+            session.buffer.push(text.to_string());
+        }
+        session.checked_len = lines.len();
+        let mut app = App::new(None).unwrap();
+        app.session = Some(session);
+        app.start_vim(line);
+        app.vim_enter_insert(false);
+        (file, app)
+    }
+
+    fn buffer(app: &App) -> Vec<String> {
+        app.session.as_ref().unwrap().buffer.to_vec()
+    }
+
+    const LINES: [&str; 3] = ["rup 1 x1 >= 1 ;", "% two", "% three"];
+
+    #[test]
+    fn moving_between_lines_holds_edits_until_esc() {
+        let (_file, mut app) = inserting(&LINES, 3);
+        app.editor.set_text("% one");
+        app.vim_insert_move_vertical(false);
+        app.editor.set_text("% TWO");
+        app.vim_insert_move_vertical(false);
+        // Edited back to how it was: nothing to hold.
+        app.editor.set_text("% changed");
+        app.vim_insert_move_vertical(true);
+        assert_eq!(app.editor.text(), "% TWO", "back on a held line, its edit");
+        app.vim_insert_move_vertical(false);
+        app.editor.set_text("% three");
+        app.vim_insert_move_vertical(true);
+
+        let held: Vec<usize> = app.vim.as_ref().unwrap().held.keys().copied().collect();
+        assert_eq!(held, [3]);
+        assert_eq!(buffer(&app), LINES, "nothing committed yet");
+        assert_eq!(app.session.as_ref().unwrap().checked_len, 3);
+
+        app.vim_commit_insert();
+        assert_eq!(buffer(&app), ["% one", "% TWO", "% three"]);
+        assert_eq!(app.session.as_ref().unwrap().checked_len, 0);
+        assert!(app.vim.as_ref().unwrap().held.is_empty());
+
+        // One undo step for the lot.
+        let session = app.session.as_mut().unwrap();
+        assert_eq!(session.undo(1), 1);
+        assert_eq!(session.buffer.to_vec(), LINES);
+        assert_eq!(session.checked_len, 3);
+    }
+
+    #[test]
+    fn a_split_or_join_commits_held_edits_first() {
+        let (_file, mut app) = inserting(&LINES, 3);
+        app.editor.set_text("% one");
+        app.vim_insert_move_vertical(false);
+        app.editor.set_cursor(2);
+        app.vim_insert_newline();
+        assert_eq!(buffer(&app), ["% one", "% ", "two", "% three"]);
+        assert!(app.vim.as_ref().unwrap().held.is_empty());
+        assert_eq!(app.session.as_mut().unwrap().undo(1), 1);
+        assert_eq!(buffer(&app), LINES, "the edit and the split are one step");
+
+        // Joining onto a held line joins its edited text.
+        let (_file, mut app) = inserting(&LINES, 4);
+        app.editor.set_text("% TWO");
+        app.vim_insert_move_vertical(false);
+        app.editor.set_cursor(0);
+        app.vim_insert_join(true);
+        assert_eq!(buffer(&app), ["rup 1 x1 >= 1 ;", "% TWO% three"]);
+        assert_eq!(app.editor.text(), "% TWO% three");
+
+        // Nothing to join onto: held edits stay held.
+        let (_file, mut app) = inserting(&LINES, 4);
+        app.editor.set_text("% TWO");
+        app.vim_insert_move_vertical(true);
+        app.editor.set_cursor(0);
+        app.vim_insert_join(true);
+        assert_eq!(buffer(&app), LINES);
+        assert_eq!(app.vim.as_ref().unwrap().held.len(), 1);
     }
 }
