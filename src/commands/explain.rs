@@ -7,8 +7,8 @@
 //! findings. Bare `:explain` targets the rejected line, else the last checked
 //! line. Read-only: replays through a throwaway checker.
 
-use crate::checker::RupHint;
 use crate::checker::parse::{is_rup_line, pol_table_with_typed_operands, rule_keyword};
+use crate::checker::{self, RupHint};
 use crate::commands::help;
 use crate::output::{self, Output, outln};
 use crate::session::{RejectionDiagnosis, Session};
@@ -21,6 +21,15 @@ pub(crate) const TYPED_HINTS: &str = "Typed hints:";
 pub(crate) const VERDICT_CHECKS: &str = "Without hints it DOES check";
 pub(crate) const VERDICT_FAILS: &str = "Without hints it still fails";
 pub(crate) const NEGATED_PREMISE: &str = "~ (the negated constraint itself)";
+/// Said when the hints a `rup` line needs would take too large an
+/// elaboration to find (see [`checker::ELABORATION_LIMIT`]).
+fn too_large_to_elaborate() -> String {
+    format!(
+        "the hints it needed aren't shown: veripb's account of them for a proof this long passed \
+         the {} MiB limit",
+        checker::ELABORATION_LIMIT / (1024 * 1024)
+    )
+}
 
 pub fn run(session: &Session, args: &str, out: &mut dyn Output) {
     let arg = args.trim();
@@ -94,10 +103,11 @@ fn explain_checked(session: &Session, n: usize, out: &mut dyn Output) {
 
     if is_rup {
         match session.rup_needed_hints(n) {
-            Ok(Ok(hints)) => {
+            Ok(Ok(Some(hints))) => {
                 outln!(out, "Line {n}{NEEDED_SUFFIX}");
                 print_hint_list(session, &hints, "  ", out);
             }
+            Ok(Ok(None)) => outln!(out, "({})", too_large_to_elaborate()),
             Ok(Err(msg)) => outln!(out, "Error: {msg}"),
             Err(err) => outln!(out, "Error: {err:#}"),
         }
@@ -143,20 +153,21 @@ fn print_diagnosis(session: &Session, diagnosis: &RejectionDiagnosis, out: &mut 
         );
     }
     match &diagnosis.without_hints {
-        Ok(hints) if diagnosis.typed_hints.is_empty() => {
+        None => outln!(out, "  ({})", too_large_to_elaborate()),
+        Some(Ok(hints)) if diagnosis.typed_hints.is_empty() => {
             // Unreachable in practice (the bare line is the rejected line);
             // report the checker's result anyway.
             outln!(out, "  Re-checking it found these hints:");
             print_hint_list(session, hints, "    ", out);
         }
-        Ok(hints) => {
+        Some(Ok(hints)) => {
             outln!(
                 out,
                 "  {VERDICT_CHECKS} — the hint list is the problem. The checker needed:"
             );
             print_hint_list(session, hints, "    ", out);
         }
-        Err(_) => outln!(
+        Some(Err(_)) => outln!(
             out,
             "  {VERDICT_FAILS}: the constraint isn't RUP-implied by the current database."
         ),

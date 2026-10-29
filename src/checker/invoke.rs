@@ -75,8 +75,32 @@ pub fn run_streaming<'a, I, S>(
     formula_path: &Path,
     proof: impl Into<ProofText<'a>>,
     extra_args: I,
-    mut consume: impl FnMut(&str) -> bool,
+    consume: impl FnMut(&str) -> bool,
 ) -> anyhow::Result<RawInvocation>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    Ok(run_watched(formula_path, proof, extra_args, consume, None)?.0)
+}
+
+/// A file `veripb` writes and the most bytes it may reach: past that,
+/// `veripb` is stopped (see [`run_watched`]).
+#[derive(Clone, Copy)]
+struct Watch<'p> {
+    path: &'p Path,
+    limit: u64,
+}
+
+/// [`run_streaming`], stopping `veripb` if `watch`'s file grows past its
+/// limit. Returns whether it was stopped.
+fn run_watched<'a, I, S>(
+    formula_path: &Path,
+    proof: impl Into<ProofText<'a>>,
+    extra_args: I,
+    mut consume: impl FnMut(&str) -> bool,
+    watch: Option<Watch<'_>>,
+) -> anyhow::Result<(RawInvocation, bool)>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -98,6 +122,7 @@ where
             extra_args,
             &mut consume,
             reporter,
+            watch,
         );
     }
 
@@ -120,16 +145,17 @@ where
         proof_file_path.as_os_str().to_os_string(),
     ];
     args.extend(extra_args);
-    let output = run_veripb(&args, &mut consume)?;
+    let output = run_veripb(&args, &mut consume, watch)?;
 
-    Ok(RawInvocation {
+    let raw = RawInvocation {
         stdout: output.stdout,
         stderr: output.stderr,
         success: output.success,
         code: output.code,
         proof_file_path,
         formula_file_path: formula_path.to_path_buf(),
-    })
+    };
+    Ok((raw, output.stopped))
 }
 
 /// A named pipe in a temp directory of its own (removed on drop).
@@ -164,7 +190,8 @@ fn run_through_pipe(
     extra_args: Vec<OsString>,
     consume: &mut dyn FnMut(&str) -> bool,
     reporter: super::progress::Reporter,
-) -> anyhow::Result<RawInvocation> {
+    watch: Option<Watch<'_>>,
+) -> anyhow::Result<(RawInvocation, bool)> {
     use std::os::unix::fs::OpenOptionsExt;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -214,7 +241,7 @@ fn run_through_pipe(
             }
         });
 
-        let output = run_veripb(&args, consume);
+        let output = run_veripb(&args, consume, watch);
         done.store(true, Ordering::Relaxed);
         // `veripb` has exited, maybe without opening the pipe or reading
         // all of it: open it and read it out until the writer has stopped.
@@ -233,14 +260,15 @@ fn run_through_pipe(
         output
     })?;
 
-    Ok(RawInvocation {
+    let raw = RawInvocation {
         stdout: output.stdout,
         stderr: output.stderr,
         success: output.success,
         code: output.code,
         proof_file_path: pipe.path.clone(),
         formula_file_path: formula_path.to_path_buf(),
-    })
+    };
+    Ok((raw, output.stopped))
 }
 
 /// What [`run_veripb`] returns: stdout without the lines its `consume`
@@ -250,11 +278,21 @@ struct Output {
     stderr: String,
     success: bool,
     code: Option<i32>,
+    /// Whether `veripb` was stopped for growing a watched file too large.
+    stopped: bool,
 }
 
+/// How often a [`Watch`]ed file's size is checked.
+const WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// Runs `veripb` with `args`, reading its stdout a line at a time as it is
-/// written (see [`keep_lines`]) and its stderr whole.
-fn run_veripb(args: &[OsString], consume: &mut dyn FnMut(&str) -> bool) -> anyhow::Result<Output> {
+/// written (see [`keep_lines`]) and its stderr whole. Stops it if `watch`'s
+/// file grows past its limit.
+fn run_veripb(
+    args: &[OsString],
+    consume: &mut dyn FnMut(&str) -> bool,
+    watch: Option<Watch<'_>>,
+) -> anyhow::Result<Output> {
     INVOCATIONS.with(|count| count.set(count.get() + 1));
     let mut child = std::process::Command::new(veripb_binary())
         .args(args)
@@ -274,9 +312,37 @@ fn run_veripb(args: &[OsString], consume: &mut dyn FnMut(&str) -> bool) -> anyho
         stderr_pipe.read_to_end(&mut bytes).map(|_| bytes)
     });
     let stdout_pipe = child.stdout.take().expect("stdout is piped");
-    let stdout = keep_lines(std::io::BufReader::new(stdout_pipe), consume)
-        .context("failed to read veripb's stdout")?;
-    let status = child.wait().context("failed to wait for veripb")?;
+    let child = std::sync::Mutex::new(child);
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let stopped = std::sync::atomic::AtomicBool::new(false);
+    let (stdout, status) = std::thread::scope(|scope| {
+        if let Some(watch) = watch {
+            let (child, done, stopped) = (&child, &done, &stopped);
+            scope.spawn(move || {
+                use std::sync::atomic::Ordering;
+                while !done.load(Ordering::Relaxed) {
+                    let size = std::fs::metadata(watch.path).map_or(0, |m| m.len());
+                    if size > watch.limit {
+                        stopped.store(true, Ordering::Relaxed);
+                        if let Ok(mut child) = child.lock() {
+                            let _ = child.kill();
+                        }
+                        return;
+                    }
+                    std::thread::sleep(WATCH_INTERVAL);
+                }
+            });
+        }
+        let stdout = keep_lines(std::io::BufReader::new(stdout_pipe), consume)
+            .context("failed to read veripb's stdout");
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        let status = child
+            .lock()
+            .map_err(|_| anyhow::anyhow!("the veripb watcher panicked"))
+            .and_then(|mut child| child.wait().context("failed to wait for veripb"));
+        (stdout, status)
+    });
+    let (stdout, status) = (stdout?, status?);
     let stderr = stderr_reader
         .join()
         .map_err(|_| anyhow::anyhow!("the thread reading veripb's stderr panicked"))?
@@ -286,6 +352,7 @@ fn run_veripb(args: &[OsString], consume: &mut dyn FnMut(&str) -> bool) -> anyho
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
         success: status.success(),
         code: status.code(),
+        stopped: stopped.into_inner(),
     })
 }
 
@@ -316,23 +383,32 @@ pub struct ElaboratedInvocation {
 }
 
 /// Runs [`run`] with `--elaborate`, and returns the elaborated proof
-/// text it wrote.
+/// text it wrote, or `None` if it passed `limit` bytes: `veripb` is then
+/// stopped and its partial output deleted.
 pub fn run_with_elaboration<'a>(
     formula_path: &Path,
     proof: impl Into<ProofText<'a>>,
-) -> anyhow::Result<ElaboratedInvocation> {
+    limit: u64,
+) -> anyhow::Result<Option<ElaboratedInvocation>> {
     let scratch = tempfile::NamedTempFile::new()
         .context("failed to create a scratch file for elaboration output")?;
     let args: Vec<std::ffi::OsString> = vec!["--elaborate".into(), scratch.path().into()];
 
-    let raw = run(formula_path, proof, args)?;
+    let watch = Watch {
+        path: scratch.path(),
+        limit,
+    };
+    let (raw, stopped) = run_watched(formula_path, proof, args, |_| false, Some(watch))?;
+    if stopped {
+        return Ok(None);
+    }
     let elaborated_proof = std::fs::read_to_string(scratch.path())
         .context("failed to read back the elaboration scratch file")?;
 
-    Ok(ElaboratedInvocation {
+    Ok(Some(ElaboratedInvocation {
         raw,
         elaborated_proof,
-    })
+    }))
 }
 
 /// The result of [`run_with_database_dump`].

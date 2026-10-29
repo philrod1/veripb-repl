@@ -480,6 +480,9 @@ formulas are not supported.
     minimized set of hints the conflict actually used — constraint IDs
     and/or `~` (the rule's own negation), whatever hints were typed. A
     lone `~` means the negation alone reached the conflict.
+    veripb works the hints out by elaborating the whole proof up to the
+    line, which on a long proof can grow far larger than the proof; past
+    256 MiB it is stopped and the hints are left out, saying so.
   - any other rule: the `ConstraintId N: ...` line.
 
   For the rejected line: the rejection reason (as shown by `:list` and
