@@ -8,7 +8,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::checker::parse::leading_labels;
-use crate::find::{Filter, Query};
+use crate::find::{Filter, Query, constraint_kind};
 use crate::tui::input::EditResult;
 use crate::tui::{App, Pane};
 
@@ -18,6 +18,9 @@ pub(super) struct PaneFind {
     /// The query as typed.
     pub(super) text: String,
     filter: Filter,
+    /// Database only: `Some(true)` for core constraints only,
+    /// `Some(false)` for derived only (see `crate::find::constraint_kind`).
+    core: Option<bool>,
     /// The rows shown, ascending, as indices into the pane's whole content
     /// (the Proof pane's count the preamble).
     pub(super) rows: Vec<usize>,
@@ -124,11 +127,13 @@ impl App {
     }
 
     /// The rows of `pane` that `filter` matches, out of `candidates` (all
-    /// rows if `None`). Database rows match on their labels or their text.
+    /// rows if `None`). Database rows match on their labels or their text,
+    /// and must be core (or derived) if `core` says so.
     fn matching_rows(
         &self,
         pane: Pane,
         filter: &Filter,
+        core: Option<bool>,
         candidates: Option<&[usize]>,
     ) -> Vec<usize> {
         // Asks `matches` about each row in ascending order.
@@ -166,7 +171,8 @@ impl App {
                 select(database.entries.len(), &mut |row| {
                     let entry = &database.entries[row];
                     while labelled.next_if(|&id| id < entry.id).is_some() {}
-                    labelled.peek() == Some(&entry.id) || filter.matches(&entry.text)
+                    core.is_none_or(|core| entry.is_core == core)
+                        && (labelled.peek() == Some(&entry.id) || filter.matches(&entry.text))
                 })
             }
             // The preamble never matches.
@@ -192,7 +198,7 @@ impl App {
         if find.key == key {
             return;
         }
-        let rows = self.matching_rows(pane, &find.filter, None);
+        let rows = self.matching_rows(pane, &find.filter, find.core, None);
         let find = self.finds[slot].as_mut().expect("checked above");
         find.rows = rows;
         find.key = key;
@@ -200,19 +206,30 @@ impl App {
 
     /// Filters `pane` to the rows `filter` matches, starting the view at
     /// the first one at or after row `origin`.
-    fn show_matches(&mut self, pane: Pane, text: &str, filter: Filter, origin: usize) {
+    fn show_matches(
+        &mut self,
+        pane: Pane,
+        text: &str,
+        filter: Filter,
+        core: Option<bool>,
+        origin: usize,
+    ) {
         let Some(slot) = slot(pane) else {
             return;
         };
         let key = self.find_content_key(pane);
-        let narrowing = self.finds[slot]
-            .take()
-            .filter(|find| find.key == key && filter.narrows(&find.filter));
-        let rows = self.matching_rows(pane, &filter, narrowing.as_ref().map(|f| &f.rows[..]));
+        let narrowing = self.finds[slot].take().filter(|find| {
+            find.key == key
+                && filter.narrows(&find.filter)
+                && find.core.is_none_or(|kind| core == Some(kind))
+        });
+        let candidates = narrowing.as_ref().map(|find| &find.rows[..]);
+        let rows = self.matching_rows(pane, &filter, core, candidates);
         let first = rows.partition_point(|&row| row < origin);
         self.finds[slot] = Some(PaneFind {
             text: text.to_string(),
             filter,
+            core,
             rows,
             key,
         });
@@ -449,7 +466,11 @@ impl App {
     /// Applies `text` to `pane` (see `crate::find`), returning why it does
     /// nothing, if it doesn't.
     fn apply_query(&mut self, pane: Pane, text: &str, origin: usize) -> Option<String> {
-        let query = match Query::parse(text) {
+        let (core, rest) = match pane {
+            Pane::Database => constraint_kind(text),
+            _ => (None, text),
+        };
+        let query = match Query::parse(rest) {
             Ok(query) => query,
             // The last line of the message says what is wrong; the lines
             // before it repeat the pattern.
@@ -459,7 +480,13 @@ impl App {
                 return Some(last.trim_start_matches("error: ").to_string());
             }
         };
+        // The Output pane has no lines or IDs to go to, and after `core:` or
+        // `derived:` the query only narrows those down: it is all text.
+        let filters_only = pane == Pane::Output || core.is_some();
         match query {
+            None if core.is_some() => {
+                self.show_matches(pane, text, Filter::text(""), core, origin);
+            }
             None => {
                 if let Some(slot) = slot(pane) {
                     self.finds[slot] = None;
@@ -467,13 +494,8 @@ impl App {
                 self.scroll_to_offset(pane, origin);
                 self.unmark(pane);
             }
-            // The Output pane has no line numbers or IDs: it searches for
-            // the query as text.
-            Some(Query::End | Query::Line(_)) if pane == Pane::Output => {
-                self.show_matches(pane, text, Filter::text(text.trim()), origin);
-            }
-            Some(Query::Label(_, filter)) if pane == Pane::Output => {
-                self.show_matches(pane, text, filter, origin);
+            Some(query) if filters_only => {
+                self.show_matches(pane, text, query.into_filter(rest), core, origin);
             }
             Some(Query::End) => {
                 let total = self.content_total(pane);
@@ -486,9 +508,9 @@ impl App {
             },
             Some(Query::Label(name, filter)) => match self.label_row(pane, &name) {
                 Some(row) => self.jump(pane, row),
-                None => self.show_matches(pane, text, filter, origin),
+                None => self.show_matches(pane, text, filter, None, origin),
             },
-            Some(Query::Filter(filter)) => self.show_matches(pane, text, filter, origin),
+            Some(Query::Filter(filter)) => self.show_matches(pane, text, filter, None, origin),
         }
         None
     }
@@ -811,5 +833,24 @@ mod tests {
         );
         find(&mut app, Pane::Database, "x3");
         assert_eq!(app.find(Pane::Database).unwrap().rows, [1, 3, 4]);
+
+        let rows = |app: &App| app.find(Pane::Database).unwrap().rows.clone();
+        find(&mut app, Pane::Database, "core:");
+        assert_eq!(rows(&app), [0, 1, 2]);
+        find(&mut app, Pane::Database, "Derived:");
+        assert_eq!(rows(&app), [3, 4]);
+        find(&mut app, Pane::Database, "derived: x3");
+        assert_eq!(rows(&app), [3, 4]);
+        find(&mut app, Pane::Database, "core: x3");
+        assert_eq!(rows(&app), [1]);
+        find(&mut app, Pane::Database, "core: @f");
+        assert_eq!(rows(&app), [0], "labels count");
+        // After a prefix, a number is text, not a jump.
+        find(&mut app, Pane::Database, "derived: 4");
+        assert_eq!(rows(&app), [4]);
+        assert!(app.marked(Pane::Database).is_empty());
+        // Only the Database pane has core and derived constraints.
+        find(&mut app, Pane::Proof, "core:");
+        assert!(app.find(Pane::Proof).unwrap().rows.is_empty());
     }
 }
