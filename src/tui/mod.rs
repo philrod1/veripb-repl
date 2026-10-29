@@ -22,6 +22,7 @@ mod draw;
 mod find;
 mod input;
 mod layout;
+mod link;
 mod theme;
 
 use std::io;
@@ -444,9 +445,12 @@ pub struct App {
     find_input: Option<find::FindInput>,
     /// The find query editor, with its own history.
     find_editor: input::LineEditor,
-    /// The row a find last went to, highlighted until the pane next
-    /// scrolls: (pane, row).
-    jumped: Option<(Pane, usize)>,
+    /// Each top pane's rows highlighted by the last find or link that went
+    /// to it, until the pane next scrolls; see `find::App::jump_to_rows`.
+    marked: [Vec<usize>; 3],
+    /// Each top pane's line-number width in the last frame drawn: where a
+    /// click follows a link (see `link`) rather than landing on the text.
+    prefix_widths: [usize; 3],
 }
 
 impl App {
@@ -488,7 +492,8 @@ impl App {
             finds: [None, None, None],
             find_input: None,
             find_editor: input::LineEditor::new(),
-            jumped: None,
+            marked: Default::default(),
+            prefix_widths: [0; 3],
         })
     }
 
@@ -772,7 +777,7 @@ impl App {
     /// the distance-from-tail of Output's own tail-anchored scrollback.
     /// Offsets are clamped against actual content at draw time.
     fn scroll_lines(&mut self, pane: Pane, up: bool, amount: usize) {
-        self.jumped = None;
+        self.unmark(pane);
         let toward_larger = match pane {
             Pane::Output => up,
             _ => !up,
@@ -2292,10 +2297,17 @@ impl App {
     /// non-interactive in both frontends, so it just flows through
     /// `dispatch` normally.
     fn execute(&mut self, line: &str) -> bool {
-        self.jumped = None;
+        self.marked = Default::default();
         let label = line.split_whitespace().next().unwrap_or(line);
         let began = self.begin_activity(label);
         let keep_going = self.execute_line(line);
+        // `:where` also shows its link in the panes.
+        if let Some(rest) = line.strip_prefix(':') {
+            let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            if commands::resolve_command(name) == Ok("where") {
+                self.follow_where(args);
+            }
+        }
         if began
             && let Some(elapsed) = self.end_activity()
             && elapsed >= SHOW_ELAPSED_AFTER
@@ -2882,6 +2894,9 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
                                 if let Some(pane) = app.pane_at(mouse.column, mouse.row) {
                                     app.focus = pane;
                                 }
+                                // A line number or Database ID follows its
+                                // link.
+                                app.click_link(mouse.column, mouse.row);
                             }
                         }
                     }

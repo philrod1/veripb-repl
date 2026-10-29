@@ -237,10 +237,19 @@ impl Layout {
     /// never disagree about which column the pane's content actually
     /// starts at.
     pub(crate) fn proof_content_x0(&self) -> u16 {
-        if self.zoomed_top_pane().map(|(pane, _)| pane) == Some(Pane::Proof) {
-            1
-        } else {
-            3 + self.cols[0] + self.cols[1]
+        self.content_x0(Pane::Proof)
+    }
+
+    /// The leftmost content column of top pane `pane`: `1` when it is
+    /// solo-zoomed, else past the columns and separators to its left.
+    pub(crate) fn content_x0(&self, pane: Pane) -> u16 {
+        if self.zoomed_top_pane().map(|(zoomed, _)| zoomed) == Some(pane) {
+            return 1;
+        }
+        match pane {
+            Pane::Formula | Pane::Output => 1,
+            Pane::Database => 2 + self.cols[0],
+            Pane::Proof => 3 + self.cols[0] + self.cols[1],
         }
     }
 

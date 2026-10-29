@@ -18,14 +18,21 @@
 //! commands, rejects any other `:` input (proof-rule text never starts with
 //! `:`), and treats everything else as the replacement or inserted line.
 
-use crate::commands::{check, explain, list, objective, preserved, resolve_command, show};
+use crate::commands::{check, explain, list, objective, preserved, resolve_command, show, where_};
 use crate::output::{Output, outln};
 use crate::session::Session;
 
 /// The single allowlist of commands safe to run mid-`:edit` (none touch the
 /// buffer; `:check` is always a dry run). `:debug` reuses it.
-pub(crate) const READONLY_DURING_EDIT: &[&str] =
-    &["show", "list", "objective", "preserved", "check", "explain"];
+pub(crate) const READONLY_DURING_EDIT: &[&str] = &[
+    "show",
+    "list",
+    "objective",
+    "preserved",
+    "check",
+    "explain",
+    "where",
+];
 
 /// Runs a `READONLY_DURING_EDIT` command directly, skipping `dispatch`'s undo
 /// and `:formula` bookkeeping (these commands change nothing). Used by `:edit`
@@ -42,6 +49,7 @@ pub(crate) fn run_readonly(
         "objective" => objective::run(session, out),
         "preserved" => preserved::run(session, out),
         "explain" => explain::run(session, args, out),
+        "where" => where_::run(session, args, out),
         "check" => check::run(session, args, out)?,
         _ => unreachable!("only ever called with a READONLY_DURING_EDIT name"),
     }
@@ -580,8 +588,8 @@ pub fn handle(
                 _ => {
                     outln!(
                         out,
-                        "Only :show, :list, :objective, :preserved, :check, :explain, :skip, \
-                         :done, and :cancel work while editing — type the replacement \
+                        "Only :show, :list, :objective, :preserved, :check, :explain, :where, \
+                         :skip, :done, and :cancel work while editing — type the replacement \
                          line, or one of those."
                     );
                     Ok(EditFlow::Continue)

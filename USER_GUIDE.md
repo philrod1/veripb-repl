@@ -166,6 +166,11 @@ pane at the same level.
   `:formula` browse on it.
 - Clicking a Proof line's gutter marker column toggles a breakpoint (see
   `:debug`).
+- Clicking a Formula or Proof line number shows the constraints that line
+  gave, highlighted in the Database pane; clicking a Database ID shows the
+  formula or proof line it came from. The clicked line is highlighted too
+  and its pane stays where it is. The highlights last until each pane
+  next scrolls. `:where` does the same from the prompt.
 - To select text for copying, use your terminal's mouse-capture bypass
   (usually Shift, or Option/Alt on macOS).
 
@@ -346,6 +351,7 @@ candidates.
 | `:check [<conclusion>]` | test whether the checked prefix verifies with a conclusion, without closing the proof; bare: try the intended conclusion, then `UNSAT` and `SAT`, or `BOUNDS v v` with an objective | **Implemented** |
 | `:conclusion [<conclusion>\|none]` | show, set or clear the intended conclusion that bare `:check` and `:save` try first | **Implemented** |
 | `:explain [<n>]` | show how line `n` was derived, or why it was rejected | **Implemented** |
+| `:where <id>\|@label\|line <n>` | link a constraint and the line it came from | **Implemented** |
 | `:list` | print every buffer line, numbered, with `[unchecked]`/`[breakpoint]` tags | **Implemented** |
 | `:load <file>` | load an OPB formula, starting a new session | **Implemented** (OPB only) |
 | `:instance <file.opb\|file.pbp\|stem>` | `:load` a formula then `:source` its matching proof | **Implemented** |
@@ -471,6 +477,16 @@ formulas are not supported.
   re-checking without hints — either "Without hints it DOES check" with
   the hints actually needed (the hint list was the problem), or "Without
   hints it still fails" (the constraint is not RUP-implied).
+
+- **`:where <id>|@label`**, **`:where line <n>`** — links constraints and
+  the lines they came from, without changing the session. With a
+  constraint ID or label: the constraint (as `:show` lists it, or "no
+  longer in the database" if it has been deleted) and where it came
+  from, the formula or the checked proof line that derived it. With
+  `line <n>`: checked line `n` and the constraints it derived. Finding a
+  line's constraints for the first time can take one veripb run. In the
+  TUI, `:where` also shows both ends in their panes, highlighted, as
+  clicking a line number does.
 
 ### Checking a conclusion
 
@@ -613,8 +629,8 @@ formulas are not supported.
     line without replacement. `:done` ends the edit, leaving remaining
     queued lines unchanged. `:cancel` restores the buffer to its state
     when the edit began. While editing, only `:skip`, `:done`, `:cancel`,
-    `:show`, `:list`, `:objective`, `:preserved`, `:check`, and `:explain`
-    are accepted; any other `:`-command is refused ("Only :show, ... work
+    `:show`, `:list`, `:objective`, `:preserved`, `:check`, `:explain`, and
+    `:where` are accepted; any other `:`-command is refused ("Only :show, ... work
     while editing"), and every line not starting with `:` is replacement
     text. The read-only commands leave the queue unchanged. The prompt is
     `edit>` (for `:deassert`, `edit (deasserting <constraint>)>`).
@@ -761,8 +777,8 @@ formulas are not supported.
   - `:break` — list breakpoints; `:break <n>` toggles one; `:break clear`
     removes all.
   - `:restart` — mark every line unchecked, keeping them all.
-  - `:show`, `:list`, `:objective`, `:preserved`, `:check`, `:explain` work
-    as usual.
+  - `:show`, `:list`, `:objective`, `:preserved`, `:check`, `:explain`,
+    `:where` work as usual.
   - `:done` (or Esc in the TUI) leaves.
 
   `:step`/`:back`/`:continue`/`:until`/`:restart` are each one undo step.
