@@ -1613,6 +1613,21 @@ impl Session {
         }
     }
 
+    /// Returns the database just before buffer line `idx` (at most
+    /// `checked_len`): after the lines before it. One `veripb` run, unless
+    /// `idx` is `checked_len` and [`Self::database`] is at hand.
+    pub fn database_before(&self, idx: usize) -> anyhow::Result<checker::Database> {
+        if idx == self.checked_len {
+            return Ok((*self.database()?).clone());
+        }
+        let preamble = self.preamble_lines();
+        let formula_file = self.formula_temp_file()?;
+        checker::show_database(
+            formula_file.path(),
+            proof(&preamble, &self.buffer[..idx], &[]),
+        )
+    }
+
     /// Returns the minimized hints the checker needed for checked `rup`
     /// line `display_line`, or `None` if working them out passed
     /// [`checker::ELABORATION_LIMIT`]. The inner `Err` is a user-facing

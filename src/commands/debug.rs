@@ -313,6 +313,10 @@ pub fn handle(
     if line.is_empty() {
         return Ok(DebugFlow::Continue);
     }
+    if let Some(topic) = help::question(line) {
+        help::run(topic, out);
+        return Ok(DebugFlow::Continue);
+    }
     let Some(rest) = line.strip_prefix(':') else {
         outln!(
             out,

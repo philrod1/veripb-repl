@@ -174,6 +174,10 @@ fn dispatch_inner(
     line: &str,
     out: &mut dyn Output,
 ) -> anyhow::Result<Flow> {
+    if let Some(topic) = help::question(line) {
+        help::run(topic, out);
+        return Ok(Flow::Continue);
+    }
     if let Some(rest) = line.strip_prefix(':') {
         let mut parts = rest.splitn(2, char::is_whitespace);
         let cmd = parts.next().unwrap_or("");

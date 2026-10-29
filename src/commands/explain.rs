@@ -1,6 +1,7 @@
-//! `:explain [<n>]` — shows the expanded derivation of checked line `n` (see
-//! [`Session::explain_line`]), plus for `rup` the minimal needed hints
-//! ([`Session::rup_needed_hints`]).
+//! `:explain [<n>]` — explains checked line `n`: in plain English for the
+//! rules [`teach::explain`] covers, then, under `Checker:`, its expanded
+//! derivation (see [`Session::explain_line`]), plus for `rup` the minimal
+//! needed hints ([`Session::rup_needed_hints`]).
 //!
 //! If `n` is the pending rejected line (`Session::known_bad`), shows the
 //! rejection reason and, for `rup`, [`Session::diagnose_rejected_rup`]'s
@@ -12,6 +13,7 @@ use crate::checker::{self, RupHint};
 use crate::commands::help;
 use crate::output::{self, Output, outln};
 use crate::session::{RejectionDiagnosis, Session};
+use crate::teach;
 
 // Output phrases matched by the TUI scrollback highlighter
 // (`tui::draw::scrollback`); it imports these, so edit them only here.
@@ -30,6 +32,9 @@ fn too_large_to_elaborate() -> String {
         checker::ELABORATION_LIMIT / (1024 * 1024)
     )
 }
+
+/// Heads the checker's account after a plain-English explanation.
+pub(crate) const CHECKER_HEADING: &str = "Checker:";
 
 pub fn run(session: &Session, args: &str, out: &mut dyn Output) {
     let arg = args.trim();
@@ -66,7 +71,22 @@ pub fn run(session: &Session, args: &str, out: &mut dyn Output) {
 
 /// Explains checked line `n` — the per-rule trace, plus the needed hints
 /// for a `rup` line.
+/// Explains checked line `n`: in plain English when [`teach::explain`]
+/// covers it, then the checker's account (see [`print_checker`]).
 fn explain_checked(session: &Session, n: usize, out: &mut dyn Output) {
+    if let Some(explanation) = teach::explain::explain(session, n) {
+        for line in explanation.text_lines() {
+            outln!(out, "{line}");
+        }
+        outln!(out);
+        outln!(out, "{CHECKER_HEADING}");
+    }
+    print_checker(session, n, out);
+}
+
+/// The checker's account of checked line `n`: its trace, and for `rup` the
+/// hints it needed.
+pub(crate) fn print_checker(session: &Session, n: usize, out: &mut dyn Output) {
     let explanation = match session.explain_line(n) {
         Ok(Ok(text)) => text,
         Ok(Err(msg)) => {

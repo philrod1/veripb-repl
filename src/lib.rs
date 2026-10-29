@@ -15,5 +15,6 @@ pub mod output;
 pub mod plain;
 pub mod session;
 pub mod stats;
+pub mod teach;
 pub mod tui;
 pub mod varnames;

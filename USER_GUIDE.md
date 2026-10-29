@@ -376,7 +376,7 @@ candidates.
 | `:verify` | check the buffer's unchecked lines, stopping at the first rejection | **Implemented** |
 | `:save <file.pbp> [<conclusion>]` | write the whole buffer, checked or not, to a `.pbp` file | **Implemented** |
 | `:trace on\|off` | verbose checker tracing for subsequent lines | **Not implemented** |
-| `:help [<topic>]` | list commands, or show details on a command or rule | **Implemented** |
+| `:help [<topic>]`, `?<topic>` | list commands, or show details on a command, rule or concept | **Implemented** |
 | `:reset` | drop all proof lines, keep the formula | **Implemented** |
 | `:edit [<n>]` \| `:edit <n>-<m>` | retype buffer lines without checking them; TUI: Vim-style editor in the Proof pane | **Implemented** (tentative in plain) |
 | `:deassert [<n>]` | replace an `a`-rule (the first, or line `n`) with derivation steps | **Implemented** (tentative in plain) |
@@ -471,7 +471,15 @@ formulas are not supported.
   checked line. Any other `n` must be a checked line; the preamble, an
   unchecked line, or a line past the end is an error.
 
-  For a checked line:
+  For a checked `rup`, `pol`, `red`, `a`, `setlvl` or `wiplvl` line, it
+  first explains the line in plain English, for readers new to
+  pseudo-Boolean proofs: what the rule means, then this line's derivation
+  step by step (for `rup`, the shortest chain of forced values to the
+  conflict). Terms it uses have glossary entries (`:help <term>`). The
+  checker's own account follows under `Checker:`; other lines show only
+  that.
+
+  The checker's account, for a checked line:
   - `pol`: the step-by-step table (each operand or operator, as written
     in the line, so labels appear as labels, and the running constraint).
   - `red`: the substitution witness and every proof goal with how it was
@@ -845,9 +853,14 @@ formulas are not supported.
 ### Help
 
 - **`:help [<topic>]`** — with no argument, lists every command with its
-  usage and summary, then the proof rules it documents. With a command
-  (leading `:` optional) or rule keyword, e.g. `:help rup`, `:help save`,
-  prints its usage, summary, and details. Works with no formula loaded.
+  usage and summary, then the proof rules it documents, then the glossary's
+  concepts. With a command (leading `:` optional) or rule keyword, e.g.
+  `:help rup`, `:help save`, prints its usage, summary, and details; a
+  rule also lists related concepts. With a concept, e.g. `:help slack` or
+  `:help unit-propagation` (or its name, ignoring case), prints its
+  explanation, an example, and related topics. A name that is both, such
+  as `rup`, shows both. `?<topic>` is short for `:help <topic>`, and works
+  in `:edit` and `:debug` too. Works with no formula loaded.
   For full rule grammar and semantics, see `proof_format_overview.md` in
   the veripb repository.
 
