@@ -1,19 +1,22 @@
 //! The reader: a box over the panes showing `:explain <n>`, `:help <topic>`
 //! or `?<topic>`, with links to follow. An explanation has two views, in
 //! plain English and the checker's account; ←/→ switch between them. A
-//! glossary link opens that entry in the reader, Backspace goes back; a
-//! constraint link closes it and shows the constraint in the panes, as
-//! `:where` does. `p` prints the page into the Output pane.
+//! link opens its page in the reader: a glossary entry, a constraint (also
+//! shown in the panes behind, as `:where` does) with a link to explain the
+//! line that derived it, or that explanation. Back and forward move through
+//! the pages followed, as in a browser. `p` prints the page into the
+//! Output pane.
 //!
 //! The box is drawn by `draw::reader`, which records where each link
 //! landed (`ReaderFrame`) for the keys and the mouse.
 
 use std::ops::Range;
 
-use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use crate::commands::{self, explain, help};
+use crate::commands::{self, explain, help, where_};
 use crate::output::Output;
+use crate::session::{ConstraintSource, Session};
 use crate::teach::{self, markup};
 use crate::tui::{App, WHEEL_STEP};
 
@@ -77,6 +80,8 @@ pub(super) enum Target {
     Entry(String),
     /// A constraint, by ID.
     Constraint(usize),
+    /// A proof line's explanation, by display line number.
+    Line(usize),
 }
 
 /// One of a page's views: its name and lines.
@@ -94,13 +99,15 @@ impl View {
             .filter_map(|inline| match inline {
                 markup::Inline::Term { id, .. } => Some(Target::Entry(id)),
                 markup::Inline::Constraint { id, .. } => Some(Target::Constraint(id)),
+                markup::Inline::Line { line, .. } => Some(Target::Line(line)),
                 _ => None,
             })
             .collect()
     }
 }
 
-/// One page: an explanation or a help topic, and where it is scrolled to.
+/// One page: an explanation, a help topic or a constraint, and where it
+/// is scrolled to.
 pub(super) struct Page {
     pub(super) title: String,
     pub(super) views: Vec<View>,
@@ -159,7 +166,7 @@ impl Page {
     /// The page for line `n` (`rejected` if it is the pending rejected
     /// line): in plain English, when `teach` covers it, and the checker's
     /// account.
-    fn explain(session: &crate::session::Session, n: usize, rejected: bool) -> Page {
+    fn explain(session: &Session, n: usize, rejected: bool) -> Page {
         let mut checker = Lines::default();
         if rejected {
             explain::print_rejection(session, n, &mut checker);
@@ -203,6 +210,60 @@ impl Page {
             ],
         )
     }
+
+    /// The page for proof line `n`'s explanation, or saying why there is
+    /// none.
+    fn line(session: &Session, n: usize) -> Page {
+        let mut said = Lines::default();
+        match explain::target(session, &n.to_string(), &mut said) {
+            Some((n, rejected)) => Page::explain(session, n, rejected),
+            None => Page::new(format!("Line {n}"), vec![said.view("Checker")]),
+        }
+    }
+
+    /// Constraint `id`'s page: the constraint as `:show` lists it, and
+    /// where it came from, with a link to explain the line that derived it.
+    fn constraint(session: &Session, id: usize) -> Page {
+        let mut lines = vec![
+            Line::new("", where_::constraint(session, id), Kind::Output),
+            Line::blank(),
+        ];
+        match where_::link(session, &where_::Target::Constraint(id)) {
+            Ok(Ok(link)) => match link.source {
+                ConstraintSource::Formula { line } => lines.push(Line::new(
+                    "",
+                    format!("From the formula: `{}`", session.formula[line].trim()),
+                    Kind::Text,
+                )),
+                ConstraintSource::Proof { display_line: n } => {
+                    let text = session
+                        .buffer_index(n)
+                        .map(|idx| session.buffer[idx].trim().to_string())
+                        .unwrap_or_default();
+                    lines.push(Line::new(
+                        "",
+                        format!("Derived by line {n}: `{text}`"),
+                        Kind::Text,
+                    ));
+                    lines.push(Line::blank());
+                    lines.push(Line::new(
+                        "",
+                        format!("[Explain line {n}](l:{n})"),
+                        Kind::Text,
+                    ));
+                }
+            },
+            Ok(Err(message)) => lines.push(Line::new("", message, Kind::Output)),
+            Err(err) => lines.push(Line::new("", format!("Error: {err:#}"), Kind::Output)),
+        }
+        Page::new(
+            format!("Constraint {id}"),
+            vec![View {
+                name: "Constraint",
+                lines,
+            }],
+        )
+    }
 }
 
 /// Command output collected as reader lines.
@@ -228,19 +289,52 @@ impl Lines {
     }
 }
 
-/// The reader's pages: the one shown last, those it was followed from
-/// before it.
+/// The reader's history: the pages followed, in order, and the one shown.
 pub(super) struct Reader {
     pub(super) pages: Vec<Page>,
+    /// Index into `pages` of the page shown.
+    pub(super) current: usize,
 }
 
 impl Reader {
+    fn new(page: Page) -> Reader {
+        Reader {
+            pages: vec![page],
+            current: 0,
+        }
+    }
+
     pub(super) fn page(&self) -> &Page {
-        self.pages.last().expect("a reader has a page")
+        &self.pages[self.current]
     }
 
     fn page_mut(&mut self) -> &mut Page {
-        self.pages.last_mut().expect("a reader has a page")
+        &mut self.pages[self.current]
+    }
+
+    pub(super) fn can_go_back(&self) -> bool {
+        self.current > 0
+    }
+
+    pub(super) fn can_go_forward(&self) -> bool {
+        self.current + 1 < self.pages.len()
+    }
+
+    /// Shows `page` next, in place of any pages forward of this one.
+    fn push(&mut self, page: Page) {
+        self.pages.truncate(self.current + 1);
+        self.pages.push(page);
+        self.current += 1;
+    }
+
+    fn back(&mut self) {
+        self.current = self.current.saturating_sub(1);
+    }
+
+    fn forward(&mut self) {
+        if self.can_go_forward() {
+            self.current += 1;
+        }
     }
 }
 
@@ -254,6 +348,9 @@ pub(super) struct ReaderFrame {
     pub(super) content_h: usize,
     /// Each visible piece of a link: its row, columns and link index.
     pub(super) hits: Vec<(u16, Range<u16>, usize)>,
+    /// The back and forward buttons' columns on the bottom border.
+    pub(super) back: Range<u16>,
+    pub(super) forward: Range<u16>,
 }
 
 /// What a submitted line asks the reader for.
@@ -316,7 +413,7 @@ impl App {
                 Page::explain(session, n, rejected)
             }
         };
-        self.reader = Some(Reader { pages: vec![page] });
+        self.reader = Some(Reader::new(page));
         true
     }
 
@@ -326,7 +423,6 @@ impl App {
         let Some(reader) = self.reader.as_mut() else {
             return;
         };
-        let pages = reader.pages.len();
         let page = reader.page_mut();
         let links = page.current().links().len();
         match key.code {
@@ -347,6 +443,10 @@ impl App {
                 });
                 page.reveal = true;
             }
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => reader.back(),
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => reader.forward(),
+            KeyCode::Backspace | KeyCode::Char('b') => reader.back(),
+            KeyCode::Char('f') => reader.forward(),
             KeyCode::Left | KeyCode::Right if page.views.len() > 1 => {
                 let count = page.views.len();
                 page.view = if key.code == KeyCode::Right {
@@ -356,9 +456,6 @@ impl App {
                 };
                 page.scroll = 0;
                 page.focus = None;
-            }
-            KeyCode::Backspace if pages > 1 => {
-                reader.pages.pop();
             }
             KeyCode::Enter => {
                 if let Some(focus) = page.focus {
@@ -370,26 +467,28 @@ impl App {
         }
     }
 
-    /// Follows the current view's link `index`: a glossary entry opens in
-    /// the reader; a constraint closes it and shows the constraint in the
-    /// panes.
+    /// Follows the current view's link `index` to its page: a glossary
+    /// entry, a constraint (also shown in the panes behind the reader), or
+    /// a line's explanation.
     fn follow(&mut self, index: usize) {
         let Some(reader) = self.reader.as_mut() else {
             return;
         };
         let page = reader.page_mut();
         page.focus = Some(index);
-        match page.current().links().get(index) {
-            Some(Target::Entry(id)) => {
-                if let Some(page) = Page::help(id) {
-                    reader.pages.push(page);
-                }
-            }
-            Some(Target::Constraint(id)) => {
-                self.reader = None;
-                self.follow_where(&id.to_string());
-            }
-            None => {}
+        let target = page.current().links().get(index).cloned();
+        let session = self.session.as_ref();
+        let next = match (&target, session) {
+            (Some(Target::Entry(id)), _) => Page::help(id),
+            (Some(Target::Constraint(id)), Some(session)) => Some(Page::constraint(session, *id)),
+            (Some(Target::Line(n)), Some(session)) => Some(Page::line(session, *n)),
+            _ => None,
+        };
+        if let Some(next) = next {
+            reader.push(next);
+        }
+        if let Some(Target::Constraint(id)) = target {
+            self.follow_where(&id.to_string());
         }
     }
 
@@ -410,7 +509,8 @@ impl App {
     }
 
     /// A mouse event while the reader is open: the wheel scrolls it, a
-    /// click on a link follows it, a click outside the box closes it.
+    /// click on a link or on back or forward follows it, a click outside
+    /// the box closes it.
     pub(super) fn reader_mouse(&mut self, mouse: MouseEvent) {
         let Some(frame) = self.reader_frame.clone() else {
             return;
@@ -428,6 +528,16 @@ impl App {
                 page.scroll = page.scroll.saturating_add(WHEEL_STEP);
             }
             MouseEventKind::Down(MouseButton::Left) if !inside => self.reader = None,
+            MouseEventKind::Down(MouseButton::Left)
+                if mouse.row + 1 == frame.y.end && frame.back.contains(&mouse.column) =>
+            {
+                reader.back();
+            }
+            MouseEventKind::Down(MouseButton::Left)
+                if mouse.row + 1 == frame.y.end && frame.forward.contains(&mouse.column) =>
+            {
+                reader.forward();
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 let hit = frame
                     .hits
@@ -447,7 +557,6 @@ mod tests {
     use super::*;
     use crate::tui::Pane;
     use crate::tui::layout::Layout;
-    use crossterm::event::KeyModifiers;
 
     /// An app on the chain demo, checked, laid out 120x40; `None` without
     /// veripb.
@@ -550,15 +659,87 @@ mod tests {
             .collect();
         assert!(printed.contains(&"(Plain English)"), "{printed:#?}");
 
-        // A constraint link closes the reader and shows the constraint.
+        // A constraint link opens its page, and shows it in the panes
+        // behind.
         let links = page(&app).current().links();
         let index = links
             .iter()
             .position(|t| matches!(t, Target::Constraint(_)))
             .expect("a constraint link");
         app.follow(index);
-        assert!(app.reader.is_none());
+        assert!(page(&app).title.starts_with("Constraint "));
         assert!(!app.marked(Pane::Database).is_empty());
+    }
+
+    /// The index in the current view of the link to `target`.
+    fn link_to(app: &App, target: &Target) -> usize {
+        let links = page(app).current().links();
+        links
+            .iter()
+            .position(|t| t == target)
+            .unwrap_or_else(|| panic!("no link to {target:?} in {links:?}"))
+    }
+
+    #[test]
+    fn back_and_forward_walk_the_pages_followed() {
+        let Some(mut app) = app() else {
+            return;
+        };
+        let n = not_x3(&app);
+        app.execute(&format!(":explain {n}"));
+        let explanation = page(&app).title.clone();
+        // Constraint 7 is the one line `n` added: its page links back to
+        // the line's explanation.
+        app.follow(link_to(&app, &Target::Constraint(7)));
+        assert_eq!(page(&app).title, "Constraint 7");
+        let text: Vec<&str> = page(&app)
+            .current()
+            .lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect();
+        assert!(text[0].starts_with("ConstraintId 7: @not_x3"), "{text:#?}");
+        app.follow(link_to(&app, &Target::Line(n)));
+        assert_eq!(page(&app).title, explanation);
+
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(page(&app).title, "Constraint 7");
+        press(&mut app, KeyCode::Char('b'));
+        assert_eq!(page(&app).title, explanation);
+        assert!(!app.reader.as_ref().unwrap().can_go_back());
+        press(&mut app, KeyCode::Char('b'));
+        assert_eq!(page(&app).title, explanation, "nothing further back");
+        press(&mut app, KeyCode::Char('f'));
+        assert_eq!(page(&app).title, "Constraint 7");
+        app.reader_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(page(&app).title, explanation);
+        assert!(!app.reader.as_ref().unwrap().can_go_forward());
+        app.reader_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(page(&app).title, "Constraint 7");
+
+        // Following a link from here drops the pages forward of it.
+        press(&mut app, KeyCode::Char('b'));
+        app.follow(link_to(&app, &Target::Constraint(4)));
+        assert_eq!(page(&app).title, "Constraint 4");
+        let reader = app.reader.as_ref().unwrap();
+        assert_eq!(reader.pages.len(), 2);
+        assert!(!reader.can_go_forward());
+        let text = &page(&app).current().lines[2].text;
+        assert!(text.starts_with("From the formula: `@x3_imp_x4"), "{text}");
+
+        // The bottom border's buttons.
+        draw(&mut app);
+        let frame = app.reader_frame.clone().unwrap();
+        let click = |column| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row: frame.y.end - 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.reader_mouse(click(frame.back.start + 1));
+        assert_eq!(page(&app).title, explanation);
+        app.reader_mouse(click(frame.forward.start + 1));
+        assert_eq!(page(&app).title, "Constraint 4");
     }
 
     #[test]
@@ -618,7 +799,7 @@ mod tests {
             .find(|(_, _, i)| matches!(page(&app).current().links()[*i], Target::Entry(_)))
             .expect("a glossary link drawn");
         app.reader_mouse(click(columns.start, row));
-        assert_eq!(app.reader.as_ref().unwrap().pages.len(), 2, "{index}");
+        assert!(app.reader.as_ref().unwrap().can_go_back(), "{index}");
         // Inside the box, off a link: nothing; outside: closed.
         app.reader_mouse(click(frame.x.start + 1, frame.y.end - 1));
         assert!(app.reader.is_some());

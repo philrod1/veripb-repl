@@ -30,6 +30,10 @@ type Row = Vec<(char, Look)>;
 /// The most columns the box takes, borders included.
 const MAX_WIDTH: u16 = 104;
 
+/// The back and forward buttons on the bottom border.
+const BACK: &str = " ◀ back ";
+const FORWARD: &str = " forward ▶ ";
+
 /// With fewer top-area rows than this, the box takes the whole screen
 /// above the prompt instead.
 const MIN_TOP_ROWS: u16 = 10;
@@ -53,7 +57,9 @@ fn cells(line: &Line, vars: Option<&VarNames>, next_link: &mut usize) -> Row {
         let (run, look) = match inline {
             Inline::Text(run) => (run, Look::Style(text)),
             Inline::Code(run) => (run, Look::Code),
-            Inline::Term { text, .. } | Inline::Constraint { text, .. } => {
+            Inline::Term { text, .. }
+            | Inline::Constraint { text, .. }
+            | Inline::Line { text, .. } => {
                 *next_link += 1;
                 (text, Look::Link(*next_link - 1))
             }
@@ -248,7 +254,8 @@ pub(in crate::tui) fn draw(
     let text_w = inner - 2;
     let content_h = usize::from(box_h) - 2;
 
-    let page = reader.pages.last_mut().expect("a reader has a page");
+    let (can_go_back, can_go_forward) = (reader.can_go_back(), reader.can_go_forward());
+    let page = &mut reader.pages[reader.current];
     let (rows, link_rows) = wrap_lines(&page.views[page.view].lines, vars, text_w);
     if page.reveal
         && let Some(row) = page.focus.and_then(|focus| link_rows.get(focus))
@@ -285,10 +292,27 @@ pub(in crate::tui) fn draw(
         };
         lines.push(format!("{bar}{}{text}{track}{bar}", base(" ", theme)));
     }
+    // The bottom border, with the back and forward buttons at its right,
+    // dim when there is nowhere to go.
+    let button = |text: &str, active: bool| {
+        if active {
+            text.with(theme.fg).on(theme.bg).to_string()
+        } else {
+            chrome(text, theme)
+        }
+    };
+    let fill = inner.saturating_sub(BACK.chars().count() + FORWARD.chars().count() + 2);
+    let back_x = x0 + 1 + fill as u16;
+    let back = back_x..back_x + BACK.chars().count() as u16;
+    let forward = back.end + 1..back.end + 1 + FORWARD.chars().count() as u16;
     lines.push(format!(
-        "{}{}{}",
+        "{}{}{}{}{}{}{}",
         chrome("└", theme),
-        chrome(&"─".repeat(inner), theme),
+        chrome(&"─".repeat(fill), theme),
+        button(BACK, can_go_back),
+        chrome("─", theme),
+        button(FORWARD, can_go_forward),
+        chrome("─", theme),
         chrome("┘", theme)
     ));
     for (y, line) in lines.iter().enumerate() {
@@ -299,6 +323,8 @@ pub(in crate::tui) fn draw(
         y: 0..box_h,
         content_h,
         hits,
+        back,
+        forward,
     });
     Ok(())
 }

@@ -111,15 +111,21 @@ a related topic, or a constraint. Keys, also listed on the prompt row:
 | ↑/↓, PgUp/PgDn, Home/End | scroll |
 | Tab, Shift+Tab | next / previous link (the focused one is in reverse video) |
 | Enter | follow the focused link |
-| Backspace | back to the page the link was followed from |
+| Backspace, `b`, Alt+← | back to the page the link was followed from |
+| `f`, Alt+→ | forward again |
 | ←/→ | switch view |
 | `p` | print the current view into the Output pane, as plain text |
 | Esc | close |
 
-A glossary link opens its entry in the box. A constraint link closes the
-box and shows the constraint in the Database pane and the line it came
-from, as `:where` does. The mouse wheel scrolls the box, a click on a link
-follows it, and a click outside the box closes it. In `:debug`, Esc closes
+A link opens its page in the box: a glossary entry; a constraint, as
+`:show` lists it, with where it came from and, for a derived one, a link
+to explain the line that derived it; or that explanation. A constraint
+link also shows the constraint and its line in the panes behind the box,
+as `:where` does. Back and forward move through the pages followed, as in
+a browser: following a link after going back drops the pages that were
+forward. The bottom border has `◀ back` and `forward ▶` buttons, dim when
+there is nowhere to go. The mouse wheel scrolls the box, a click on a
+link or button follows it, and a click outside the box closes it. In `:debug`, Esc closes
 the box first. The box covers the top panes, or the whole screen above
 the prompt when the top panes are short (Output maximised). While it is
 open, the panes behind it are drawn in faded colours.

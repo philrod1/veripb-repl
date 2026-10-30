@@ -891,8 +891,11 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     let (input_view, cursor_offset) = prompt_editor.view(input_w);
     if let Some(open) = &app.reader {
         let mut keys = vec!["↑/↓ scroll", "Tab next link", "Enter follow"];
-        if open.pages.len() > 1 {
+        if open.can_go_back() {
             keys.push("Backspace back");
+        }
+        if open.can_go_forward() {
+            keys.push("f forward");
         }
         if open.page().views.len() > 1 {
             keys.push("←/→ view");
