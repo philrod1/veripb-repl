@@ -788,9 +788,31 @@ pub fn run(args: &str, out: &mut dyn Output) {
         return;
     }
 
+    match topic_lines(topic) {
+        Some(lines) => {
+            for line in lines {
+                outln!(out, "{}", markup::plain(&line));
+            }
+        }
+        None => outln!(
+            out,
+            "No help for '{topic}' — try :help with no argument for the list."
+        ),
+    }
+}
+
+/// What `:help <topic>` shows for a topic, in [`markup`]: each command,
+/// rule and concept `topic` names, `None` if none. A heading line (a
+/// usage or a concept's term) is unindented, the rest indented; related
+/// topics are glossary links.
+pub fn topic_lines(topic: &str) -> Option<Vec<String>> {
     // A command, a rule and a concept can share a name (`conclusion`,
     // `rup`): show each.
+    let topic = topic.trim().trim_start_matches(':');
     let topic = topic.strip_prefix("rule-").unwrap_or(topic);
+    if topic.is_empty() {
+        return None;
+    }
     let topics: Vec<&Topic> = COMMANDS
         .iter()
         .chain(RULES)
@@ -799,32 +821,32 @@ pub fn run(args: &str, out: &mut dyn Output) {
     let concept = glossary::entry(topic).or_else(|| {
         glossary::lookup(topic).filter(|entry| entry.group == glossary::Group::Concept)
     });
+    if topics.is_empty() && concept.is_none() {
+        return None;
+    }
+    let mut lines = Vec::new();
     for (i, t) in topics.iter().enumerate() {
         if i > 0 {
-            outln!(out);
+            lines.push(String::new());
         }
-        outln!(out, "{}", t.usage);
-        outln!(out, "  {}", t.summary);
+        // Help text has no links, so it is its own markup.
+        lines.push(t.usage.to_string());
+        lines.push(format!("  {}", t.summary));
         for line in t.details {
-            outln!(out, "  {line}");
+            lines.push(format!("  {line}"));
         }
         if RULES.iter().any(|rule| std::ptr::eq(rule, *t)) {
             let shown = concept.as_ref().map(|c| c.id.as_str());
-            print_see_also(glossary::rule_concepts(t.name), shown, out);
+            lines.extend(see_also(glossary::rule_concepts(t.name), shown));
         }
     }
     if let Some(concept) = &concept {
         if !topics.is_empty() {
-            outln!(out);
+            lines.push(String::new());
         }
-        print_concept(concept, out);
+        lines.extend(concept_lines(concept));
     }
-    if topics.is_empty() && concept.is_none() {
-        outln!(
-            out,
-            "No help for '{topic}' — try :help with no argument for the list."
-        );
-    }
+    Some(lines)
 }
 
 /// `?<topic>`, typed at any prompt, is `:help <topic>`: returns the topic.
@@ -833,27 +855,56 @@ pub fn question(line: &str) -> Option<&str> {
 }
 
 /// A glossary concept: its term, paragraphs, example and related topics.
-fn print_concept(entry: &glossary::Entry, out: &mut dyn Output) {
-    outln!(out, "{}", entry.term);
+fn concept_lines(entry: &glossary::Entry) -> Vec<String> {
+    let mut lines = vec![entry.term.to_string()];
     for paragraph in &entry.body {
-        outln!(out, "  {}", markup::plain(paragraph));
+        lines.push(format!("  {paragraph}"));
     }
     if let Some(example) = entry.example {
-        outln!(out, "  Example: {}", markup::plain(example));
+        lines.push(format!("  Example: {example}"));
     }
-    print_see_also(entry.see, Some(entry.id.as_str()), out);
+    lines.extend(see_also(entry.see, Some(entry.id.as_str())));
+    lines
 }
 
 /// `See also: :help a, :help b` for glossary ids `see` (rules by name),
-/// leaving out the topic `shown`, as a rule or a concept.
-fn print_see_also(see: &[&str], shown: Option<&str>, out: &mut dyn Output) {
+/// each a link to its entry, leaving out the topic `shown`, as a rule or a
+/// concept.
+fn see_also(see: &[&str], shown: Option<&str>) -> Option<String> {
     let topics: Vec<String> = see
         .iter()
-        .map(|id| id.strip_prefix("rule-").unwrap_or(id))
-        .filter(|name| Some(*name) != shown)
-        .map(|name| format!(":help {name}"))
+        .filter(|id| Some(id.strip_prefix("rule-").unwrap_or(id)) != shown)
+        .map(|id| format!("[:help {}](g:{id})", id.strip_prefix("rule-").unwrap_or(id)))
         .collect();
-    if !topics.is_empty() {
-        outln!(out, "  See also: {}", topics.join(", "));
+    (!topics.is_empty()).then(|| format!("  See also: {}", topics.join(", ")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_text_reads_the_same_as_markup() {
+        for t in COMMANDS.iter().chain(RULES) {
+            for line in [t.usage, t.summary].iter().chain(t.details) {
+                assert_eq!(markup::plain(line), *line, "{}", t.name);
+                assert!(markup::term_ids(line).is_empty(), "{}", t.name);
+            }
+        }
+    }
+
+    #[test]
+    fn related_topics_are_links() {
+        let lines = topic_lines("slack").unwrap();
+        assert_eq!(lines[0], "Slack");
+        let see = lines.last().unwrap();
+        assert!(see.starts_with("  See also: [:help "), "{see}");
+        assert!(topic_lines("nonsense").is_none());
+        assert!(topic_lines("").is_none());
+        // `rup`: the rule, then the concept, the rule's see-also leaving
+        // out the concept shown.
+        let lines = topic_lines("rup").unwrap();
+        assert!(lines[0].starts_with("rup "), "{lines:#?}");
+        assert!(!lines.iter().any(|l| l.contains("(g:rup)")), "{lines:#?}");
     }
 }

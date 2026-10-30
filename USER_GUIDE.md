@@ -99,6 +99,30 @@ hint IDs, "Without hints it still fails") are red and "Without hints it
 DOES check" is green (vermillion and blue-green under `colorblind`).
 Everything else is plain.
 
+**Reader.** `:explain [<n>]`, `:help <topic>` and `?<topic>` open their
+text in a box over the panes instead of the Output pane (`:help` with no
+topic still prints its list there). An explanation has two views, Plain
+English and Checker, named in the box's title with the current one in
+reverse video. Links are underlined in the accent colour: a glossary term,
+a related topic, or a constraint. Keys, also listed on the prompt row:
+
+| Key | Action |
+|---|---|
+| ↑/↓, PgUp/PgDn, Home/End | scroll |
+| Tab, Shift+Tab | next / previous link (the focused one is in reverse video) |
+| Enter | follow the focused link |
+| Backspace | back to the page the link was followed from |
+| ←/→ | switch view |
+| `p` | print the current view into the Output pane, as plain text |
+| Esc | close |
+
+A glossary link opens its entry in the box. A constraint link closes the
+box and shows the constraint in the Database pane and the line it came
+from, as `:where` does. The mouse wheel scrolls the box, a click on a link
+follows it, and a click outside the box closes it. In `:debug`, Esc closes
+the box first. The box covers the top panes, or the whole screen above
+the prompt when the top panes are short (Output maximised).
+
 **Focus and scrolling.** Shift+Tab cycles focus between the four panes;
 the focused pane's title (Output's is in the separator bar) is shown in
 reverse video. PgUp/PgDn scroll the focused pane by a page. With a top
@@ -477,7 +501,8 @@ formulas are not supported.
   step by step (for `rup`, the shortest chain of forced values to the
   conflict). Terms it uses have glossary entries (`:help <term>`). The
   checker's own account follows under `Checker:`; other lines show only
-  that.
+  that. In the TUI, the two are views of the reader (see **Reader**
+  above).
 
   The checker's account, for a checked line:
   - `pol`: the step-by-step table (each operand or operator, as written
@@ -865,7 +890,9 @@ formulas are not supported.
   `:help unit-propagation` (or its name, ignoring case), prints its
   explanation, an example, and related topics. A name that is both, such
   as `rup`, shows both. `?<topic>` is short for `:help <topic>`, and works
-  in `:edit` and `:debug` too. Works with no formula loaded.
+  in `:edit` and `:debug` too. Works with no formula loaded. In the TUI, a
+  topic opens in the reader, with related topics as links (see
+  **Reader**).
   For full rule grammar and semantics, see `proof_format_overview.md` in
   the veripb repository.
 

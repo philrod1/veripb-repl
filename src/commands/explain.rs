@@ -46,6 +46,16 @@ fn too_large_to_elaborate() -> String {
 pub(crate) const CHECKER_HEADING: &str = "Checker:";
 
 pub fn run(session: &Session, args: &str, out: &mut dyn Output) {
+    match target(session, args, out) {
+        Some((n, true)) => print_rejection(session, n, out),
+        Some((n, false)) => explain_checked(session, n, out),
+        None => {}
+    }
+}
+
+/// The display line `:explain <args>` explains, and whether it is the
+/// pending rejected line; `None`, saying why, if there is none.
+pub(crate) fn target(session: &Session, args: &str, out: &mut dyn Output) -> Option<(usize, bool)> {
     let arg = args.trim();
     let rejected_line = session
         .known_bad
@@ -57,7 +67,7 @@ pub fn run(session: &Session, args: &str, out: &mut dyn Output) {
             (Some(n), _) => n,
             (None, 0) => {
                 outln!(out, "Nothing checked yet — nothing to explain.");
-                return;
+                return None;
             }
             (None, checked_len) => session.display_line(checked_len - 1),
         }
@@ -66,20 +76,13 @@ pub fn run(session: &Session, args: &str, out: &mut dyn Output) {
             Ok(n) => n,
             Err(_) => {
                 outln!(out, "Error: usage :explain [<n>]");
-                return;
+                return None;
             }
         }
     };
-
-    if rejected_line == Some(n) {
-        print_rejection(session, n, out);
-    } else {
-        explain_checked(session, n, out);
-    }
+    Some((n, rejected_line == Some(n)))
 }
 
-/// Explains checked line `n` — the per-rule trace, plus the needed hints
-/// for a `rup` line.
 /// Explains checked line `n`: in plain English when [`teach::explain`]
 /// covers it, then the checker's account (see [`print_checker`]).
 fn explain_checked(session: &Session, n: usize, out: &mut dyn Output) {
@@ -164,7 +167,7 @@ pub(crate) fn print_checker(
 
 /// Prints the rejection reason (`known_bad`) for line `n`, then
 /// [`Session::diagnose_rejected_rup`]'s findings for a `rup` line.
-fn print_rejection(session: &Session, n: usize, out: &mut dyn Output) {
+pub(crate) fn print_rejection(session: &Session, n: usize, out: &mut dyn Output) {
     let reason = session.known_bad.as_deref().unwrap_or_default();
     outln!(out, "Line {n}{REJECTED_INFIX}{reason}");
     help::print_rejection_hint(out, &session.buffer[session.checked_len]);
