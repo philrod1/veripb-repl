@@ -415,7 +415,14 @@ fn pane_row(view: &PaneView, i: usize, theme: Theme) -> String {
 }
 
 pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
-    let theme = app.theme.theme();
+    let full = app.theme.theme();
+    // With the reader open, the frame behind it is faded; the reader and
+    // its keys on the prompt row are drawn in `full`.
+    let theme = if app.reader.is_some() {
+        full.faded()
+    } else {
+        full
+    };
     // Every frame, so scrolls and resizes also update the hover (computed
     // against the previous frame's layout).
     app.recompute_bp_hover();
@@ -892,8 +899,8 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
         }
         keys.extend(["p print", "Esc close"]);
         let styled = fit(&keys.join(" · "), inner)
-            .with(theme.cursor_accent)
-            .on(theme.bg)
+            .with(full.cursor_accent)
+            .on(full.bg)
             .to_string();
         rows.push(format!("{bar}{styled}{bar}"));
     } else if app.vim_active() {
@@ -955,7 +962,7 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
     for (y, row) in rows.iter().enumerate() {
         queue!(w, cursor::MoveTo(0, y as u16), Print(row))?;
     }
-    reader::draw(w, app, &layout, width, theme)?;
+    reader::draw(w, app, &layout, width, full)?;
     if app.reader.is_some() {
         w.flush()?;
         return Ok(());

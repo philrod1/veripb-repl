@@ -121,7 +121,8 @@ box and shows the constraint in the Database pane and the line it came
 from, as `:where` does. The mouse wheel scrolls the box, a click on a link
 follows it, and a click outside the box closes it. In `:debug`, Esc closes
 the box first. The box covers the top panes, or the whole screen above
-the prompt when the top panes are short (Output maximised).
+the prompt when the top panes are short (Output maximised). While it is
+open, the panes behind it are drawn in faded colours.
 
 **Focus and scrolling.** Shift+Tab cycles focus between the four panes;
 the focused pane's title (Output's is in the separator bar) is shown in
