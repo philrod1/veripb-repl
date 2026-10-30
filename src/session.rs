@@ -1614,11 +1614,13 @@ impl Session {
     }
 
     /// Returns the minimized hints the checker needed for checked `rup`
-    /// line `display_line`. The inner `Err` is a user-facing message.
+    /// line `display_line`, or `None` if working them out passed
+    /// [`checker::ELABORATION_LIMIT`]. The inner `Err` is a user-facing
+    /// message.
     pub fn rup_needed_hints(
         &self,
         display_line: usize,
-    ) -> anyhow::Result<Result<Vec<checker::RupHint>, String>> {
+    ) -> anyhow::Result<Result<Option<Vec<checker::RupHint>>, String>> {
         let Some(idx) = self.checked_index(display_line) else {
             return Ok(Err(unchecked_or_out_of_range(self, display_line)));
         };
@@ -1629,11 +1631,12 @@ impl Session {
             formula_file.path(),
             proof(&preamble, &self.buffer[..=idx], &[]),
         )? {
-            Ok(Some(hints)) => Ok(Ok(hints)),
-            Ok(None) => Ok(Err(format!(
+            checker::Elaboration::Hints(Some(hints)) => Ok(Ok(Some(hints))),
+            checker::Elaboration::TooLarge => Ok(Ok(None)),
+            checker::Elaboration::Hints(None) => Ok(Err(format!(
                 "line {display_line} doesn't look like a `rup` step — no hints to show."
             ))),
-            Err(message) => Ok(Err(format!(
+            checker::Elaboration::Rejected(message) => Ok(Err(format!(
                 "internal error: replaying line {display_line}, which should already be \
                  checked, was rejected: {message}"
             ))),
@@ -1682,8 +1685,9 @@ impl Session {
         let formula_file = self.formula_temp_file()?;
         let proof = proof(&preamble, &self.buffer[..self.checked_len], &tail);
         let without_hints = match checker::elaborate_rup(formula_file.path(), proof)? {
-            Ok(hints) => Ok(hints.unwrap_or_default()),
-            Err(message) => Err(message),
+            checker::Elaboration::Hints(hints) => Some(Ok(hints.unwrap_or_default())),
+            checker::Elaboration::Rejected(message) => Some(Err(message)),
+            checker::Elaboration::TooLarge => None,
         };
 
         Ok(Some(RejectionDiagnosis {
@@ -1718,8 +1722,9 @@ pub struct RejectionDiagnosis {
     /// Typed `@label` hints that no formula or checked line defines.
     pub unknown_labels: Vec<String>,
     /// Re-checking the same constraint with no hints: `Ok` with the hints
-    /// the checker then needed, or `Err` with its rejection message.
-    pub without_hints: Result<Vec<checker::RupHint>, String>,
+    /// the checker then needed, or `Err` with its rejection message. `None`
+    /// if working that out passed [`checker::ELABORATION_LIMIT`].
+    pub without_hints: Option<Result<Vec<checker::RupHint>, String>>,
 }
 
 /// Returns the error message for a display line that isn't a checked buffer

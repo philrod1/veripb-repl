@@ -117,20 +117,47 @@ pub fn explain_line<'a>(
     parse::check_outcome(&raw)
 }
 
+/// The most bytes of elaborated proof [`elaborate_rup`] lets `veripb`
+/// write. An elaboration spells out the hints of every `rup` step, not just
+/// the last; on a long proof that can run to terabytes.
+pub const ELABORATION_LIMIT: u64 = 256 * 1024 * 1024;
+
+/// What [`elaborate_rup`] found.
+#[derive(Debug, PartialEq)]
+pub enum Elaboration {
+    /// The last step's minimized hints, or `None` if it isn't `rup`.
+    Hints(Option<Vec<RupHint>>),
+    /// The checker rejected the proof, with this message.
+    Rejected(String),
+    /// The elaboration passed [`ELABORATION_LIMIT`] and was stopped.
+    TooLarge,
+}
+
 /// Returns the minimized RUP-hint list for the last `rup` line in
-/// `proof`, or `None` if it has none. `proof` must end at the step
-/// being asked about. The inner `Err` is the checker's rejection message.
+/// `proof`. `proof` must end at the step being asked about.
 pub fn elaborate_rup<'a>(
     formula_path: &Path,
     proof: impl Into<ProofText<'a>>,
-) -> anyhow::Result<Result<Option<Vec<RupHint>>, String>> {
-    let elaborated = invoke::run_with_elaboration(formula_path, proof)?;
-    match parse::check_outcome(&elaborated.raw)? {
+) -> anyhow::Result<Elaboration> {
+    elaborate_rup_within(formula_path, proof, ELABORATION_LIMIT)
+}
+
+/// [`elaborate_rup`], with an elaboration of at most `limit` bytes.
+#[doc(hidden)]
+pub fn elaborate_rup_within<'a>(
+    formula_path: &Path,
+    proof: impl Into<ProofText<'a>>,
+    limit: u64,
+) -> anyhow::Result<Elaboration> {
+    let Some(elaborated) = invoke::run_with_elaboration(formula_path, proof, limit)? else {
+        return Ok(Elaboration::TooLarge);
+    };
+    Ok(match parse::check_outcome(&elaborated.raw)? {
         CheckOutcome::Accepted { .. } => {
-            Ok(Ok(parse::last_rup_hints(&elaborated.elaborated_proof)))
+            Elaboration::Hints(parse::last_rup_hints(&elaborated.elaborated_proof))
         }
-        CheckOutcome::Rejected { message, .. } => Ok(Err(message)),
-    }
+        CheckOutcome::Rejected { message, .. } => Elaboration::Rejected(message),
+    })
 }
 
 /// Returns the live database after replaying `proof`.
