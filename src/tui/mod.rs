@@ -23,6 +23,7 @@ mod find;
 mod input;
 mod layout;
 mod link;
+mod reader;
 mod theme;
 
 use std::collections::BTreeMap;
@@ -486,6 +487,11 @@ pub struct App {
     /// Each top pane's line-number width in the last frame drawn: where a
     /// click follows a link (see `link`) rather than landing on the text.
     prefix_widths: [usize; 3],
+    /// `Some` while the reader is open over the panes; it owns the keys
+    /// and the mouse. See `reader`.
+    reader: Option<reader::Reader>,
+    /// The reader's box and links in the last frame drawn.
+    reader_frame: Option<reader::ReaderFrame>,
 }
 
 impl App {
@@ -530,6 +536,8 @@ impl App {
             find_editor: input::LineEditor::new(),
             marked: Default::default(),
             prefix_widths: [0; 3],
+            reader: None,
+            reader_frame: None,
         })
     }
 
@@ -2403,6 +2411,11 @@ impl App {
 
     /// Runs one submitted line; see [`Self::execute`].
     fn execute_line(&mut self, line: &str) -> bool {
+        // `:explain`, `:help <topic>` and `?<topic>` open the reader, in
+        // any mode.
+        if self.open_reader(line) {
+            return true;
+        }
         // `:debug` mode, once entered, is checked before anything else:
         // every line typed at the bottom prompt while it's active — a
         // `:step`, a `:show`, `:done`, anything — belongs to
@@ -2642,7 +2655,9 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 match key.code {
-                    // A find query being typed owns every key.
+                    // The reader, and then a find query being typed, owns
+                    // every key.
+                    _ if app.reader.is_some() => app.reader_key(key),
                     _ if app.find_input.is_some() => app.find_key(key),
                     // Vim `Insert` sub-mode: Esc commits and returns to
                     // `Normal`; Enter opens the next proof line; Backspace
@@ -2864,6 +2879,10 @@ pub fn run(formula_path: Option<&str>) -> anyhow::Result<()> {
                     },
                 }
                 app.refresh_candidates();
+            }
+            Event::Mouse(mouse) if app.reader.is_some() => {
+                app.mouse_pos = Some((mouse.column, mouse.row));
+                app.reader_mouse(mouse);
             }
             Event::Mouse(mouse) => {
                 // Every mouse event carries a position, click or not —

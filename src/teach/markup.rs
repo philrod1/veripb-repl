@@ -1,7 +1,8 @@
 //! The markup explanations and glossary entries are written in: `` `code` ``,
-//! `[text](g:<glossary id>)` for a link to a glossary entry, and
-//! `[text](c:<constraint id>)` for a link to a constraint. Anything else,
-//! including markup that doesn't parse, is plain text.
+//! `[text](g:<glossary id>)` for a link to a glossary entry,
+//! `[text](c:<constraint id>)` for a link to a constraint, and
+//! `[text](l:<line>)` for a link to a proof line, by display line number.
+//! Anything else, including markup that doesn't parse, is plain text.
 
 /// One run of marked-up text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,6 +19,11 @@ pub enum Inline {
     Constraint {
         text: String,
         id: usize,
+    },
+    /// A link to proof line `line` (a display line number).
+    Line {
+        text: String,
+        line: usize,
     },
 }
 
@@ -51,8 +57,8 @@ fn code(text: &str) -> Option<(Inline, &str)> {
     Some((Inline::Code(body[..end].to_string()), &body[end + 1..]))
 }
 
-/// `[text](g:id)` or `[text](c:id)` at the start of `text`, and what
-/// follows it.
+/// `[text](g:id)`, `[text](c:id)` or `[text](l:line)` at the start of
+/// `text`, and what follows it.
 fn link(text: &str) -> Option<(Inline, &str)> {
     let body = text.strip_prefix('[')?;
     let close = body.find("](")?;
@@ -70,6 +76,10 @@ fn link(text: &str) -> Option<(Inline, &str)> {
             text: label.to_string(),
             id: id.parse().ok()?,
         },
+        "l" => Inline::Line {
+            text: label.to_string(),
+            line: id.parse().ok()?,
+        },
         _ => return None,
     };
     Some((inline, after))
@@ -83,7 +93,9 @@ pub fn plain(text: &str) -> String {
         .map(|inline| match inline {
             Inline::Text(text) => text,
             Inline::Code(code) => format!("`{code}`"),
-            Inline::Term { text, .. } | Inline::Constraint { text, .. } => text,
+            Inline::Term { text, .. }
+            | Inline::Constraint { text, .. }
+            | Inline::Line { text, .. } => text,
         })
         .collect()
 }
@@ -132,6 +144,7 @@ mod tests {
             "a ` b",
             "[c](q:1)",
             "[c](c:x)",
+            "[c](l:)",
             "[c](g:)",
             "[unclosed](g:x",
             "≥ [é](g:é)",
@@ -156,5 +169,13 @@ mod tests {
             "The claim: `x1 ≥ 1`, see RUP and constraint 6."
         );
         assert_eq!(term_ids("[a](g:x) [b](c:2) [c](g:y)"), ["x", "y"]);
+        assert_eq!(
+            parse("[line 3](l:3)"),
+            [Inline::Line {
+                text: "line 3".into(),
+                line: 3
+            }]
+        );
+        assert_eq!(plain("see [line 3](l:3)"), "see line 3");
     }
 }

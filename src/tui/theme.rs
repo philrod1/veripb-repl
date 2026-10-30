@@ -64,6 +64,55 @@ pub struct Theme {
     pub ok_fg: Color,
 }
 
+impl Theme {
+    /// The palette faded towards `bg`: every colour keeps `FADE_KEEP` of
+    /// its difference from `bg`. Draws what is behind the reader.
+    pub fn faded(self) -> Theme {
+        let bg = self.bg;
+        let fade = |color: Color| blend(color, bg, FADE_KEEP);
+        Theme {
+            bg,
+            fg: fade(self.fg),
+            dim: fade(self.dim),
+            variable: fade(self.variable),
+            label: fade(self.label),
+            cursor_accent: fade(self.cursor_accent),
+            cursor_bg: fade(self.cursor_bg),
+            assertion_bg: fade(self.assertion_bg),
+            core_bg: fade(self.core_bg),
+            derived_bg: fade(self.derived_bg),
+            error_bg: fade(self.error_bg),
+            breakpoint: fade(self.breakpoint),
+            error_fg: fade(self.error_fg),
+            ok_fg: fade(self.ok_fg),
+        }
+    }
+}
+
+/// How much of a colour's difference from the background
+/// [`Theme::faded`] keeps.
+const FADE_KEEP: f32 = 0.4;
+
+/// `color` moved towards `towards`, keeping `keep` of the difference.
+fn blend(color: Color, towards: Color, keep: f32) -> Color {
+    match (color, towards) {
+        (
+            Color::Rgb { r, g, b },
+            Color::Rgb {
+                r: r0,
+                g: g0,
+                b: b0,
+            },
+        ) => {
+            let mix = |c: u8, c0: u8| {
+                (f32::from(c0) + (f32::from(c) - f32::from(c0)) * keep).round() as u8
+            };
+            rgb(mix(r, r0), mix(g, g0), mix(b, b0))
+        }
+        _ => color,
+    }
+}
+
 /// The default palette, for dark terminals. Base and accent colours are
 /// from "One Dark"; highlight backgrounds are muted, darkened variants of
 /// the same hues.
@@ -183,6 +232,43 @@ impl ThemeName {
             ThemeName::Light => LIGHT,
             ThemeName::HiContrast => HI_CONTRAST,
             ThemeName::Colorblind => COLORBLIND,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fading_keeps_the_background_and_moves_colours_towards_it() {
+        for name in [
+            ThemeName::Dark,
+            ThemeName::Light,
+            ThemeName::HiContrast,
+            ThemeName::Colorblind,
+        ] {
+            let theme = name.theme();
+            let faded = theme.faded();
+            assert_eq!(faded.bg, theme.bg);
+            let distance = |a: Color, b: Color| match (a, b) {
+                (
+                    Color::Rgb { r, g, b },
+                    Color::Rgb {
+                        r: r0,
+                        g: g0,
+                        b: b0,
+                    },
+                ) => r.abs_diff(r0) as u32 + g.abs_diff(g0) as u32 + b.abs_diff(b0) as u32,
+                _ => panic!("RGB only"),
+            };
+            for (full, faded) in [(theme.fg, faded.fg), (theme.error_fg, faded.error_fg)] {
+                assert!(
+                    distance(faded, theme.bg) < distance(full, theme.bg),
+                    "{}",
+                    name.name()
+                );
+            }
         }
     }
 }

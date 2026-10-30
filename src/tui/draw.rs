@@ -34,6 +34,7 @@ use crate::tui::layout::{self, HeaderButton, Layout};
 use crate::tui::{App, Pane, Zoom, theme::Theme};
 use crate::varnames::VarNames;
 
+pub(super) mod reader;
 mod scrollback;
 
 const NORMAL_PROMPT: &str = "pbp> ";
@@ -414,7 +415,14 @@ fn pane_row(view: &PaneView, i: usize, theme: Theme) -> String {
 }
 
 pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
-    let theme = app.theme.theme();
+    let full = app.theme.theme();
+    // With the reader open, the frame behind it is faded; the reader and
+    // its keys on the prompt row are drawn in `full`.
+    let theme = if app.reader.is_some() {
+        full.faded()
+    } else {
+        full
+    };
     // Every frame, so scrolls and resizes also update the hover (computed
     // against the previous frame's layout).
     app.recompute_bp_hover();
@@ -881,7 +889,24 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
         None => &app.editor,
     };
     let (input_view, cursor_offset) = prompt_editor.view(input_w);
-    if app.vim_active() {
+    if let Some(open) = &app.reader {
+        let mut keys = vec!["↑/↓ scroll", "Tab next link", "Enter follow"];
+        if open.can_go_back() {
+            keys.push("Backspace back");
+        }
+        if open.can_go_forward() {
+            keys.push("f forward");
+        }
+        if open.page().views.len() > 1 {
+            keys.push("←/→ view");
+        }
+        keys.extend(["p print", "Esc close"]);
+        let styled = fit(&keys.join(" · "), inner)
+            .with(full.cursor_accent)
+            .on(full.bg)
+            .to_string();
+        rows.push(format!("{bar}{styled}{bar}"));
+    } else if app.vim_active() {
         let status_text = if !app.vim_inserting() {
             "-- NORMAL --  hjkl/arrows move · i/a/o/O insert · x del char · dd del line · \
              : command · Esc leave"
@@ -939,6 +964,11 @@ pub fn draw(w: &mut impl Write, app: &mut App) -> anyhow::Result<()> {
 
     for (y, row) in rows.iter().enumerate() {
         queue!(w, cursor::MoveTo(0, y as u16), Print(row))?;
+    }
+    reader::draw(w, app, &layout, width, full)?;
+    if app.reader.is_some() {
+        w.flush()?;
+        return Ok(());
     }
     // In Vim mode the terminal cursor is placed in the Proof pane at the
     // Vim (line, column); otherwise, or if the Proof pane is hidden, at

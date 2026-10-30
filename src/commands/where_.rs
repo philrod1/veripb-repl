@@ -137,7 +137,7 @@ fn print(session: &Session, target: &Target, link: &Link, out: &mut dyn Output) 
 
 /// `ConstraintId <id>: <labels> <constraint> [core|derived]`, as `:show`
 /// lists it, or that it has been deleted.
-fn constraint(session: &Session, id: usize) -> String {
+pub(crate) fn constraint(session: &Session, id: usize) -> String {
     let entry = session
         .database()
         .ok()
