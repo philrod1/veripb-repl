@@ -469,26 +469,37 @@ impl App {
 
     /// Follows the current view's link `index` to its page: a glossary
     /// entry, a constraint (also shown in the panes behind the reader), or
-    /// a line's explanation.
+    /// a line's explanation. The prompt row shows the progress of any
+    /// `veripb` run it takes, as for a command.
     fn follow(&mut self, index: usize) {
         let Some(reader) = self.reader.as_mut() else {
             return;
         };
         let page = reader.page_mut();
         page.focus = Some(index);
-        let target = page.current().links().get(index).cloned();
-        let session = self.session.as_ref();
-        let next = match (&target, session) {
-            (Some(Target::Entry(id)), _) => Page::help(id),
-            (Some(Target::Constraint(id)), Some(session)) => Some(Page::constraint(session, *id)),
-            (Some(Target::Line(n)), Some(session)) => Some(Page::line(session, *n)),
+        let Some(target) = page.current().links().get(index).cloned() else {
+            return;
+        };
+        let label = match &target {
+            Target::Entry(id) => format!(":help {id}"),
+            Target::Constraint(id) => format!(":where {id}"),
+            Target::Line(n) => format!(":explain {n}"),
+        };
+        let began = self.begin_activity(&label);
+        let next = match (&target, self.session.as_ref()) {
+            (Target::Entry(id), _) => Page::help(id),
+            (Target::Constraint(id), Some(session)) => Some(Page::constraint(session, *id)),
+            (Target::Line(n), Some(session)) => Some(Page::line(session, *n)),
             _ => None,
         };
-        if let Some(next) = next {
-            reader.push(next);
-        }
-        if let Some(Target::Constraint(id)) = target {
+        if let Target::Constraint(id) = target {
             self.follow_where(&id.to_string());
+        }
+        if began {
+            self.end_activity();
+        }
+        if let (Some(next), Some(reader)) = (next, self.reader.as_mut()) {
+            reader.push(next);
         }
     }
 
