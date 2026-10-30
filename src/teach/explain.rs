@@ -11,10 +11,10 @@
 
 use std::collections::HashMap;
 
-use crate::checker::Database;
 use crate::checker::parse::{
     last_line_constraint_ids, pol_table_with_typed_operands, rule_keyword, split_rup_hints,
 };
+use crate::checker::{Database, RupHint};
 use crate::session::Session;
 
 /// One explanation: a title and its blocks, in order.
@@ -22,6 +22,9 @@ use crate::session::Session;
 pub struct Explanation {
     pub title: String,
     pub blocks: Vec<Block>,
+    /// For a `rup` line, the constraints the step-by-step replay used, as
+    /// `rup` hints (see [`rup_hints`]); `None` otherwise.
+    pub replay_hints: Option<Vec<RupHint>>,
 }
 
 impl Explanation {
@@ -72,6 +75,7 @@ pub fn explain(session: &Session, n: usize) -> Option<Explanation> {
     Some(Explanation {
         title: doc.title,
         blocks: doc.blocks,
+        replay_hints: doc.hints,
     })
 }
 
@@ -80,6 +84,7 @@ pub fn explain(session: &Session, n: usize) -> Option<Explanation> {
 struct Doc {
     title: String,
     blocks: Vec<Block>,
+    hints: Option<Vec<RupHint>>,
 }
 
 impl Doc {
@@ -87,6 +92,7 @@ impl Doc {
         Doc {
             title,
             blocks: Vec::new(),
+            hints: None,
         }
     }
     fn p(&mut self, text: impl Into<String>) {
@@ -388,20 +394,29 @@ struct Event {
 /// every constraint.
 const REPLAY_LIMIT: usize = 20_000_000;
 
+/// [`replay`]'s result.
+enum Replay {
+    /// Every event, the conflict last.
+    Conflict(Vec<Event>),
+    /// Propagation stopped without a conflict.
+    Fixpoint,
+    /// The replay passed [`REPLAY_LIMIT`].
+    TooLong,
+}
+
 /// Unit propagation from `constraints` (the supposition first, then the
 /// database) to a conflict, a round at a time: each round checks every
 /// constraint against the values the earlier rounds fixed, so the conflict
 /// found is one with the fewest rounds of forced values before it, as
-/// short an account as propagation gives. Returns every event, conflict
-/// last, or `None` at a fixpoint without one.
-fn replay(constraints: &[(Option<usize>, Pb)]) -> Option<Vec<Event>> {
+/// short an account as propagation gives.
+fn replay(constraints: &[(Option<usize>, Pb)]) -> Replay {
     let mut values: HashMap<String, bool> = HashMap::new();
     let mut events = Vec::new();
     let mut work = 0;
     loop {
         work += constraints.len();
         if work > REPLAY_LIMIT {
-            return None;
+            return Replay::TooLong;
         }
         // The values this round forces, applied once it is over.
         let mut forced: HashMap<String, bool> = HashMap::new();
@@ -427,11 +442,11 @@ fn replay(constraints: &[(Option<usize>, Pb)]) -> Option<Vec<Event>> {
                 outcome,
             });
             if conflict {
-                return Some(events);
+                return Replay::Conflict(events);
             }
         }
         if forced.is_empty() {
-            return None;
+            return Replay::Fixpoint;
         }
         values.extend(forced);
     }
@@ -469,15 +484,70 @@ fn needed(events: &[Event]) -> Vec<&Event> {
         .collect()
 }
 
-fn rup(session: &Session, n: usize, idx: usize, line: &str) -> Option<Doc> {
+/// The constraints [`needed`] lists, as `rup` hints: `~` for the
+/// supposition, else constraint IDs, each once.
+fn hints(constraints: &[(Option<usize>, Pb)], needed: &[&Event]) -> Vec<RupHint> {
+    let mut hints = Vec::new();
+    for event in needed {
+        let hint = match constraints[event.constraint].0 {
+            None => RupHint::NegatedPremise,
+            Some(id) => RupHint::ConstraintId(id),
+        };
+        if !hints.contains(&hint) {
+            hints.push(hint);
+        }
+    }
+    hints
+}
+
+/// A replay's constraints: the supposition (`None`), then database entries
+/// by ID.
+type Constraints = Vec<(Option<usize>, Pb)>;
+
+/// `rup` line `line`'s claim and the constraints its replay runs over: the
+/// claim's negation first, then `database`. `None` if any doesn't parse.
+fn rup_constraints(line: &str, database: &Database) -> Option<(Pb, Constraints)> {
     let (body, _) = split_rup_hints(line);
     let claim = rule_constraint(body)?;
-    let labels = first_labels(session);
-    let database = database_before(session, idx)?;
-    let mut constraints: Vec<(Option<usize>, Pb)> = vec![(None, claim.negation())];
+    let mut constraints: Constraints = vec![(None, claim.negation())];
     for entry in &database.entries {
         constraints.push((Some(entry.id), Pb::parse(&entry.text)?));
     }
+    Some((claim, constraints))
+}
+
+/// What unit propagation shows about a `rup` line's constraint, without its
+/// typed hints, over `database`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RupReplay {
+    /// It reached a conflict using these constraints, as `rup` hints in the
+    /// order they were used (`~` for the line's negation).
+    Hints(Vec<RupHint>),
+    /// It stopped without a conflict: the constraint isn't implied by
+    /// unit propagation.
+    NotImplied,
+    /// No answer: the line isn't a constraint the replay reads, or the
+    /// replay passed its limit.
+    Unknown,
+}
+
+/// Replays `rup` line `line` over `database` as [`rup`]'s explanation does:
+/// its hints are those of the shortest conflict propagation finds.
+pub fn rup_hints(line: &str, database: &Database) -> RupReplay {
+    let Some((_, constraints)) = rup_constraints(line, database) else {
+        return RupReplay::Unknown;
+    };
+    match replay(&constraints) {
+        Replay::Conflict(events) => RupReplay::Hints(hints(&constraints, &needed(&events))),
+        Replay::Fixpoint => RupReplay::NotImplied,
+        Replay::TooLong => RupReplay::Unknown,
+    }
+}
+
+fn rup(session: &Session, n: usize, idx: usize, line: &str) -> Option<Doc> {
+    let labels = first_labels(session);
+    let database = database_before(session, idx)?;
+    let (claim, constraints) = rup_constraints(line, &database)?;
 
     let mut doc = Doc::new(format!("Line {n}: reverse unit propagation (rup)"));
     doc.p(
@@ -486,13 +556,15 @@ fn rup(session: &Session, n: usize, idx: usize, line: &str) -> Option<Doc> {
          be satisfied in one way, that value is forced. If this reaches a constraint that can no \
          longer be satisfied at all, the supposition was impossible, so the constraint holds.",
     );
-    let Some(events) = replay(&constraints) else {
+    let Replay::Conflict(events) = replay(&constraints) else {
         doc.note(
             "The step-by-step replay did not reach the contradiction veripb found; \
              the checker view shows veripb's own account.",
         );
         return Some(doc);
     };
+    let needed = needed(&events);
+    doc.hints = Some(hints(&constraints, &needed));
     if let Some(last) = events.last()
         && let (Some(id), pb) = &constraints[last.constraint]
         && pb.is_contradiction()
@@ -526,7 +598,6 @@ fn rup(session: &Session, n: usize, idx: usize, line: &str) -> Option<Doc> {
         claim.code(),
         claim.negation().code()
     );
-    let needed = needed(&events);
     if !claim.is_contradiction() && needed.first().is_none_or(|e| e.constraint != 0) {
         steps.push(suppose.clone());
     }

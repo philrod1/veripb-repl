@@ -6,10 +6,11 @@
 
 use std::path::{Path, PathBuf};
 
+use veripb_repl::checker::RupHint;
 use veripb_repl::commands;
 use veripb_repl::output::Output;
 use veripb_repl::session::Session;
-use veripb_repl::teach::explain::{Block, Explanation, explain};
+use veripb_repl::teach::explain::{Block, Explanation, RupReplay, explain, rup_hints};
 use veripb_repl::teach::{glossary, markup};
 
 macro_rules! require_veripb {
@@ -348,6 +349,85 @@ fn every_instance_line_explains_and_links_exist() {
         bad_links.is_empty(),
         "missing glossary entries: {bad_links:#?}"
     );
+}
+
+/// Every checked `rup` line in the instances, its hints replaced by the
+/// ones its replay used, still checks.
+#[test]
+fn every_instance_rup_line_checks_with_the_replays_hints() {
+    require_veripb!();
+    let (mut lines, mut rejected, mut no_hints) = (0, vec![], vec![]);
+    let mut bases: Vec<String> = std::fs::read_dir(instances())
+        .unwrap()
+        .filter_map(|entry| {
+            let name = entry.ok()?.file_name().into_string().ok()?;
+            Some(name.strip_suffix(".pbp")?.to_string())
+        })
+        .filter(|base| instances().join(format!("{base}.opb")).exists())
+        .collect();
+    bases.sort();
+    for base in bases {
+        let Some(session) = session(&instances(), &base, &[]) else {
+            continue;
+        };
+        let mut edits = Vec::new();
+        for idx in 0..session.checked_len {
+            let line = &session.buffer[idx];
+            if line.split_whitespace().find(|t| !t.starts_with('@')) != Some("rup")
+                || line.contains("==>")
+                || line.contains("<==")
+            {
+                continue;
+            }
+            let Some(hints) =
+                explain(&session, session.display_line(idx)).and_then(|e| e.replay_hints)
+            else {
+                no_hints.push(format!("{base}:{} {line}", session.display_line(idx)));
+                continue;
+            };
+            let hints: Vec<String> = hints
+                .iter()
+                .map(|hint| match hint {
+                    RupHint::NegatedPremise => "~".to_string(),
+                    RupHint::ConstraintId(id) => id.to_string(),
+                    RupHint::Label(name) => name.clone(),
+                })
+                .collect();
+            let (body, _) = veripb_repl::checker::parse::split_rup_hints(line);
+            edits.push((idx, format!("{body} : {} ;", hints.join(" "))));
+        }
+        lines += edits.len();
+        let edits: Vec<(usize, &str)> = edits.iter().map(|(i, t)| (*i, t.as_str())).collect();
+        let replaced = self::session(&instances(), &base, &edits).expect("session");
+        if replaced.checked_len < session.checked_len {
+            let idx = replaced.checked_len;
+            rejected.push(format!(
+                "{base}:{} {} ({:?})",
+                replaced.display_line(idx),
+                replaced.buffer[idx],
+                replaced.known_bad
+            ));
+        }
+    }
+    assert!(lines > 50, "{lines} rup lines");
+    assert!(no_hints.is_empty(), "no replay hints: {no_hints:#?}");
+    assert!(
+        rejected.is_empty(),
+        "rejected with the replay's hints: {rejected:#?}"
+    );
+}
+
+#[test]
+fn rup_hints_say_when_propagation_finds_no_conflict() {
+    require_veripb!();
+    let session = session(&demos(), "two-of-three", &[]).expect("session");
+    // Before the proof's lines: the formula alone.
+    let database = session.database_before(0).expect("database");
+    assert_eq!(
+        rup_hints("rup 1 fresh >= 1 ;", &database),
+        RupReplay::NotImplied
+    );
+    assert_eq!(rup_hints("rup nonsense ;", &database), RupReplay::Unknown);
 }
 
 struct Capture(Vec<String>);
