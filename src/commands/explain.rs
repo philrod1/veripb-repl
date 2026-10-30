@@ -1,7 +1,9 @@
 //! `:explain [<n>]` — explains checked line `n`: in plain English for the
 //! rules [`teach::explain`] covers, then, under `Checker:`, its expanded
 //! derivation (see [`Session::explain_line`]), plus for `rup` the minimal
-//! needed hints ([`Session::rup_needed_hints`]).
+//! needed hints ([`Session::rup_needed_hints`]); when veripb's account of
+//! them passes [`checker::ELABORATION_LIMIT`], the hints of the replay the
+//! plain-English steps show ([`teach::explain::rup_hints`]).
 //!
 //! If `n` is the pending rejected line (`Session::known_bad`), shows the
 //! rejection reason and, for `rup`, [`Session::diagnose_rejected_rup`]'s
@@ -23,13 +25,20 @@ pub(crate) const TYPED_HINTS: &str = "Typed hints:";
 pub(crate) const VERDICT_CHECKS: &str = "Without hints it DOES check";
 pub(crate) const VERDICT_FAILS: &str = "Without hints it still fails";
 pub(crate) const NEGATED_PREMISE: &str = "~ (the negated constraint itself)";
-/// Said when the hints a `rup` line needs would take too large an
-/// elaboration to find (see [`checker::ELABORATION_LIMIT`]).
+/// Says that veripb's account of `hints` (the hints a `rup` line needs)
+/// passed [`checker::ELABORATION_LIMIT`].
+fn past_the_limit(hints: &str) -> String {
+    format!(
+        "veripb's account of {hints} for a proof this long passed the {} MiB limit",
+        checker::ELABORATION_LIMIT / (1024 * 1024)
+    )
+}
+
+/// Said when the hints aren't shown, the limit having been passed.
 fn too_large_to_elaborate() -> String {
     format!(
-        "the hints it needed aren't shown: veripb's account of them for a proof this long passed \
-         the {} MiB limit",
-        checker::ELABORATION_LIMIT / (1024 * 1024)
+        "the hints it needed aren't shown: {}",
+        past_the_limit("them")
     )
 }
 
@@ -74,19 +83,27 @@ pub fn run(session: &Session, args: &str, out: &mut dyn Output) {
 /// Explains checked line `n`: in plain English when [`teach::explain`]
 /// covers it, then the checker's account (see [`print_checker`]).
 fn explain_checked(session: &Session, n: usize, out: &mut dyn Output) {
-    if let Some(explanation) = teach::explain::explain(session, n) {
+    let explanation = teach::explain::explain(session, n);
+    if let Some(explanation) = &explanation {
         for line in explanation.text_lines() {
             outln!(out, "{line}");
         }
         outln!(out);
         outln!(out, "{CHECKER_HEADING}");
     }
-    print_checker(session, n, out);
+    let replay_hints = explanation.and_then(|e| e.replay_hints);
+    print_checker(session, n, replay_hints.as_deref(), out);
 }
 
 /// The checker's account of checked line `n`: its trace, and for `rup` the
-/// hints it needed.
-pub(crate) fn print_checker(session: &Session, n: usize, out: &mut dyn Output) {
+/// hints it needed, or `replay_hints` (the plain-English replay's) when
+/// veripb's account of them passes the limit.
+pub(crate) fn print_checker(
+    session: &Session,
+    n: usize,
+    replay_hints: Option<&[RupHint]>,
+    out: &mut dyn Output,
+) {
     let explanation = match session.explain_line(n) {
         Ok(Ok(text)) => text,
         Ok(Err(msg)) => {
@@ -127,7 +144,18 @@ pub(crate) fn print_checker(session: &Session, n: usize, out: &mut dyn Output) {
                 outln!(out, "Line {n}{NEEDED_SUFFIX}");
                 print_hint_list(session, &hints, "  ", out);
             }
-            Ok(Ok(None)) => outln!(out, "({})", too_large_to_elaborate()),
+            Ok(Ok(None)) => match replay_hints {
+                Some(hints) => {
+                    outln!(
+                        out,
+                        "(The hints below are the ones the steps above used: {}.)",
+                        past_the_limit("the hints")
+                    );
+                    outln!(out, "Line {n}{NEEDED_SUFFIX}");
+                    print_hint_list(session, hints, "  ", out);
+                }
+                None => outln!(out, "({})", too_large_to_elaborate()),
+            },
             Ok(Err(msg)) => outln!(out, "Error: {msg}"),
             Err(err) => outln!(out, "Error: {err:#}"),
         }
@@ -172,7 +200,22 @@ fn print_diagnosis(session: &Session, diagnosis: &RejectionDiagnosis, out: &mut 
             "  ConstraintId {id} is not in the database (deleted or never derived)"
         );
     }
-    match &diagnosis.without_hints {
+    // Re-checking without hints: veripb's result, else unit propagation's.
+    let (without_hints, needed_by) = match &diagnosis.without_hints {
+        Some(result) => (Some(result.clone().map_err(drop)), "The checker needed"),
+        None => {
+            let replayed = replay_rejected(session);
+            if replayed.is_some() {
+                outln!(
+                    out,
+                    "  (This is from replaying unit propagation: {}.)",
+                    past_the_limit("the hints")
+                );
+            }
+            (replayed, "Unit propagation used")
+        }
+    };
+    match &without_hints {
         None => outln!(out, "  ({})", too_large_to_elaborate()),
         Some(Ok(hints)) if diagnosis.typed_hints.is_empty() => {
             // Unreachable in practice (the bare line is the rejected line);
@@ -183,7 +226,7 @@ fn print_diagnosis(session: &Session, diagnosis: &RejectionDiagnosis, out: &mut 
         Some(Ok(hints)) => {
             outln!(
                 out,
-                "  {VERDICT_CHECKS} — the hint list is the problem. The checker needed:"
+                "  {VERDICT_CHECKS} — the hint list is the problem. {needed_by}:"
             );
             print_hint_list(session, hints, "    ", out);
         }
@@ -191,6 +234,18 @@ fn print_diagnosis(session: &Session, diagnosis: &RejectionDiagnosis, out: &mut 
             out,
             "  {VERDICT_FAILS}: the constraint isn't RUP-implied by the current database."
         ),
+    }
+}
+
+/// Unit propagation's result for the rejected `rup` line without its typed
+/// hints, over the current database: `Ok` with the hints it used, `Err` if
+/// it reaches no conflict, `None` if it gives no answer.
+fn replay_rejected(session: &Session) -> Option<Result<Vec<RupHint>, ()>> {
+    let database = session.database().ok()?;
+    match teach::explain::rup_hints(&session.buffer[session.checked_len], &database) {
+        teach::explain::RupReplay::Hints(hints) => Some(Ok(hints)),
+        teach::explain::RupReplay::NotImplied => Some(Err(())),
+        teach::explain::RupReplay::Unknown => None,
     }
 }
 

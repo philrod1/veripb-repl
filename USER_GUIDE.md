@@ -490,7 +490,10 @@ formulas are not supported.
     lone `~` means the negation alone reached the conflict.
     veripb works the hints out by elaborating the whole proof up to the
     line, which on a long proof can grow far larger than the proof; past
-    256 MiB it is stopped and the hints are left out, saying so.
+    256 MiB it is stopped, and the hints shown are instead the ones the
+    plain-English steps used, saying so. Those are the constraints of the
+    shortest conflict unit propagation finds, so they can differ from
+    veripb's, but they are hints veripb accepts.
   - any other rule: the `ConstraintId N: ...` line.
 
   For the rejected line: the rejection reason (as shown by `:list` and
@@ -498,7 +501,9 @@ formulas are not supported.
   in the database (deleted or never derived), and the result of
   re-checking without hints — either "Without hints it DOES check" with
   the hints actually needed (the hint list was the problem), or "Without
-  hints it still fails" (the constraint is not RUP-implied).
+  hints it still fails" (the constraint is not RUP-implied). Past the
+  256 MiB limit, that re-check is a replay of unit propagation instead,
+  saying so.
 
 - **`:where <id>|@label`**, **`:where line <n>`** — links constraints and
   the lines they came from, without changing the session. With a
