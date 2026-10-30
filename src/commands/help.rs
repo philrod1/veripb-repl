@@ -4,6 +4,7 @@
 
 use crate::checker::parse::rule_keyword;
 use crate::output::{Output, outln};
+use crate::teach::{glossary, markup};
 
 pub struct Topic {
     /// Bare name — no leading `:`, even for commands: "check", "rup".
@@ -71,7 +72,10 @@ pub const COMMANDS: &[Topic] = &[
             "n must be a checked line, or the line :verify last rejected.",
             "With no n: the rejected line if there is one, otherwise the last",
             "checked line.",
-            "For a checked line, prints the checker's trace for it:",
+            "For a checked rup, pol, red, a, setlvl or wiplvl line, first explains",
+            "it in plain English: what the rule means, then the line's derivation",
+            "step by step (see :help for the terms it links to).",
+            "Then, under Checker:, the checker's trace for it:",
             "  pol          each operand (as written, labels included) and",
             "               the constraint after it",
             "  red          the witness, and how each proof goal was proven",
@@ -389,10 +393,11 @@ pub const COMMANDS: &[Topic] = &[
     Topic {
         name: "help",
         usage: ":help [<topic>]",
-        summary: "this list, or details on a command or proof rule",
+        summary: "this list, or details on a command, proof rule or concept",
         details: &[
-            "Topics are command names (with or without the leading `:`) and",
-            "proof-rule keywords, e.g. `:help rup` or `:help save`.",
+            "Topics are command names (with or without the leading `:`),",
+            "proof-rule keywords and concepts, e.g. `:help rup`, `:help save`",
+            "or `:help slack`. `?<topic>` is short for `:help <topic>`.",
             "Commands can be shortened to any unique prefix (:v for :verify).",
         ],
     },
@@ -776,15 +781,24 @@ pub fn run(args: &str, out: &mut dyn Output) {
             out,
             "Full grammar and semantics: proof_format_overview.md in the veripb repository."
         );
+        outln!(out);
+        outln!(out, "Concepts — `:help <concept>`, or `?<concept>`:");
+        let concepts: Vec<&str> = glossary::concept_ids().collect();
+        outln!(out, "  {}", concepts.join(", "));
         return;
     }
 
-    // A command and a rule can share a name (`conclusion`): show both.
+    // A command, a rule and a concept can share a name (`conclusion`,
+    // `rup`): show each.
+    let topic = topic.strip_prefix("rule-").unwrap_or(topic);
     let topics: Vec<&Topic> = COMMANDS
         .iter()
         .chain(RULES)
         .filter(|t| t.name == topic)
         .collect();
+    let concept = glossary::entry(topic).or_else(|| {
+        glossary::lookup(topic).filter(|entry| entry.group == glossary::Group::Concept)
+    });
     for (i, t) in topics.iter().enumerate() {
         if i > 0 {
             outln!(out);
@@ -794,11 +808,52 @@ pub fn run(args: &str, out: &mut dyn Output) {
         for line in t.details {
             outln!(out, "  {line}");
         }
+        if RULES.iter().any(|rule| std::ptr::eq(rule, *t)) {
+            let shown = concept.as_ref().map(|c| c.id.as_str());
+            print_see_also(glossary::rule_concepts(t.name), shown, out);
+        }
     }
-    if topics.is_empty() {
+    if let Some(concept) = &concept {
+        if !topics.is_empty() {
+            outln!(out);
+        }
+        print_concept(concept, out);
+    }
+    if topics.is_empty() && concept.is_none() {
         outln!(
             out,
             "No help for '{topic}' — try :help with no argument for the list."
         );
+    }
+}
+
+/// `?<topic>`, typed at any prompt, is `:help <topic>`: returns the topic.
+pub fn question(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix('?')
+}
+
+/// A glossary concept: its term, paragraphs, example and related topics.
+fn print_concept(entry: &glossary::Entry, out: &mut dyn Output) {
+    outln!(out, "{}", entry.term);
+    for paragraph in &entry.body {
+        outln!(out, "  {}", markup::plain(paragraph));
+    }
+    if let Some(example) = entry.example {
+        outln!(out, "  Example: {}", markup::plain(example));
+    }
+    print_see_also(entry.see, Some(entry.id.as_str()), out);
+}
+
+/// `See also: :help a, :help b` for glossary ids `see` (rules by name),
+/// leaving out the topic `shown`, as a rule or a concept.
+fn print_see_also(see: &[&str], shown: Option<&str>, out: &mut dyn Output) {
+    let topics: Vec<String> = see
+        .iter()
+        .map(|id| id.strip_prefix("rule-").unwrap_or(id))
+        .filter(|name| Some(*name) != shown)
+        .map(|name| format!(":help {name}"))
+        .collect();
+    if !topics.is_empty() {
+        outln!(out, "  See also: {}", topics.join(", "));
     }
 }

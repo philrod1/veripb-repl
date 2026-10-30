@@ -16,6 +16,7 @@ use std::fs;
 use crate::commands::help::Topic;
 use crate::commands::{expand_tilde, help};
 use crate::session::Session;
+use crate::teach::glossary;
 use crate::tui::theme::ThemeName;
 
 /// The most candidates [`reference_candidates`] builds: a large proof's
@@ -129,6 +130,10 @@ pub fn suggestions(
         return Suggestions::default();
     }
     let Some((first, rest)) = trimmed.split_once(char::is_whitespace) else {
+        // `?<topic>` is `:help <topic>`.
+        if let Some(partial) = trimmed.strip_prefix('?') {
+            return topic_candidates("?", partial).into();
+        }
         return first_token(trimmed, session, mode_vocabulary).into();
     };
 
@@ -141,7 +146,7 @@ pub fn suggestions(
         }
         return match accepted_suffixes(cmd) {
             Some(suffixes) => file_candidates(first, Some(suffixes), partial),
-            None if cmd == "help" => topic_candidates(first, partial),
+            None if cmd == "help" => topic_candidates(&format!("{first} "), partial),
             None if cmd == "theme" => theme_candidates(first, partial),
             None => Vec::new(),
         }
@@ -359,11 +364,11 @@ fn matches_suffix(name: &str, suffixes: Option<&'static [&'static str]>) -> bool
     suffixes.iter().any(|suf| lower.ends_with(suf))
 }
 
-/// `:help`'s argument: topic names from the same registry the command
-/// answers from. A leading `:` (help accepts either spelling) narrows to
-/// commands and is kept in the completion; a bare partial matches
-/// commands and rules alike.
-fn topic_candidates(cmd: &str, partial: &str) -> Vec<Candidate> {
+/// `:help`'s argument (or `?`'s), after `line_prefix`: topic names from
+/// the same registry the command answers from. A leading `:` (help accepts
+/// either spelling) narrows to commands and is kept in the completion; a
+/// bare partial matches commands, rules and glossary concepts alike.
+fn topic_candidates(line_prefix: &str, partial: &str) -> Vec<Candidate> {
     let (colon, bare) = match partial.strip_prefix(':') {
         Some(bare) => (":", bare),
         None => ("", partial),
@@ -372,14 +377,27 @@ fn topic_candidates(cmd: &str, partial: &str) -> Vec<Candidate> {
     if colon.is_empty() {
         topics.extend(help::rule_matches(bare));
     }
-    topics
-        .into_iter()
+    let mut candidates: Vec<Candidate> = topics
+        .iter()
         .map(|t| Candidate {
-            line: format!("{cmd} {colon}{}", t.name),
+            line: format!("{line_prefix}{colon}{}", t.name),
             left: t.usage.to_string(),
             right: t.summary.to_string(),
         })
-        .collect()
+        .collect();
+    if colon.is_empty() {
+        candidates.extend(
+            glossary::concept_ids()
+                .filter(|id| id.starts_with(bare) && !topics.iter().any(|t| t.name == *id))
+                .filter_map(glossary::entry)
+                .map(|entry| Candidate {
+                    line: format!("{line_prefix}{}", entry.id),
+                    left: entry.id.clone(),
+                    right: entry.term.to_string(),
+                }),
+        );
+    }
+    candidates
 }
 
 /// `:theme`'s argument: the three fixed theme names — no filesystem or
@@ -668,6 +686,23 @@ mod tests {
             }
         }
         assert_eq!(id_matches(&[] as &[u64], |&id| id, "", 5).count, 0);
+    }
+
+    #[test]
+    fn help_topics_include_concepts_after_help_or_a_question_mark() {
+        let lines = |text: &str| -> Vec<String> {
+            suggestions(text, None, None)
+                .candidates
+                .into_iter()
+                .map(|c| c.line)
+                .collect()
+        };
+        assert_eq!(lines(":help sl"), [":help slack"]);
+        assert_eq!(lines("?unit"), ["?unit-propagation"]);
+        assert_eq!(lines("?pol"), ["?pol"]);
+        // `rup` is a rule and a concept: listed once.
+        assert_eq!(lines("?rup"), ["?rup"]);
+        assert_eq!(lines(":help :sta"), [":help :stats"]);
     }
 
     #[test]

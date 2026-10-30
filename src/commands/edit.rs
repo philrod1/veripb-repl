@@ -19,7 +19,7 @@
 //! `:`), and treats everything else as the replacement or inserted line.
 
 use crate::commands::{
-    check, explain, list, objective, preserved, resolve_command, show, stats, where_,
+    check, explain, help, list, objective, preserved, resolve_command, show, stats, where_,
 };
 use crate::output::{Output, outln};
 use crate::session::Session;
@@ -541,6 +541,11 @@ pub fn handle(
     line: &str,
     out: &mut dyn Output,
 ) -> anyhow::Result<EditFlow> {
+    // A replacement line never starts with `?`: it asks for help.
+    if let Some(topic) = help::question(line) {
+        help::run(topic, out);
+        return Ok(EditFlow::Continue);
+    }
     match line.trim() {
         ":cancel" => {
             cancel(session, state, out)?;
