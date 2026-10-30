@@ -38,7 +38,8 @@ pub fn set_reporter(reporter: Option<Reporter>) {
     REPORTER.with(|current| *current.borrow_mut() = reporter);
 }
 
-/// The reporter installed on this thread, if any.
+/// The reporter installed on this thread, if any. Only Unix runs report.
+#[cfg(unix)]
 pub(crate) fn reporter() -> Option<Reporter> {
     REPORTER.with(|current| current.borrow().clone())
 }
